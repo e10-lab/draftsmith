@@ -11,7 +11,12 @@ use std::time::Instant;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use draftsmith_core::{display, import, layout, pdf, sample};
+use draftsmith_core::{Drawing, archgen, display, import, pdf, sample, sheet};
+
+/// 보이는 도면: 블록 참조와 건축 객체(.dsmith)를 펼친 것
+fn shown(d: Drawing) -> Drawing {
+    archgen::with_arch(&d).unwrap_or(d)
+}
 
 #[derive(Parser)]
 #[command(name = "dsmith", version = env!("DRAFTSMITH_VERSION"), about = "DraftSmith 명령행")]
@@ -109,7 +114,7 @@ fn main() -> Result<()> {
         }
         Cmd::Bench { file } => {
             let t0 = Instant::now();
-            let d = import::read_file(&file)?;
+            let d = shown(import::read_file(&file)?);
             let t1 = Instant::now();
             let s = display::segments(&d);
             let t2 = Instant::now();
@@ -138,14 +143,14 @@ fn main() -> Result<()> {
         } => {
             let model = import::read_file(&file)?;
             let d = match &lay {
-                None => model,
+                None => shown(model),
                 Some(name) => {
                     let i = model
                         .layouts
                         .iter()
                         .position(|l| l.name == *name)
                         .ok_or_else(|| anyhow::anyhow!("배치 「{name}」 가 없습니다"))?;
-                    layout::compose(&model, i)
+                    sheet::compose(&model, i)
                         .ok_or_else(|| anyhow::anyhow!("배치를 합치지 못했습니다"))?
                 }
             };
@@ -173,7 +178,7 @@ fn main() -> Result<()> {
             println!("{} 에 썼습니다", out.display());
         }
         Cmd::Display { file, out } => {
-            let d = import::read_file(&file)?;
+            let d = shown(import::read_file(&file)?);
             std::fs::write(&out, display::segments(&d).to_bytes())?;
         }
     }

@@ -345,7 +345,7 @@ mod tests {
 
     #[test]
     fn sample_plan_to_pdf() {
-        let d = crate::import::from_document(&crate::sample::plan_grid(60));
+        let d = crate::block::flatten(&crate::import::from_document(&crate::sample::plan_grid(60)));
         let pdf = export(&d, &PdfOptions::default()).unwrap();
         assert!(pdf.starts_with(b"%PDF-"));
         // 1:100 A3 세로 흑백도 된다
@@ -362,7 +362,7 @@ mod tests {
 
     #[test]
     fn ctb_overrides_color_and_weight() {
-        let d = crate::import::from_document(&crate::sample::plan_grid(30));
+        let d = crate::block::flatten(&crate::import::from_document(&crate::sample::plan_grid(30)));
         let pens = PenTable::parse(&crate::ctb::tests::sample_bytes(), "시험.ctb").unwrap();
         let o = PdfOptions {
             pens: Some(pens),

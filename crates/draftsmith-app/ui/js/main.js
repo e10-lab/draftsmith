@@ -255,7 +255,7 @@ async function open(path) {
     const t = await setDoc(st, false);
     status(
       `${base(path)} · 객체 ${fmt(st.entities)} 개` +
-        (st.inserts ? ` (블록 ${fmt(st.inserts)} 개 펼침)` : "") +
+        (st.inserts ? ` (블록 참조 ${fmt(st.inserts)} 개)` : "") +
         (st.recovered ? " · 깨진 곳이 있어 복구해서 읽음" : "") +
         ` · 읽기 ${ms(st.read_ms)} · ` +
         `전달 ${ms(t.transfer)} (${t.mb.toFixed(1)} MB${slowPath ? ", 느린 경로" : ""}) · 올리기 ${ms(t.upload)}`,

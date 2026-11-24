@@ -455,6 +455,64 @@ impl<'a> Converter<'a> {
         self.push(layer, color, shape, &place);
     }
 
+    /// 모형 공간의 블록 참조를 `Shape::Insert` 로 살린다: 배열이 아니고, 평면(+Z)이고, 보이는 속성값이 없을 때.
+    /// 블록 정의는 처음 만날 때 기준점이 원점이 되게 펼쳐 `Drawing::blocks` 에 넣는다 (안의 블록은 펼친 채로).
+    /// 살렸으면 참
+    fn keep_insert(&mut self, x: &acadrust::entities::Insert) -> bool {
+        let n = &x.normal;
+        if x.is_array() || n.x.abs() > 1e-9 || n.y.abs() > 1e-9 || n.z <= 0.0 {
+            return false;
+        }
+        if x.attributes
+            .iter()
+            .any(|a| !a.flags.invisible && !a.common.invisible && !a.value.is_empty())
+        {
+            return false;
+        }
+        let Some(block) = self.doc.block_records.get(&x.block_name) else {
+            return false;
+        };
+        if !self.d.blocks.iter().any(|b| b.name == x.block_name) {
+            let base = block.base_point;
+            let zero = self.layer("0");
+            let saved = std::mem::take(&mut self.d.entities);
+            let saved_inserts = self.d.inserts;
+            self.block(
+                &x.block_name,
+                &[Affine::translate(-base.x, -base.y)],
+                Inherit {
+                    layer: zero,
+                    color: None,
+                    linetype: None,
+                    weight: None,
+                    aci: None,
+                },
+            );
+            let entities = std::mem::replace(&mut self.d.entities, saved);
+            self.d.inserts = saved_inserts;
+            self.d.blocks.push(crate::drawing::Block {
+                name: x.block_name.clone(),
+                entities,
+            });
+        }
+        let (layer, color) = self.style(&x.common, None);
+        self.d.inserts += 1;
+        self.d.entities.push(Entity {
+            layer,
+            aci: self.cur_aci,
+            weight: self.cur_w,
+            linetype: None,
+            color,
+            shape: Shape::Insert {
+                block: x.block_name.clone(),
+                at: Vec2::new(x.insert_point.x, x.insert_point.y),
+                scale: Vec2::new(x.x_scale(), x.y_scale()),
+                rotation: x.rotation,
+            },
+        });
+        true
+    }
+
     fn insert(
         &mut self,
         x: &acadrust::entities::Insert,
@@ -837,6 +895,12 @@ pub fn from_document(doc: &CadDocument) -> Drawing {
         layer.visible = !l.flags.frozen && !l.is_off();
     }
     for e in doc.model_space_entities() {
+        // 단순한 블록 참조는 블록으로 살린다 (§31)
+        if let EntityType::Insert(x) = e
+            && c.keep_insert(x)
+        {
+            continue;
+        }
         c.entity(e, &Affine::IDENTITY, None);
     }
     read_layouts(&mut c);
@@ -961,7 +1025,7 @@ mod tests {
                 0.0, 0.0, 0.0, 1.0, 0.0, 0.0,
             ))],
         );
-        let d = from_document(&doc);
+        let d = crate::block::flatten(&from_document(&doc));
         assert!(
             d.entities.is_empty(),
             "정의만 있고 참조가 없으면 아무것도 안 그린다"
@@ -984,7 +1048,7 @@ mod tests {
             .with_scale(2.0, 2.0, 1.0)
             .with_rotation(std::f64::consts::FRAC_PI_2);
         doc.add_entity(EntityType::Insert(ins)).unwrap();
-        let d = from_document(&doc);
+        let d = crate::block::flatten(&from_document(&doc));
         assert_eq!(d.entities.len(), 1);
         let (a, b) = line_of(&d, 0);
         // 길이 1 → 2 로 늘고 90° 돌아 위쪽으로
@@ -1020,7 +1084,7 @@ mod tests {
             Color::Index(1),
         );
         doc.add_entity(ins).unwrap();
-        let d = from_document(&doc);
+        let d = crate::block::flatten(&from_document(&doc));
         let name = |e: &Entity| d.layers[e.layer as usize].name.clone();
         assert_eq!(name(&d.entities[0]), "A-DOOR");
         assert_eq!(
@@ -1053,7 +1117,7 @@ mod tests {
             Insert::new("B", Vector3::ZERO).with_scale(-1.0, 1.0, 1.0),
         ))
         .unwrap();
-        let d = from_document(&doc);
+        let d = crate::block::flatten(&from_document(&doc));
         // 원은 x 가 뒤집혀 (−3,0) 에 그대로 원, 호도 호로 남는다 (타원이 되면 안 됨)
         match &d.entities[0].shape {
             Shape::Circle { center, radius } => {
@@ -1092,7 +1156,7 @@ mod tests {
             Insert::new("B", Vector3::ZERO).with_scale(2.0, 1.0, 1.0),
         ))
         .unwrap();
-        let d = from_document(&doc);
+        let d = crate::block::flatten(&from_document(&doc));
         let b = d.bbox();
         assert!(
             (b.width() - 4.0).abs() < 1e-9 && (b.height() - 2.0).abs() < 1e-9,
@@ -1124,7 +1188,7 @@ mod tests {
         // 2 행 × 3 열 배열, 간격 100
         let ins = Insert::new("MID", Vector3::new(1000.0, 0.0, 0.0)).with_array(3, 2, 100.0, 100.0);
         doc.add_entity(EntityType::Insert(ins)).unwrap();
-        let d = from_document(&doc);
+        let d = crate::block::flatten(&from_document(&doc));
         assert_eq!(d.entities.len(), 6, "배열 6 칸 × 선 1");
         assert!(d.skipped.contains_key("블록 순환·깊이 초과"));
         let firsts: Vec<_> = (0..6).map(|i| line_of(&d, i).0).collect();
@@ -1145,7 +1209,7 @@ mod tests {
         dim.definition_point = Vector3::new(3000.0, 500.0, 0.0);
         doc.add_entity(EntityType::Dimension(Box::new(Dimension::Linear(dim))))
             .unwrap();
-        let d = from_document(&doc);
+        let d = crate::block::flatten(&from_document(&doc));
         assert!(d.skipped.is_empty(), "{:?}", d.skipped);
         // 보조선 2 + 치수선 + 사선 2 + 문자
         assert_eq!(d.entities.len(), 6);
@@ -1173,7 +1237,7 @@ mod tests {
             Vector3::new(2.0, 0.0, 0.0),
         ];
         doc.add_entity(EntityType::Spline(sp)).unwrap();
-        let d = from_document(&doc);
+        let d = crate::block::flatten(&from_document(&doc));
         match &d.entities[0].shape {
             Shape::Polyline { points, .. } => {
                 assert!(close(points[0].0, (0.0, 0.0)));

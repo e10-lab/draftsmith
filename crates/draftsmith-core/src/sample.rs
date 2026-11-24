@@ -316,8 +316,9 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(format!("grid.{ext}"));
         write_plan_grid(100, &path).unwrap();
-        let d = read_file(&path).unwrap();
-        let direct = from_document(&plan_grid(100));
+        // 문 블록은 블록으로 들어오므로 펼쳐서 비교한다 (§31)
+        let d = crate::block::flatten(&read_file(&path).unwrap());
+        let direct = crate::block::flatten(&from_document(&plan_grid(100)));
         let cells = 100usize.div_ceil(FILE_PER_CELL);
         assert_eq!(
             direct.entities.len(),

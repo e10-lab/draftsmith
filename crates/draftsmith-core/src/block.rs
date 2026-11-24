@@ -80,6 +80,20 @@ pub fn check_name(d: &Drawing, name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// 블록 참조를 모두 그 자리에서 펼친 도면 (블록을 모르는 곳 — CLI 보기·측정·시험용)
+pub fn flatten(d: &Drawing) -> Drawing {
+    if !d
+        .entities
+        .iter()
+        .any(|e| matches!(e.shape, Shape::Insert { .. }))
+    {
+        return d.clone();
+    }
+    let mut out = d.clone();
+    out.entities = d.entities.iter().flat_map(|e| expand(d, e)).collect();
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -438,8 +438,8 @@ fn save_drawing(
 fn export_cad(format: String, state: State<'_, AppState>) -> Result<Option<String>, String> {
     let open = state.lock().map_err(err)?;
     let d = open.ed.as_ref().ok_or("열린 도면이 없습니다")?;
-    // 건축 객체가 만든 선까지 넣어 내보낸다
-    let full = archgen::with_arch(&d.d).unwrap_or_else(|| d.d.clone());
+    // 모형을 넘기면 블록은 INSERT, 치수는 DIMENSION, 건축 객체 선은 펼친 선으로 쓴다 (§31)
+    let full = d.d.clone();
     let ext = if format.eq_ignore_ascii_case("dwg") {
         "dwg"
     } else {
