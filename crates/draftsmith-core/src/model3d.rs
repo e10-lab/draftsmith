@@ -112,6 +112,8 @@ const WALL_INT: [u8; 4] = [236, 234, 230, 255];
 const SLAB: [u8; 4] = [196, 182, 160, 255];
 const GLASS: [u8; 4] = [120, 170, 210, 140];
 const DOOR: [u8; 4] = [150, 110, 80, 255];
+const COLUMN: [u8; 4] = [190, 186, 178, 255];
+const STAIR: [u8; 4] = [205, 196, 182, 255];
 
 /// 건축 객체 → 3D 삼각형
 pub fn mesh(m: &ArchModel) -> Mesh {
@@ -136,6 +138,31 @@ pub fn mesh(m: &ArchModel) -> Mesh {
                         SLAB,
                     );
                 }
+            }
+        }
+        // 기둥 (층고만큼)
+        for c in m.columns.iter().filter(|c| c.level == l.id) {
+            out.prism(c.corners(), z0, z0 + l.height, COLUMN);
+        }
+        // 계단: 단마다 바닥에서 그 단 높이까지 상자
+        for st in m.stairs.iter().filter(|s| s.level == l.id) {
+            let len = st.a.dist(st.b);
+            if len < 1e-9 || st.risers == 0 {
+                continue;
+            }
+            let r = st.risers as f64;
+            let u = Vec2::new((st.b.x - st.a.x) / len, (st.b.y - st.a.y) / len);
+            let n = Vec2::new(-u.y * st.width / 2.0, u.x * st.width / 2.0);
+            let q =
+                |t: f64, k: f64| Vec2::new(st.a.x + u.x * t + n.x * k, st.a.y + u.y * t + n.y * k);
+            for k in 0..st.risers {
+                let (t0, t1) = (len * k as f64 / r, len * (k + 1) as f64 / r);
+                out.prism(
+                    [q(t0, -1.0), q(t1, -1.0), q(t1, 1.0), q(t0, 1.0)],
+                    z0,
+                    z0 + l.height * (k + 1) as f64 / r,
+                    STAIR,
+                );
             }
         }
         for w in m.walls.iter().filter(|w| w.level == l.id) {

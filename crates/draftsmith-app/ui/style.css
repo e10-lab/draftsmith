@@ -163,3 +163,9 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
 .ask-fields { display: grid; gap: 6px; }
 .ask-fields label { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .ask-fields input, .ask-fields select { width: 180px; }
+
+/* 도구 막대가 한 줄에 들어가게 (1280 px 이상) */
+.bar { gap: 6px; padding: 6px 10px; }
+.bar .group { gap: 2px; }
+.bar button { padding: 3px 7px; }
+.bar select { max-width: 120px; }

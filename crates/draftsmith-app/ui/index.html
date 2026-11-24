@@ -30,7 +30,14 @@
       <button data-cmd="rect" title="사각형 (REC)">사각형</button>
       <button data-cmd="circle" title="원 (C)">원</button>
       <button data-cmd="text" title="글자 (T)">글자</button>
-      <button data-cmd="dim" title="치수 (DIM)">치수</button>
+      <button data-cmd="dim" title="치수 (DIM) — 값이 두 점을 따라감">치수</button>
+      <button data-cmd="hatch" title="해치 (H) — 닫힌 영역 안을 누름">해치</button>
+    </span>
+    <span class="sep"></span>
+    <span class="group tools">
+      <button data-cmd="trim" title="자르기 (TR)">자르기</button>
+      <button data-cmd="extend" title="연장 (EX)">연장</button>
+      <button data-cmd="fillet" title="모깎기 (F) — 반지름 0 이면 모서리">모깎기</button>
     </span>
     <span class="sep"></span>
     <span class="group tools">
@@ -39,6 +46,8 @@
       <button data-cmd="window" title="창 (WI)">창</button>
       <button data-cmd="room" title="실 — 면적 자동 (RM)">실</button>
       <button data-cmd="grid" title="그리드 (GR)">그리드</button>
+      <button data-cmd="column" title="기둥 (COL)">기둥</button>
+      <button data-cmd="stair" title="계단 (ST)">계단</button>
     </span>
     <span class="sep"></span>
     <span class="pop-wrap">
@@ -59,8 +68,6 @@
     <button data-cmd="tables" title="면적표·창호일람표·마감표·법규 검토 (TB)">표</button>
     <button data-cmd="view3d" title="3D 보기 (3D)">3D</button>
     <span class="grow"></span>
-    <button id="lwt" class="toggle" data-cmd="lwt" title="선 굵기 보기 (LWT)">선 굵기</button>
-    <button id="paper" class="toggle" data-cmd="paper" title="흰 배경 (BG) — 흰 선은 검게">흰 배경</button>
     <button data-cmd="palette" title="명령 찾기 (⌘K / Ctrl+K) — 이름·단축·초성">⌘K</button>
   </header>
   <main class="body">
@@ -93,6 +100,8 @@
     <input id="cmd" autocomplete="off" spellcheck="false" placeholder="명령 (L 선, M 이동, WA 벽 …) · ⌘K 로 찾기">
     <span id="status" class="status muted">DWG·DXF 도면을 열거나 새 도면에 그리세요</span>
     <span class="grow"></span>
+    <button id="lwt" class="toggle mini" data-cmd="lwt" title="선 굵기 보기 (LWT)">선 굵기</button>
+    <button id="paper" class="toggle mini" data-cmd="paper" title="흰 배경 (BG) — 흰 선은 검게">흰 배경</button>
     <button id="snap" class="toggle mini on" data-cmd="snap" title="객체 스냅 (F3)">스냅</button>
     <button id="ortho" class="toggle mini" data-cmd="ortho" title="직교 (F8, Shift 누른 동안)">직교</button>
     <span id="version" class="muted small"></span>

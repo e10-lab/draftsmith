@@ -180,6 +180,62 @@ pub struct Site {
     pub far_limit: f64,
 }
 
+/// 치수 (정렬 치수 — 두 점과 치수선까지 거리. 값은 두 점에서 늘 새로 셈, 구현 노트 §28)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Dim {
+    pub id: u64,
+    pub level: u64,
+    pub a: Vec2,
+    pub b: Vec2,
+    /// a→b 왼쪽으로 치수선까지 거리 (음수면 오른쪽)
+    pub offset: f64,
+    /// 글자 높이 (도면 단위)
+    pub text_height: f64,
+    /// 비우면 길이, 아니면 이 글자 (「<>」 는 길이로 바뀜)
+    #[serde(default)]
+    pub text: String,
+}
+
+impl Dim {
+    pub fn length(&self) -> f64 {
+        self.a.dist(self.b)
+    }
+}
+
+/// 기둥 (사각, 가운데·폭·깊이·회전)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Column {
+    pub id: u64,
+    pub level: u64,
+    pub at: Vec2,
+    pub width: f64,
+    pub depth: f64,
+    #[serde(default)]
+    pub angle: f64,
+}
+
+impl Column {
+    /// 네 모서리 (반시계)
+    pub fn corners(&self) -> [Vec2; 4] {
+        let (s, c) = self.angle.sin_cos();
+        let (w, d) = (self.width / 2.0, self.depth / 2.0);
+        let p = |x: f64, y: f64| Vec2::new(self.at.x + x * c - y * s, self.at.y + x * s + y * c);
+        [p(-w, -d), p(w, -d), p(w, d), p(-w, d)]
+    }
+}
+
+/// 곧은 계단 (a 에서 b 로 올라감)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Stair {
+    pub id: u64,
+    pub level: u64,
+    pub a: Vec2,
+    pub b: Vec2,
+    pub width: f64,
+    /// 단 수 (챌면 수)
+    pub risers: u32,
+}
+
 /// 건축 객체 전체
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -190,6 +246,9 @@ pub struct ArchModel {
     pub rooms: Vec<Room>,
     pub grids: Vec<Grid>,
     pub site: Site,
+    pub dims: Vec<Dim>,
+    pub columns: Vec<Column>,
+    pub stairs: Vec<Stair>,
     /// 지금 그리는 층
     pub active_level: u64,
     /// 다음 객체 번호
@@ -234,5 +293,8 @@ impl ArchModel {
             && self.rooms.is_empty()
             && self.grids.is_empty()
             && self.site.boundary.is_empty()
+            && self.dims.is_empty()
+            && self.columns.is_empty()
+            && self.stairs.is_empty()
     }
 }

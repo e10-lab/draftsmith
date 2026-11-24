@@ -25,7 +25,25 @@ pub const LAYERS: &[(&str, [u8; 3])] = &[
     ("A-GRID", [255, 0, 0]),
     ("A-GRID-IDEN", [255, 255, 255]),
     ("C-PROP", [0, 255, 0]),
+    ("A-COLS", [255, 127, 0]),
+    ("A-COLS-PATT", [128, 128, 128]),
+    ("A-STRS", [255, 255, 255]),
+    ("A-ANNO-DIMS", [0, 255, 0]),
 ];
+
+/// 치수 글자: 세 자리마다 쉼표 (12,000)
+pub fn comma(v: f64) -> String {
+    let n = v.round() as i64;
+    let s = n.abs().to_string();
+    let mut out = String::new();
+    for (i, ch) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    if n < 0 { format!("-{out}") } else { out }
+}
 
 /// 새 도면: 기본 레이어(국내 건축 도면 관례)와 「1층」
 pub fn new_drawing() -> Drawing {
@@ -495,6 +513,137 @@ fn generate(d: &mut Drawing) -> Vec<(Entity, Owner)> {
             }
         }
     }
+    // 치수 (§28)
+    for dm in m.dims.iter().filter(|x| x.level == level) {
+        let own = ("dim", dm.id);
+        let len = dm.length();
+        if len < 1e-9 {
+            continue;
+        }
+        let u = mul(sub(dm.b, dm.a), 1.0 / len);
+        let n = Vec2::new(-u.y, u.x);
+        let off = dm.offset;
+        let sg = if off >= 0.0 { 1.0 } else { -1.0 };
+        let h = dm.text_height.max(1e-6);
+        let (gap, ext, tk) = (h * 0.4, h * 0.6, h * 0.5);
+        let pp = |p: Vec2, k: f64| add(p, mul(n, k));
+        let (da, db) = (pp(dm.a, off), pp(dm.b, off));
+        g.line(
+            "A-ANNO-DIMS",
+            pp(dm.a, sg * gap),
+            pp(dm.a, off + sg * ext),
+            own,
+        );
+        g.line(
+            "A-ANNO-DIMS",
+            pp(dm.b, sg * gap),
+            pp(dm.b, off + sg * ext),
+            own,
+        );
+        g.line("A-ANNO-DIMS", da, db, own);
+        let t = mul(add(u, n), tk * 0.5);
+        for p in [da, db] {
+            g.line("A-ANNO-DIMS", sub(p, t), add(p, t), own);
+        }
+        let mut rot = u.y.atan2(u.x);
+        if rot > std::f64::consts::FRAC_PI_2 + 1e-9 || rot <= -std::f64::consts::FRAC_PI_2 + 1e-9 {
+            rot += std::f64::consts::PI;
+        }
+        let up = Vec2::new(-rot.sin(), rot.cos());
+        let mid = add(mul(add(da, db), 0.5), mul(up, h * 0.3));
+        let value = if dm.text.trim().is_empty() {
+            comma(len)
+        } else {
+            dm.text.replace("<>", &comma(len))
+        };
+        g.put(
+            "A-ANNO-DIMS",
+            Shape::Text(TextShape {
+                at: mid,
+                height: h,
+                rotation: rot,
+                width_factor: 1.0,
+                halign: 0.5,
+                valign: VAlign::Bottom,
+                value,
+            }),
+            own,
+        );
+    }
+    // 기둥
+    for c in m.columns.iter().filter(|x| x.level == level) {
+        let own = ("column", c.id);
+        let k = c.corners();
+        g.put(
+            "A-COLS-PATT",
+            Shape::Fill {
+                loops: vec![k.to_vec()],
+            },
+            own,
+        );
+        g.put(
+            "A-COLS",
+            Shape::Polyline {
+                points: k.iter().map(|p| (*p, 0.0)).collect(),
+                closed: true,
+            },
+            own,
+        );
+    }
+    // 계단: 외곽, 디딤판 선, 오름 화살표
+    for st in m.stairs.iter().filter(|x| x.level == level) {
+        let own = ("stair", st.id);
+        let len = st.a.dist(st.b);
+        if len < 1e-9 || st.risers == 0 {
+            continue;
+        }
+        let u = mul(sub(st.b, st.a), 1.0 / len);
+        let n = mul(Vec2::new(-u.y, u.x), st.width / 2.0);
+        let q = |t: f64, k: f64| add(add(st.a, mul(u, t)), mul(n, k));
+        g.put(
+            "A-STRS",
+            Shape::Polyline {
+                points: vec![
+                    (q(0.0, -1.0), 0.0),
+                    (q(len, -1.0), 0.0),
+                    (q(len, 1.0), 0.0),
+                    (q(0.0, 1.0), 0.0),
+                ],
+                closed: true,
+            },
+            own,
+        );
+        let r = st.risers as f64;
+        for k in 1..st.risers {
+            let t = len * k as f64 / r;
+            g.line("A-STRS", q(t, -1.0), q(t, 1.0), own);
+        }
+        let head = (st.width * 0.12).min(len * 0.2);
+        g.line(
+            "A-STRS",
+            q(len * 0.5 / r, 0.0),
+            q(len - head * 0.2, 0.0),
+            own,
+        );
+        let tip = q(len - head * 0.2, 0.0);
+        let back = sub(tip, mul(u, head));
+        let side = mul(n, head * 0.4 / (st.width / 2.0));
+        g.put(
+            "A-STRS",
+            Shape::Fill {
+                loops: vec![vec![tip, add(back, side), sub(back, side)]],
+            },
+            own,
+        );
+        // 「UP」 은 오르기 시작점 바깥에
+        g.text(
+            "A-STRS",
+            q(-text_h * 0.9, 0.0),
+            text_h * 0.8,
+            "UP".into(),
+            own,
+        );
+    }
     g.out
 }
 
@@ -568,6 +717,26 @@ pub enum ArchReq {
         id: u64,
         dx: f64,
         dy: f64,
+    },
+    /// 치수 (두 점, 치수선이 지날 점)
+    Dim {
+        a: [f64; 2],
+        b: [f64; 2],
+        at: [f64; 2],
+        text_height: f64,
+    },
+    /// 기둥
+    Column {
+        at: [f64; 2],
+        width: f64,
+        depth: f64,
+    },
+    /// 곧은 계단 (a 에서 b 로 오름)
+    Stair {
+        a: [f64; 2],
+        b: [f64; 2],
+        width: f64,
+        risers: u32,
     },
     /// 지금 층을 복사해 새 층 (벽·개구부·실)
     CopyLevel { name: String },
@@ -721,6 +890,44 @@ fn set_field(m: &mut ArchModel, what: &str, id: u64, k: &str, v: &str) -> Result
                 g.label = v.trim().to_string();
             }
         }
+        "dim" => {
+            let x = m
+                .dims
+                .iter_mut()
+                .find(|x| x.id == id)
+                .ok_or("치수가 없습니다")?;
+            match k {
+                "글자" => x.text = v.trim().to_string(),
+                "글자 높이" => x.text_height = num()?.max(1e-3),
+                "치수선 거리" => x.offset = num()?,
+                _ => {}
+            }
+        }
+        "column" => {
+            let x = m
+                .columns
+                .iter_mut()
+                .find(|x| x.id == id)
+                .ok_or("기둥이 없습니다")?;
+            match k {
+                "폭" => x.width = num()?.max(1.0),
+                "깊이" => x.depth = num()?.max(1.0),
+                "회전" => x.angle = num()?.to_radians(),
+                _ => {}
+            }
+        }
+        "stair" => {
+            let x = m
+                .stairs
+                .iter_mut()
+                .find(|x| x.id == id)
+                .ok_or("계단이 없습니다")?;
+            match k {
+                "폭" => x.width = num()?.max(1.0),
+                "단 수" => x.risers = (num()?.round() as u32).max(1),
+                _ => {}
+            }
+        }
         "level" => {
             let l = m
                 .levels
@@ -835,6 +1042,60 @@ pub fn apply(ed: &mut Editor, req: ArchReq) -> Result<(), String> {
                 b: p2(b),
             });
         }
+        ArchReq::Dim {
+            a,
+            b,
+            at,
+            text_height,
+        } => {
+            let (a, b, at) = (p2(a), p2(b), p2(at));
+            let len = a.dist(b);
+            if len < 1e-9 {
+                return Err("두 점이 같습니다".into());
+            }
+            let u = mul(sub(b, a), 1.0 / len);
+            let offset = dot(sub(at, a), Vec2::new(-u.y, u.x));
+            let id = m.new_id();
+            m.dims.push(crate::arch::Dim {
+                id,
+                level,
+                a,
+                b,
+                offset,
+                text_height,
+                text: String::new(),
+            });
+        }
+        ArchReq::Column { at, width, depth } => {
+            let id = m.new_id();
+            m.columns.push(crate::arch::Column {
+                id,
+                level,
+                at: p2(at),
+                width: width.max(1.0),
+                depth: depth.max(1.0),
+                angle: 0.0,
+            });
+        }
+        ArchReq::Stair {
+            a,
+            b,
+            width,
+            risers,
+        } => {
+            if p2(a).dist(p2(b)) < 1e-6 {
+                return Err("계단 길이가 0 입니다".into());
+            }
+            let id = m.new_id();
+            m.stairs.push(crate::arch::Stair {
+                id,
+                level,
+                a: p2(a),
+                b: p2(b),
+                width: width.max(1.0),
+                risers: risers.max(1),
+            });
+        }
         ArchReq::GridSet {
             origin,
             xs,
@@ -909,6 +1170,9 @@ pub fn apply(ed: &mut Editor, req: ArchReq) -> Result<(), String> {
             "door" | "window" => m.openings.retain(|o| o.id != id),
             "room" => m.rooms.retain(|r| r.id != id),
             "grid" => m.grids.retain(|g| g.id != id),
+            "dim" => m.dims.retain(|x| x.id != id),
+            "column" => m.columns.retain(|x| x.id != id),
+            "stair" => m.stairs.retain(|x| x.id != id),
             "site" => m.site.boundary.clear(),
             "level" => {
                 if m.levels.len() <= 1 {
@@ -924,6 +1188,9 @@ pub fn apply(ed: &mut Editor, req: ArchReq) -> Result<(), String> {
                 m.walls.retain(|w| w.level != id);
                 m.openings.retain(|o| !gone.contains(&o.wall));
                 m.rooms.retain(|r| r.level != id);
+                m.dims.retain(|x| x.level != id);
+                m.columns.retain(|x| x.level != id);
+                m.stairs.retain(|x| x.level != id);
                 m.ensure_level();
             }
             _ => return Err(format!("모르는 객체: {what}")),
@@ -963,6 +1230,23 @@ pub fn apply(ed: &mut Editor, req: ArchReq) -> Result<(), String> {
                             x.offset =
                                 t.clamp(o.width / 2.0, (len - o.width / 2.0).max(o.width / 2.0));
                         }
+                    }
+                }
+                "dim" => {
+                    if let Some(x) = m.dims.iter_mut().find(|x| x.id == id) {
+                        x.a = add(x.a, d);
+                        x.b = add(x.b, d);
+                    }
+                }
+                "column" => {
+                    if let Some(x) = m.columns.iter_mut().find(|x| x.id == id) {
+                        x.at = add(x.at, d);
+                    }
+                }
+                "stair" => {
+                    if let Some(x) = m.stairs.iter_mut().find(|x| x.id == id) {
+                        x.a = add(x.a, d);
+                        x.b = add(x.b, d);
                     }
                 }
                 _ => {}
@@ -1013,6 +1297,34 @@ pub fn apply(ed: &mut Editor, req: ArchReq) -> Result<(), String> {
                     ..r
                 });
             }
+            let cols: Vec<_> = m
+                .columns
+                .iter()
+                .filter(|x| x.level == src)
+                .cloned()
+                .collect();
+            for c in cols {
+                let id = m.new_id();
+                m.columns.push(crate::arch::Column {
+                    id,
+                    level: new_level,
+                    ..c
+                });
+            }
+            let stairs: Vec<_> = m
+                .stairs
+                .iter()
+                .filter(|x| x.level == src)
+                .cloned()
+                .collect();
+            for st in stairs {
+                let id = m.new_id();
+                m.stairs.push(crate::arch::Stair {
+                    id,
+                    level: new_level,
+                    ..st
+                });
+            }
             m.levels.sort_by(|a, b| a.elevation.total_cmp(&b.elevation));
             m.active_level = new_level;
         }
@@ -1038,6 +1350,9 @@ pub struct ArchSummary {
     pub rooms: usize,
     pub grids: usize,
     pub has_site: bool,
+    pub columns: usize,
+    pub stairs: usize,
+    pub dims: usize,
 }
 
 pub fn summary(m: &ArchModel) -> ArchSummary {
@@ -1049,6 +1364,9 @@ pub fn summary(m: &ArchModel) -> ArchSummary {
         rooms: m.rooms.len(),
         grids: m.grids.len(),
         has_site: m.site.boundary.len() >= 3,
+        columns: m.columns.len(),
+        stairs: m.stairs.len(),
+        dims: m.dims.len(),
     }
 }
 
@@ -1127,6 +1445,34 @@ pub fn properties(m: &ArchModel, what: &str, id: u64) -> Vec<(String, String)> {
                 out.push(("종류".into(), "그리드".into()));
                 out.push(("기호:고침".into(), g.label.clone()));
                 out.push(("길이".into(), f(g.a.dist(g.b))));
+            }
+        }
+        "dim" => {
+            if let Some(x) = m.dims.iter().find(|x| x.id == id) {
+                out.push(("종류".into(), "치수".into()));
+                out.push(("길이".into(), comma(x.length())));
+                out.push(("글자:고침".into(), x.text.clone()));
+                out.push(("글자 높이:고침".into(), f(x.text_height)));
+                out.push(("치수선 거리:고침".into(), f(x.offset)));
+            }
+        }
+        "column" => {
+            if let Some(x) = m.columns.iter().find(|x| x.id == id) {
+                out.push(("종류".into(), "기둥".into()));
+                out.push(("폭:고침".into(), f(x.width)));
+                out.push(("깊이:고침".into(), f(x.depth)));
+                out.push(("회전:고침".into(), format!("{:.1}", x.angle.to_degrees())));
+            }
+        }
+        "stair" => {
+            if let Some(x) = m.stairs.iter().find(|x| x.id == id) {
+                let h = m.level(x.level).map(|l| l.height).unwrap_or(3000.0);
+                let r = x.risers.max(1) as f64;
+                out.push(("종류".into(), "계단".into()));
+                out.push(("폭:고침".into(), f(x.width)));
+                out.push(("단 수:고침".into(), x.risers.to_string()));
+                out.push(("단 높이".into(), format!("{:.1}", h / r)));
+                out.push(("디딤판 깊이".into(), format!("{:.1}", x.a.dist(x.b) / r)));
             }
         }
         "site" => {
@@ -1432,6 +1778,31 @@ pub fn tables(d: &Drawing) -> Tables {
             ],
         ],
     });
+    // 도면 목록 (배치 순서)
+    let mut list = Table {
+        name: "도면목록".into(),
+        title: "도면 목록".into(),
+        head: vec![
+            "순번".into(),
+            "도면 번호".into(),
+            "도면명".into(),
+            "층".into(),
+        ],
+        rows: Vec::new(),
+    };
+    for (i, l) in d.layouts.iter().enumerate() {
+        let (num, title) = match l.name.split_once(' ') {
+            Some((a, b)) if a.chars().any(|c| c.is_ascii_digit()) => (a.to_string(), b.to_string()),
+            _ => (String::new(), l.name.clone()),
+        };
+        let level = l
+            .level
+            .and_then(|id| m.level(id))
+            .map(|x| x.name.clone())
+            .unwrap_or_default();
+        list.rows.push(vec![(i + 1).to_string(), num, title, level]);
+    }
+    out.push(list);
     Tables { tables: out }
 }
 
@@ -1595,5 +1966,73 @@ mod tests {
             _ => false,
         });
         assert!(has_corner, "바깥 모서리 꺾어 잇기");
+    }
+
+    #[test]
+    fn dims_columns_stairs() {
+        let mut ed = Editor::new(new_drawing());
+        apply(
+            &mut ed,
+            ArchReq::Dim {
+                a: [0.0, 0.0],
+                b: [12000.0, 0.0],
+                at: [6000.0, -1000.0],
+                text_height: 250.0,
+            },
+        )
+        .unwrap();
+        apply(
+            &mut ed,
+            ArchReq::Column {
+                at: [0.0, 0.0],
+                width: 600.0,
+                depth: 600.0,
+            },
+        )
+        .unwrap();
+        apply(
+            &mut ed,
+            ArchReq::Stair {
+                a: [1000.0, 1000.0],
+                b: [4000.0, 1000.0],
+                width: 1200.0,
+                risers: 18,
+            },
+        )
+        .unwrap();
+        let m = &ed.d.arch;
+        assert_eq!((m.dims.len(), m.columns.len(), m.stairs.len()), (1, 1, 1));
+        assert_eq!(m.dims[0].offset, -1000.0);
+        let g = with_arch(&ed.d).unwrap();
+        let texts: Vec<String> = g
+            .entities
+            .iter()
+            .filter_map(|e| match &e.shape {
+                Shape::Text(t) => Some(t.value.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(texts.contains(&"12,000".to_string()), "{texts:?}");
+        assert!(texts.contains(&"UP".to_string()));
+        // 치수 글자 바꾸기
+        let id = m.dims[0].id;
+        apply(
+            &mut ed,
+            ArchReq::Set {
+                what: "dim".into(),
+                id,
+                fields: vec![("글자".into(), "<> (외곽)".into())],
+            },
+        )
+        .unwrap();
+        let g = with_arch(&ed.d).unwrap();
+        assert!(
+            g.entities
+                .iter()
+                .any(|e| matches!(&e.shape, Shape::Text(t) if t.value == "12,000 (외곽)"))
+        );
+        // 3D: 기둥 12 + 계단 18 × 12
+        assert_eq!(crate::model3d::mesh(&ed.d.arch).tris.len(), 12 + 18 * 12);
+        assert_eq!(comma(1234567.0), "1,234,567");
     }
 }

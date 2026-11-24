@@ -21,6 +21,7 @@ pub mod geom;
 pub mod import;
 pub mod layout;
 pub mod model3d;
+pub mod modify;
 pub mod pdf;
 pub mod pick;
 pub mod sample;

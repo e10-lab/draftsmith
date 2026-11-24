@@ -36,6 +36,13 @@ const app = {
   wallKind: "외벽",
   doorWidth: 900,
   windowWidth: 1200,
+  filletRadius: 0,
+  hatchPattern: "사선",
+  hatchSpacing: 200,
+  colW: 600,
+  colD: 600,
+  stairWidth: 1200,
+  stairRisers: 18,
   report: status,
   prompt,
 };

@@ -57,7 +57,8 @@ export function renderLevels(app, doc) {
     ul.append(li);
   }
   document.getElementById("arch-sum").textContent =
-    `벽 ${a.walls} · 문·창 ${a.openings} · 실 ${a.rooms} · 그리드 ${a.grids}` + (a.has_site ? " · 대지" : "");
+    `벽 ${a.walls} · 문·창 ${a.openings} · 실 ${a.rooms} · 그리드 ${a.grids} · 기둥 ${a.columns} · 계단 ${a.stairs} · 치수 ${a.dims}` +
+    (a.has_site ? " · 대지" : "");
 }
 
 /** 면적표·창호일람표·실별 마감표·법규 검토 서랍 */

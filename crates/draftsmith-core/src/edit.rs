@@ -211,6 +211,59 @@ impl Editor {
         })
     }
 
+    /// 객체를 새 모양들로: 첫 모양은 그 자리를 바꾸고, 나머지는 같은 속성으로 끝에 더하고, 모양이 없으면 지운다.
+    /// 한 단계로 되돌린다 (자르기·연장·모깎기 — 구현 노트 §27). 더한 객체 번호 범위
+    pub fn reshape(&mut self, changes: Vec<(usize, Vec<Shape>)>) -> std::ops::Range<usize> {
+        let n = self.d.entities.len();
+        let mut replace = Vec::new();
+        let mut added = Vec::new();
+        let mut removed = Vec::new();
+        for (i, shapes) in changes {
+            let Some(old) = self.d.entities.get(i).cloned() else {
+                continue;
+            };
+            let mut it = shapes.into_iter();
+            match it.next() {
+                Some(first) => replace.push((
+                    i,
+                    old.clone(),
+                    Entity {
+                        shape: first,
+                        ..old.clone()
+                    },
+                )),
+                None => removed.push((i, old.clone())),
+            }
+            added.extend(it.map(|shape| Entity {
+                shape,
+                ..old.clone()
+            }));
+        }
+        removed.sort_by_key(|(i, _)| *i);
+        let k = added.len();
+        let mut ops = Vec::new();
+        if !replace.is_empty() {
+            ops.push(Op::Replace { items: replace });
+        }
+        if !added.is_empty() {
+            ops.push(Op::Add {
+                start: n,
+                items: added,
+            });
+        }
+        if !removed.is_empty() {
+            ops.push(Op::Remove {
+                items: removed.clone(),
+            });
+        }
+        if !ops.is_empty() {
+            self.run(Op::Batch(ops));
+        }
+        // 지운 것만큼 더한 객체 번호가 앞으로 당겨진다
+        let start = n - removed.len();
+        start..start + k
+    }
+
     /// 배치(도면 시트) 더하기
     pub fn add_layout(&mut self, l: crate::layout::Layout) {
         let old = self.d.layouts.clone();

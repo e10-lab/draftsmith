@@ -18,7 +18,7 @@ use draftsmith_core::pdf::{self, PdfOptions};
 use draftsmith_core::pick::{self, PickIndex};
 use draftsmith_core::snap::SnapIndex;
 use draftsmith_core::{
-    Affine, Bbox, Drawing, Shape, Vec2, archgen, display, docfile, export, import, sheet,
+    Affine, Bbox, Drawing, Shape, Vec2, archgen, display, docfile, export, import, modify, sheet,
 };
 use serde::{Deserialize, Serialize};
 use tauri::ipc::Response;
@@ -470,6 +470,30 @@ enum EditReq {
     Arch {
         op: archgen::ArchReq,
     },
+    /// 자르기: 고른 점이 든 구간을 없앤다 (§27)
+    Trim {
+        id: usize,
+        pick: [f64; 2],
+    },
+    /// 연장: 고른 점에 가까운 끝을 경계까지
+    Extend {
+        id: usize,
+        pick: [f64; 2],
+    },
+    /// 모깎기 (r = 0 이면 모서리)
+    Fillet {
+        a: usize,
+        pa: [f64; 2],
+        b: usize,
+        pb: [f64; 2],
+        r: f64,
+    },
+    /// 해치: 점을 둘러싼 경계에 무늬
+    Hatch {
+        at: [f64; 2],
+        pattern: String,
+        spacing: f64,
+    },
     /// 도면 시트 만들기 (M4)
     AddSheet(sheet::SheetReq),
     /// 도면 시트 지우기
@@ -496,6 +520,61 @@ fn affine(m: [f64; 6]) -> Affine {
 fn edit(req: EditReq, state: State<'_, AppState>) -> Result<DocState, String> {
     let mut open = state.lock().map_err(err)?;
     let mut added = Vec::new();
+    // 화면에 보이는 도면(건축 객체 선 포함)을 경계로 쓰는 편집은 먼저 계산한다
+    let (mut reshape, mut hatch) = (None, None);
+    if matches!(
+        req,
+        EditReq::Trim { .. }
+            | EditReq::Extend { .. }
+            | EditReq::Fillet { .. }
+            | EditReq::Hatch { .. }
+    ) {
+        if open.sheet.is_some() {
+            return Err("배치에서는 고칠 수 없습니다 — 「모형」 탭에서 고치세요".into());
+        }
+        let base = open.ed.as_ref().map(|e| e.d.entities.len()).unwrap_or(0);
+        let v = open.shown().ok_or("열린 도면이 없습니다")?;
+        let model = |i: usize| {
+            if i < base {
+                Ok(i)
+            } else {
+                Err("건축 객체가 만든 선은 고칠 수 없습니다 — 객체 속성을 고치세요".to_string())
+            }
+        };
+        let pt = |p: [f64; 2]| Vec2::new(p[0], p[1]);
+        match &req {
+            EditReq::Trim { id, pick } => {
+                reshape = Some(vec![(model(*id)?, modify::trim(v, *id, pt(*pick))?)])
+            }
+            EditReq::Extend { id, pick } => {
+                reshape = Some(vec![(
+                    model(*id)?,
+                    vec![modify::extend(v, *id, pt(*pick))?],
+                )])
+            }
+            EditReq::Fillet { a, pa, b, pb, r } => {
+                if a == b {
+                    return Err("서로 다른 두 선을 고르세요".into());
+                }
+                let (sa, sb) = (&v.entities[model(*a)?].shape, &v.entities[model(*b)?].shape);
+                let (na, nb, arc) = modify::fillet(sa, pt(*pa), sb, pt(*pb), *r)?;
+                reshape = Some(vec![
+                    (*a, std::iter::once(na).chain(arc).collect()),
+                    (*b, vec![nb]),
+                ]);
+            }
+            EditReq::Hatch {
+                at,
+                pattern,
+                spacing,
+            } => {
+                let ring = modify::region_at(v, pt(*at))
+                    .ok_or("누른 곳을 둘러싼 닫힌 경계를 찾지 못했습니다")?;
+                hatch = Some(modify::hatch_shape(ring, pattern, *spacing)?);
+            }
+            _ => {}
+        }
+    }
     {
         let ed = open.editor()?;
         match req {
@@ -529,6 +608,12 @@ fn edit(req: EditReq, state: State<'_, AppState>) -> Result<DocState, String> {
                 ed.add_layout(l);
             }
             EditReq::DeleteSheet { index } => ed.remove_layout(index),
+            EditReq::Trim { .. } | EditReq::Extend { .. } | EditReq::Fillet { .. } => {
+                added = ed.reshape(reshape.take().unwrap_or_default()).collect();
+            }
+            EditReq::Hatch { .. } => {
+                added = ed.add_shapes(hatch.take().into_iter().collect()).collect()
+            }
             EditReq::Undo => {
                 ed.undo();
             }

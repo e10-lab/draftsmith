@@ -275,7 +275,7 @@ class TextTool extends Tool {
   }
 }
 
-/** 정렬 치수: 두 점, 치수선 위치. 선·눈금·글자로 한 번에 넣는다 (치수 객체는 다음 단계 — 구현 노트 §26) */
+/** 정렬 치수: 두 점, 치수선 위치 → 치수 객체 (값은 두 점에서 늘 새로 셈 — 구현 노트 §28). 미리보기만 여기서 그린다 */
 class DimTool extends Tool {
   start() { this.say("치수: 첫 점"); }
   shapes(a, b, at) {
@@ -308,7 +308,8 @@ class DimTool extends Tool {
     this.pts.push(p);
     if (this.pts.length === 1) return this.say("치수: 둘째 점");
     if (this.pts.length === 2) return this.say("치수: 치수선 위치");
-    await this.app.apply({ kind: "add", shapes: this.shapes(...this.pts) });
+    const [a, b, at] = this.pts;
+    await this.app.apply({ kind: "arch", op: { kind: "dim", a, b, at, text_height: this.app.textHeight } });
     this.pts = [];
     this.say("치수: 다음 첫 점 (Enter 로 끝)");
   }
@@ -749,6 +750,159 @@ class SiteTool extends PlineTool {
   paint(ctx, ts) { strokePath(ctx, ts, this.cur ? [...this.pts, this.cur] : this.pts, true, true); }
 }
 
+// ── 자르기·연장·모깎기·해치 (§27) ─────────────────────────────────────────────
+/** 누른 객체 하나에 편집 (자르기·연장): 되풀이 */
+class PickEditTool extends Tool {
+  get snaps() { return false; }
+  start() { this.say(`${this.title}: ${this.hint} (Enter 로 끝)`); }
+  /** 좌표를 쳐도 그 점을 누른 것으로 */
+  input(t) {
+    const p = this.app.snap.parse(t, null);
+    if (!p) return false;
+    this.click(p);
+    return true;
+  }
+  async click(m) {
+    const r = await this.app.invoke("pick_at", { x: m[0], y: m[1], r: 6 / this.app.v.ppu });
+    if (!r) return;
+    if (!r.editable) return this.app.report("선·호·원·폴리선을 누르세요 (건축 객체 선은 속성으로 고칩니다)");
+    await this.app.apply({ kind: this.kind, id: r.index, pick: m });
+  }
+}
+class TrimTool extends PickEditTool {
+  get title() { return "자르기"; }
+  get kind() { return "trim"; }
+  get hint() { return "없앨 부분을 누르세요 — 다른 선과 만나는 곳에서 끊음"; }
+}
+class ExtendTool extends PickEditTool {
+  get title() { return "연장"; }
+  get kind() { return "extend"; }
+  get hint() { return "늘릴 끝 가까이를 누르세요 — 처음 만나는 선까지"; }
+}
+
+class FilletTool extends Tool {
+  get snaps() { return false; }
+  start() {
+    this.first = null;
+    this.say(`모깎기 (반지름 ${fmt(this.app.filletRadius)} — 숫자로 바꿈, 0 이면 모서리): 첫 선`);
+  }
+  input(t) {
+    const r = Number(t.trim());
+    if (t.trim() !== "" && r >= 0) {
+      this.app.filletRadius = r;
+      this.start();
+      return true;
+    }
+    const p = this.app.snap.parse(t, null);
+    if (!p) return false;
+    this.click(p);
+    return true;
+  }
+  async click(m) {
+    const r = await this.app.invoke("pick_at", { x: m[0], y: m[1], r: 6 / this.app.v.ppu });
+    if (!r?.editable) return this.app.report("선을 누르세요");
+    if (!this.first) {
+      this.first = { id: r.index, pick: m };
+      this.app.select.showPick(r);
+      return this.say("모깎기: 둘째 선");
+    }
+    const f = this.first;
+    this.first = null;
+    this.app.select.clear();
+    await this.app.apply({ kind: "fillet", a: f.id, pa: f.pick, b: r.index, pb: m, r: this.app.filletRadius });
+    this.say(`모깎기 (반지름 ${fmt(this.app.filletRadius)}): 다음 첫 선 (Enter 로 끝)`);
+  }
+}
+
+const PATTERNS = { SOLID: "SOLID", S: "SOLID", 칠: "SOLID", 사선: "사선", ANSI31: "사선", 격자: "격자", NET: "격자", 콘크리트: "콘크리트", AR_CONC: "콘크리트" };
+class HatchTool extends Tool {
+  get snaps() { return false; }
+  start() {
+    this.say(`해치 (${this.app.hatchPattern}, 간격 ${fmt(this.app.hatchSpacing)}): 닫힌 영역 안을 누르세요 — SOLID·사선·격자·콘크리트, 숫자는 간격`);
+  }
+  input(t) {
+    const k = t.trim();
+    const p = PATTERNS[k] || PATTERNS[k.toUpperCase()];
+    if (p) {
+      this.app.hatchPattern = p;
+      this.start();
+      return true;
+    }
+    if (Number(k) > 0) {
+      this.app.hatchSpacing = Number(k);
+      this.start();
+      return true;
+    }
+    const pt = this.app.snap.parse(t, null);
+    if (!pt) return false;
+    this.click(pt);
+    return true;
+  }
+  async click(m) {
+    await this.app.apply({ kind: "hatch", at: m, pattern: this.app.hatchPattern, spacing: this.app.hatchSpacing });
+  }
+}
+
+// ── 기둥·계단 (M3) ────────────────────────────────────────────────────────────
+class ColumnTool extends Tool {
+  start() { this.say(`기둥 (${fmt(this.app.colW)}×${fmt(this.app.colD)}): 가운데를 누르세요 — 「600x400」 처럼 치면 크기`); }
+  input(t) {
+    const m = t.trim().match(/^([\d.]+)\s*[x×*]\s*([\d.]+)$/i) || t.trim().match(/^([\d.]+)$/);
+    if (m) {
+      this.app.colW = Number(m[1]);
+      this.app.colD = Number(m[2] ?? m[1]);
+      this.start();
+      return true;
+    }
+    return super.input(t);
+  }
+  async take(p) {
+    await this.app.apply({ kind: "arch", op: { kind: "column", at: p, width: this.app.colW, depth: this.app.colD } });
+  }
+  paint(ctx, ts) {
+    if (!this.cur) return;
+    const [w, d] = [this.app.colW / 2, this.app.colD / 2], c = this.cur;
+    strokePath(ctx, ts, [[c[0] - w, c[1] - d], [c[0] + w, c[1] - d], [c[0] + w, c[1] + d], [c[0] - w, c[1] + d]], true);
+  }
+}
+
+class StairTool extends Tool {
+  start() {
+    this.say(`계단 (폭 ${fmt(this.app.stairWidth)}, ${this.app.stairRisers} 단): 오르기 시작점 — 숫자는 폭, R18 처럼 치면 단 수`);
+  }
+  input(t) {
+    const k = t.trim();
+    const r = k.match(/^R(\d+)$/i);
+    if (r) {
+      this.app.stairRisers = Number(r[1]);
+      this.pts.length ? this.say(`계단 (${this.app.stairRisers} 단): 끝점`) : this.start();
+      return true;
+    }
+    if (!this.pts.length && /^[\d.]+$/.test(k) && Number(k) > 0) {
+      this.app.stairWidth = Number(k);
+      this.start();
+      return true;
+    }
+    return super.input(t);
+  }
+  async take(p) {
+    if (!this.pts.length) {
+      this.pts.push(p);
+      return this.say("계단: 오른 끝점 (거리를 쳐도 됨)");
+    }
+    await this.app.apply({ kind: "arch", op: { kind: "stair", a: this.pts[0], b: p, width: this.app.stairWidth, risers: this.app.stairRisers } });
+    this.app.done();
+  }
+  paint(ctx, ts) {
+    if (!this.pts.length || !this.cur) return;
+    const a = this.pts[0], b = this.cur, L = dist(a, b);
+    if (L < 1e-9) return;
+    const h = this.app.stairWidth / 2, n = [-(b[1] - a[1]) / L * h, (b[0] - a[0]) / L * h];
+    strokePath(ctx, ts, [[a[0] + n[0], a[1] + n[1]], [b[0] + n[0], b[1] + n[1]], [b[0] - n[0], b[1] - n[1]], [a[0] - n[0], a[1] - n[1]]], true);
+    label(ctx, ts, b, `${fmt(L)} · 디딤판 ${fmt(L / this.app.stairRisers)}`);
+  }
+}
+
 export const TOOLS = {
   line: LineTool,
   pline: PlineTool,
@@ -772,4 +926,10 @@ export const TOOLS = {
   grid: GridTool,
   gridset: GridSetTool,
   site: SiteTool,
+  trim: TrimTool,
+  extend: ExtendTool,
+  fillet: FilletTool,
+  hatch: HatchTool,
+  column: ColumnTool,
+  stair: StairTool,
 };
