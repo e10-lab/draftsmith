@@ -5,7 +5,10 @@
 
 use std::path::Path;
 
-use acadrust::entities::{Arc, Circle, Insert, Line, LwPolyline, Text};
+use acadrust::entities::{
+    Arc, BoundaryEdge, BoundaryPath, Circle, Dimension, DimensionLinear, Hatch, HatchPattern,
+    HatchPatternLine, Insert, Line, LwPolyline, MText, PolylineEdge, Solid, Text,
+};
 use acadrust::tables::{BlockRecord, Layer};
 use acadrust::types::{Color, Vector2, Vector3};
 use acadrust::{CadDocument, DwgWriter, DxfWriter, EntityType};
@@ -40,15 +43,99 @@ fn define_door(doc: &mut CadDocument) {
     }
 }
 
-/// 대략 `n` 개 객체로 된 도면. 한 칸(6 m × 4.8 m)에 파일 객체 10 개
-/// (벽선 4, 안쪽 폴리선 1, 기둥 3, 실 이름 1, 문 블록 참조 1 — 문은 펼치면 2 개).
+/// 한 칸에 파일 객체 수
+pub const FILE_PER_CELL: usize = 12;
+/// 한 칸을 펼친 객체 수: 벽선 4, 폴리선 1, 기둥 3, 실 이름 1, 문 2, 해치 1, 치수 6
+pub const EXPANDED_PER_CELL: usize = 18;
+
+/// 치수 블록(*D) 하나: 보조선 2, 치수선 1, 화살표(SOLID) 2, 치수 문자 1 — 세계 좌표
+fn define_dimension_block(
+    doc: &mut CadDocument,
+    name: &str,
+    p1: (f64, f64),
+    p2: (f64, f64),
+    y: f64,
+) {
+    let mut br = BlockRecord::new(name);
+    br.handle = doc.allocate_handle();
+    let owner = br.handle;
+    let _ = doc.block_records.add(br);
+    let v = |x: f64, y: f64| Vector3::new(x, y, 0.0);
+    let arrow = |tip: f64, dir: f64| {
+        let mut s = Solid::new(
+            v(tip, y),
+            v(tip + dir * 250.0, y + 60.0),
+            v(tip + dir * 250.0, y - 60.0),
+            v(tip + dir * 250.0, y - 60.0),
+        );
+        s.common.color = Color::ByBlock;
+        EntityType::Solid(s)
+    };
+    let mut text = MText::new();
+    text.value = format!("{{\\fMalgun Gothic|b0;{}}}", (p2.0 - p1.0).round());
+    text.insertion_point = v((p1.0 + p2.0) / 2.0, y + 150.0);
+    text.height = 250.0;
+    text.attachment_point = acadrust::entities::AttachmentPoint::BottomCenter;
+    for e in [
+        EntityType::Line(Line::from_coords(p1.0, p1.1, 0.0, p1.0, y, 0.0)),
+        EntityType::Line(Line::from_coords(p2.0, p2.1, 0.0, p2.0, y, 0.0)),
+        EntityType::Line(Line::from_coords(p1.0, y, 0.0, p2.0, y, 0.0)),
+        arrow(p1.0, 1.0),
+        arrow(p2.0, -1.0),
+        EntityType::MText(Box::new(text)),
+    ] {
+        let mut e = on(e, "0", Color::ByBlock);
+        e.common_mut().owner_handle = owner;
+        let _ = doc.add_entity(e);
+    }
+}
+
+/// 사각형 경계 해치. `pattern` 이 true 면 45° 사선(간격 150), 아니면 솔리드
+fn square_hatch(x: f64, y: f64, w: f64, h: f64, pattern: bool) -> Hatch {
+    let mut hatch = if pattern {
+        let mut p = HatchPattern::new("ANSI31");
+        let a = std::f64::consts::FRAC_PI_4;
+        // 간격 150 의 수직 이동 = (−sin a, cos a)·150
+        p.add_line(HatchPatternLine {
+            angle: a,
+            base_point: Vector2::new(0.0, 0.0),
+            offset: Vector2::new(-a.sin() * 150.0, a.cos() * 150.0),
+            dash_lengths: Vec::new(),
+        });
+        Hatch::with_pattern(p)
+    } else {
+        Hatch::solid()
+    };
+    let mut path = BoundaryPath::new();
+    path.add_edge(BoundaryEdge::Polyline(PolylineEdge::new(
+        vec![
+            Vector2::new(x, y),
+            Vector2::new(x + w, y),
+            Vector2::new(x + w, y + h),
+            Vector2::new(x, y + h),
+        ],
+        true,
+    )));
+    hatch.add_path(path);
+    hatch
+}
+
+/// 대략 `n` 개 파일 객체로 된 도면. 한 칸(6 m × 4.8 m)에 파일 객체 [`FILE_PER_CELL`] 개
+/// (벽선 4, 안쪽 폴리선 1, 기둥 3, 실 이름 1, 문 블록 참조 1, 바닥 해치 1, 폭 치수 1).
 pub fn plan_grid(n: usize) -> CadDocument {
     let mut doc = CadDocument::new();
-    for (name, color) in [("A-WALL", 7), ("A-COLS", 4), ("A-ANNO", 2), ("A-DOOR", 1)] {
+    for (name, color) in [
+        ("A-WALL", 7),
+        ("A-COLS", 4),
+        ("A-ANNO", 2),
+        ("A-DOOR", 1),
+        ("A-HATC", 8),
+        ("A-DIMS", 3),
+    ] {
         let _ = doc.layers.add(Layer::with_color(name, Color::Index(color)));
     }
     define_door(&mut doc);
-    let cells = n.div_ceil(10).max(1);
+    let cells = n.div_ceil(FILE_PER_CELL).max(1);
     let cols = (cells as f64).sqrt().ceil() as usize;
     let (w, h) = (6000.0, 4800.0);
     let add = |doc: &mut CadDocument, e: EntityType, layer: &str| {
@@ -89,6 +176,25 @@ pub fn plan_grid(n: usize) -> CadDocument {
         let door =
             Insert::new(DOOR, Vector3::new(x + 3000.0, y + 200.0, 0.0)).with_scale(sx, 1.0, 1.0);
         add(&mut doc, EntityType::Insert(door), "A-DOOR");
+        // 바닥 해치: 칸마다 번갈아 사선 무늬·솔리드
+        let hatch = square_hatch(x + 4000.0, y + 2600.0, 1200.0, 1200.0, k % 2 == 0);
+        add(&mut doc, EntityType::Hatch(Box::new(hatch)), "A-HATC");
+        // 폭 치수: 치수 블록 *D{k} 를 함께 만든다
+        let name = format!("*D{k}");
+        let dy = y + h - 700.0;
+        define_dimension_block(&mut doc, &name, (x, y + h), (x + w, y + h), dy);
+        let mut dim = DimensionLinear::horizontal(
+            Vector3::new(x, y + h, 0.0),
+            Vector3::new(x + w, y + h, 0.0),
+        );
+        dim.definition_point = Vector3::new(x + w, dy, 0.0);
+        dim.base.block_name = name;
+        dim.base.actual_measurement = w;
+        add(
+            &mut doc,
+            EntityType::Dimension(Box::new(Dimension::Linear(dim))),
+            "A-DIMS",
+        );
     }
     doc
 }
@@ -119,7 +225,7 @@ mod tests {
         d.entities
             .iter()
             .filter_map(|e| match &e.shape {
-                Shape::Text { value, .. } => Some(value.as_str()),
+                Shape::Text(t) => Some(t.value.as_str()),
                 _ => None,
             })
             .collect()
@@ -132,8 +238,14 @@ mod tests {
         write_plan_grid(100, &path).unwrap();
         let d = read_file(&path).unwrap();
         let direct = from_document(&plan_grid(100));
-        // 10 칸 × (파일 객체 9 + 문 블록 펼친 2)
-        assert_eq!(direct.entities.len(), 110);
+        let cells = 100usize.div_ceil(FILE_PER_CELL);
+        assert_eq!(
+            direct.entities.len(),
+            cells * EXPANDED_PER_CELL,
+            "{:?}",
+            direct.skipped
+        );
+        assert!(direct.skipped.is_empty(), "{:?}", direct.skipped);
         assert_eq!(
             d.entities.len(),
             direct.entities.len(),
@@ -149,7 +261,15 @@ mod tests {
         // 문 선분은 A-DOOR 레이어·빨강(레이어 색)으로
         let door = d.layers.iter().position(|l| l.name == "A-DOOR").unwrap() as u32;
         let n = d.entities.iter().filter(|e| e.layer == door).count();
-        assert_eq!(n, 20, "{ext}");
+        assert_eq!(n, cells * 2, "{ext}");
+        // 치수 문자 = 칸 폭, 서식 코드 없이
+        assert!(t.contains(&"6000"), "{ext}: {t:?}");
+        // 해치: 무늬(선분 묶음)와 솔리드(채움)가 모두 있다
+        let kinds = d.counts();
+        assert!(
+            kinds.contains_key("해치 무늬") && kinds.contains_key("채움"),
+            "{ext}: {kinds:?}"
+        );
         assert_eq!(d.layers[door as usize].color, [255, 0, 0], "{ext}");
         std::fs::remove_dir_all(&dir).ok();
     }

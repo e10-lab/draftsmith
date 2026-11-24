@@ -1,5 +1,5 @@
-// 도면 보기 (WebGL2). 코어가 만든 표시 데이터(바이너리)를 그대로 GPU 버퍼에 올려 선으로 그린다.
-// 형식은 draftsmith_core::display 참고. 화면이 바뀔 때만 다시 그린다 (계속 그리지 않음).
+// 도면 보기. 선·채움은 WebGL2, 문자는 그 위 Canvas 2D 층에 글꼴로 그린다.
+// 표시 데이터 형식은 draftsmith_core::display 참고. 화면이 바뀔 때만 다시 그린다 (계속 그리지 않음).
 
 const VS = `#version 300 es
 in vec2 pos;
@@ -18,6 +18,14 @@ in vec4 vcol;
 out vec4 color;
 void main() { color = vcol; }`;
 
+// 도면 글자 높이(대문자·한글 높이)에 맞추려면 글꼴 크기를 조금 키워야 한다
+const EM_PER_HEIGHT = 1.35;
+// MTEXT 줄 간격 (AutoCAD 기본 「최소」 간격 = 글자 높이의 5/3)
+const LINE_GAP = 5 / 3;
+// 이보다 작게 보이는 글자는 그리지 않는다 (화면 점)
+const MIN_TEXT_PX = 3;
+const FONT = `"Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", sans-serif`;
+
 function shader(gl, type, src) {
   const s = gl.createShader(type);
   gl.shaderSource(s, src);
@@ -26,9 +34,51 @@ function shader(gl, type, src) {
   return s;
 }
 
+/** 선분·삼각형 하나당 색 하나를 꼭짓점마다로 늘린다 */
+function perVertex(colors, count, verts) {
+  const out = new Uint8Array(count * verts * 4);
+  for (let i = 0; i < count; i++) {
+    for (let v = 0; v < verts; v++) {
+      const d = (i * verts + v) * 4, s = i * 4;
+      out[d] = colors[s]; out[d + 1] = colors[s + 1]; out[d + 2] = colors[s + 2]; out[d + 3] = colors[s + 3];
+    }
+  }
+  return out;
+}
+
+/** DST1 문자 표시 데이터 → 배열 */
+function parseTexts(buf) {
+  if (!buf || buf.byteLength < 24) return [];
+  const dv = new DataView(buf);
+  const magic = String.fromCharCode(...new Uint8Array(buf, 0, 4));
+  if (magic !== "DST1") throw new Error("문자 데이터 형식이 다릅니다");
+  const k = dv.getUint32(4, true);
+  const dec = new TextDecoder();
+  const out = new Array(k);
+  let p = 24;
+  for (let i = 0; i < k; i++) {
+    const f = (j) => dv.getFloat32(p + j * 4, true);
+    const t = { x: f(0), y: f(1), h: f(2), rot: f(3), wf: f(4), ha: f(5) };
+    p += 24;
+    t.va = dv.getUint8(p);
+    t.color = `rgb(${dv.getUint8(p + 1)},${dv.getUint8(p + 2)},${dv.getUint8(p + 3)})`;
+    const len = dv.getUint32(p + 4, true);
+    p += 8;
+    t.lines = dec.decode(new Uint8Array(buf, p, len)).split("\n");
+    p += len;
+    // 화면 밖 걸러내기용 대략 반지름 (도면 단위)
+    const longest = Math.max(...t.lines.map((l) => l.length));
+    t.r = Math.hypot(longest * t.h * t.wf, t.lines.length * t.h * LINE_GAP) + t.h;
+    out[i] = t;
+  }
+  return out;
+}
+
 export class Viewer {
-  constructor(canvas, onCursor) {
+  constructor(canvas, textCanvas, onCursor) {
     this.cv = canvas;
+    this.tc = textCanvas;
+    this.ctx = textCanvas.getContext("2d");
     this.onCursor = onCursor;
     const gl = canvas.getContext("webgl2", { antialias: true, alpha: false });
     if (!gl) throw new Error("WebGL2 를 쓸 수 없습니다");
@@ -41,10 +91,9 @@ export class Viewer {
     this.prog = p;
     this.uCenter = gl.getUniformLocation(p, "center");
     this.uScale = gl.getUniformLocation(p, "scale");
-    this.vao = gl.createVertexArray();
-    this.posBuf = gl.createBuffer();
-    this.colBuf = gl.createBuffer();
-    this.count = 0;             // 꼭짓점 수
+    this.lines = this.mesh();
+    this.tris = this.mesh();
+    this.texts = [];
     this.origin = [0, 0];
     this.bbox = [0, 0, 0, 0];
     this.center = [0, 0];
@@ -54,42 +103,48 @@ export class Viewer {
     new ResizeObserver(() => this.draw()).observe(canvas);
   }
 
-  /** 표시 데이터(ArrayBuffer)를 올린다. 걸린 시간(ms)을 돌려준다 */
-  load(buf) {
-    const t = performance.now();
-    const dv = new DataView(buf);
-    const magic = String.fromCharCode(...new Uint8Array(buf, 0, 4));
-    if (magic !== "DSD1") throw new Error("표시 데이터 형식이 다릅니다");
-    const n = dv.getUint32(4, true);
-    this.origin = [dv.getFloat64(8, true), dv.getFloat64(16, true)];
-    this.bbox = [0, 1, 2, 3].map((i) => dv.getFloat32(24 + i * 4, true));
-    const coords = new Float32Array(buf, 40, n * 4);
-    const colors = new Uint8Array(buf, 40 + n * 16, n * 4);
-    // 선분 색은 두 끝점에 같게 — 꼭짓점마다 색 하나로 늘린다
-    const vcol = new Uint8Array(n * 8);
-    for (let i = 0; i < n; i++) {
-      const s = i * 4, d = i * 8;
-      vcol[d] = vcol[d + 4] = colors[s];
-      vcol[d + 1] = vcol[d + 5] = colors[s + 1];
-      vcol[d + 2] = vcol[d + 6] = colors[s + 2];
-      vcol[d + 3] = vcol[d + 7] = colors[s + 3];
-    }
+  mesh() {
     const gl = this.gl;
-    gl.bindVertexArray(this.vao);
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.posBuf);
+    return { vao: gl.createVertexArray(), pos: gl.createBuffer(), col: gl.createBuffer(), count: 0 };
+  }
+
+  upload(m, coords, vcol) {
+    const gl = this.gl;
+    gl.bindVertexArray(m.vao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, m.pos);
     gl.bufferData(gl.ARRAY_BUFFER, coords, gl.STATIC_DRAW);
     const aPos = gl.getAttribLocation(this.prog, "pos");
     gl.enableVertexAttribArray(aPos);
     gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.colBuf);
+    gl.bindBuffer(gl.ARRAY_BUFFER, m.col);
     gl.bufferData(gl.ARRAY_BUFFER, vcol, gl.STATIC_DRAW);
     const aCol = gl.getAttribLocation(this.prog, "col");
     gl.enableVertexAttribArray(aCol);
     gl.vertexAttribPointer(aCol, 4, gl.UNSIGNED_BYTE, true, 0, 0);
     gl.bindVertexArray(null);
-    this.count = n * 2;
-    this.fit();
-    gl.finish();
+    m.count = coords.length / 2;
+  }
+
+  /** 표시 데이터(선·채움 ArrayBuffer, 문자 ArrayBuffer)를 올린다. 걸린 시간(ms)을 돌려준다 */
+  load(buf, textBuf, { keepView = false } = {}) {
+    const t = performance.now();
+    const dv = new DataView(buf);
+    const magic = String.fromCharCode(...new Uint8Array(buf, 0, 4));
+    if (magic !== "DSD2") throw new Error("표시 데이터 형식이 다릅니다");
+    const n = dv.getUint32(4, true), m = dv.getUint32(8, true);
+    this.origin = [dv.getFloat64(12, true), dv.getFloat64(20, true)];
+    this.bbox = [0, 1, 2, 3].map((i) => dv.getFloat32(28 + i * 4, true));
+    let p = 44;
+    const segs = new Float32Array(buf, p, n * 4); p += n * 16;
+    const segCol = new Uint8Array(buf, p, n * 4); p += n * 4;
+    const tris = new Float32Array(buf, p, m * 6); p += m * 24;
+    const triCol = new Uint8Array(buf, p, m * 4);
+    this.upload(this.lines, segs, perVertex(segCol, n, 2));
+    this.upload(this.tris, tris, perVertex(triCol, m, 3));
+    this.texts = parseTexts(textBuf);
+    if (!keepView) this.fit();
+    else this.draw();
+    this.gl.finish();
     return performance.now() - t;
   }
 
@@ -125,18 +180,59 @@ export class Viewer {
     const dpr = window.devicePixelRatio || 1;
     const r = cv.getBoundingClientRect();
     const w = Math.max(1, Math.round(r.width * dpr)), h = Math.max(1, Math.round(r.height * dpr));
-    if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+    for (const c of [cv, this.tc]) {
+      if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+    }
     gl.viewport(0, 0, w, h);
     const bg = getComputedStyle(cv.parentElement).backgroundColor.match(/\d+/g) || [27, 29, 33];
     gl.clearColor(bg[0] / 255, bg[1] / 255, bg[2] / 255, 1);
     gl.clear(gl.COLOR_BUFFER_BIT);
-    if (!this.count) return;
     gl.useProgram(this.prog);
     gl.uniform2f(this.uCenter, this.center[0], this.center[1]);
     gl.uniform2f(this.uScale, (2 * this.ppu) / r.width, (2 * this.ppu) / r.height);
-    gl.bindVertexArray(this.vao);
-    gl.drawArrays(gl.LINES, 0, this.count);
+    // 채움 먼저, 그 위에 선
+    for (const [m, mode] of [[this.tris, gl.TRIANGLES], [this.lines, gl.LINES]]) {
+      if (!m.count) continue;
+      gl.bindVertexArray(m.vao);
+      gl.drawArrays(mode, 0, m.count);
+    }
     gl.bindVertexArray(null);
+    this.renderTexts(r.width, r.height, dpr);
+  }
+
+  renderTexts(W, H, dpr) {
+    const ctx = this.ctx;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, this.tc.width, this.tc.height);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const [cx, cy] = this.center, k = this.ppu;
+    // 보이는 영역 (도면 단위)
+    const hw = W / 2 / k, hh = H / 2 / k;
+    let drawn = 0;
+    for (const t of this.texts) {
+      const px = t.h * k;
+      if (px < MIN_TEXT_PX) continue;
+      if (Math.abs(t.x - cx) > hw + t.r || Math.abs(t.y - cy) > hh + t.r) continue;
+      const sx = W / 2 + (t.x - cx) * k, sy = H / 2 - (t.y - cy) * k;
+      const n = t.lines.length, gap = px * LINE_GAP;
+      // 세로 맞춤: 첫 줄 바탕선이 0 일 때 글자 덩어리는 [−px, (n−1)·gap]
+      let dy = 0;
+      if (t.va === 1) dy = -(n - 1) * gap;                 // 아래
+      else if (t.va === 2) dy = -((n - 1) * gap - px) / 2; // 가운데
+      else if (t.va === 3) dy = px;                        // 위
+      ctx.save();
+      ctx.translate(sx, sy);
+      ctx.rotate(-t.rot);
+      ctx.scale(t.wf || 1, 1);
+      ctx.font = `${px * EM_PER_HEIGHT}px ${FONT}`;
+      ctx.fillStyle = t.color;
+      ctx.textAlign = t.ha >= 0.75 ? "right" : t.ha >= 0.25 ? "center" : "left";
+      ctx.textBaseline = "alphabetic";
+      for (let i = 0; i < n; i++) ctx.fillText(t.lines[i], 0, dy + i * gap);
+      ctx.restore();
+      drawn++;
+    }
+    this.textsDrawn = drawn;
   }
 
   bindInput() {
@@ -158,7 +254,7 @@ export class Viewer {
       this.draw();
     });
     cv.addEventListener("pointerup", () => (drag = null));
-    // 휠·트랙패드: 커서 위치를 중심으로 확대·축소 (트랙패드 두 손가락 이동은 ctrl 없이 오는 작은 값)
+    // 휠·트랙패드: 커서 위치를 중심으로 확대·축소 (트랙패드 두 손가락 오므리기는 ctrlKey 로 온다)
     cv.addEventListener("wheel", (e) => {
       e.preventDefault();
       const r = cv.getBoundingClientRect();

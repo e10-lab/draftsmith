@@ -11,6 +11,8 @@ description = "DraftSmith 코어 — 도면 모델, DXF·DWG 가져오기, 화�
 # DXF·DWG 읽기·쓰기 (MPL-2.0, 순수 Rust) — 구현 노트 §3
 acadrust = "0.6.8"
 thiserror = "2"
+# 채움(해치·솔리드) 삼각형 분할 — MIT OR Apache-2.0
+earcut = "0.4"
 
 [lints]
 workspace = true

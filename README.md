@@ -11,8 +11,8 @@
 
 | 할 수 있는 것 | 비고 |
 |---|---|
-| DXF·DWG 열기 (선·폴리선·원·호·타원·문자, 블록 펼치기) | acadrust. 해치·치수는 아직 개수만 알림 |
-| 도면 보기 — 이동·확대·전체 보기, 레이어 켜기·끄기 | WebGL2. 문자는 아직 밑줄로 자리만 표시 |
+| DXF·DWG 열기 — 선·폴리선·원·호·타원·스플라인·솔리드·해치(채움·무늬)·치수·문자, 블록 펼치기 | acadrust |
+| 도면 보기 — 이동·확대·전체 보기, 레이어 켜기·끄기, 한글 문자 | WebGL2 + 글꼴 층 |
 | `dsmith info / sample / bench / display` | 도면 정보, 측정용 도면 만들기, 시간 측정 |
 
 계획 전체는 [docs/ROADMAP.md](docs/ROADMAP.md), 결정과 근거는 [docs/implementation-notes.md](docs/implementation-notes.md).

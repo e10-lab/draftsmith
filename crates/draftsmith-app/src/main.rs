@@ -33,6 +33,15 @@ fn app_version() -> &'static str {
     env!("DRAFTSMITH_VERSION")
 }
 
+/// 실행할 때 넘긴 도면 경로 (`draftsmith-app 도면.dwg`, 파일 연결로 열기). 없으면 null
+#[tauri::command]
+fn startup_file() -> Option<String> {
+    std::env::args()
+        .skip(1)
+        .find(|a| !a.starts_with('-'))
+        .filter(|a| std::path::Path::new(a).is_file())
+}
+
 /// 파일 고르기 대화상자. 취소하면 null
 #[tauri::command]
 fn pick_drawing() -> Option<String> {
@@ -133,15 +142,25 @@ fn display_data(state: State<'_, AppState>) -> Result<Response, String> {
     Ok(Response::new(display::segments(d).to_bytes()))
 }
 
+/// 문자 표시 데이터 (바이너리, 형식은 `draftsmith_core::display::texts`)
+#[tauri::command]
+fn text_data(state: State<'_, AppState>) -> Result<Response, String> {
+    let open = state.lock().map_err(err)?;
+    let d = open.drawing.as_ref().ok_or("열린 도면이 없습니다")?;
+    Ok(Response::new(display::texts(d)))
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             app_version,
+            startup_file,
             pick_drawing,
             open_drawing,
             set_layer_visible,
-            display_data
+            display_data,
+            text_data
         ])
         .run(tauri::generate_context!())
         .expect("앱을 시작하지 못했습니다");

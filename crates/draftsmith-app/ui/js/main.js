@@ -6,7 +6,7 @@ const $ = (id) => document.getElementById(id);
 const fmt = (n) => n.toLocaleString("ko-KR");
 const ms = (v) => `${Math.round(v)} ms`;
 
-const viewer = new Viewer($("view"), (x, y) => {
+const viewer = new Viewer($("view"), $("text"), (x, y) => {
   $("cursor").textContent = `X ${fmt(Math.round(x))}  Y ${fmt(Math.round(y))}`;
 });
 
@@ -14,13 +14,27 @@ function status(text) {
   $("status").textContent = text;
 }
 
-/** 표시 데이터를 받아 그린다. 전달·올리기 시간을 돌려준다 (M0 ① 측정) */
-async function refresh() {
+/** Tauri 바이너리 응답을 ArrayBuffer 로. 플랫폼에 따라 ArrayBuffer·Uint8Array·숫자 배열(JSON 대체 경로)로 온다.
+ *  숫자 배열이면 느린 경로라 상태 막대에 알린다 (구현 노트 §6). */
+let slowPath = false;
+function toBuffer(v) {
+  if (v instanceof ArrayBuffer) return v;
+  if (ArrayBuffer.isView(v)) return v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength);
+  if (Array.isArray(v)) {
+    slowPath = true;
+    return Uint8Array.from(v).buffer;
+  }
+  throw new Error(`표시 데이터를 받지 못했습니다 (${typeof v})`);
+}
+
+/** 표시 데이터(선·채움, 문자)를 받아 그린다. 전달·올리기 시간을 돌려준다 (M0 ① 측정).
+ *  keepView 면 보던 위치·배율을 그대로 둔다 (레이어 켜기·끄기). */
+async function refresh(keepView = false) {
   const t = performance.now();
-  const buf = await invoke("display_data");
+  const [buf, textBuf] = (await Promise.all([invoke("display_data"), invoke("text_data")])).map(toBuffer);
   const transfer = performance.now() - t;
-  const upload = viewer.load(buf);
-  return { transfer, upload, mb: buf.byteLength / 1e6 };
+  const upload = viewer.load(buf, textBuf, { keepView });
+  return { transfer, upload, mb: (buf.byteLength + textBuf.byteLength) / 1e6 };
 }
 
 function renderLayers(sum) {
@@ -33,7 +47,7 @@ function renderLayers(sum) {
     cb.checked = l.visible;
     cb.addEventListener("change", async () => {
       await invoke("set_layer_visible", { index: i, visible: cb.checked });
-      await refresh();
+      await refresh(true);
     });
     const sw = document.createElement("span");
     sw.className = "sw";
@@ -64,7 +78,7 @@ async function open(path) {
       `${name} · 객체 ${fmt(sum.entities)} 개` +
         (sum.inserts ? ` (블록 ${fmt(sum.inserts)} 개 펼침)` : "") +
         ` · 읽기 ${ms(sum.read_ms)} · ` +
-        `전달 ${ms(t.transfer)} (${t.mb.toFixed(1)} MB) · 올리기 ${ms(t.upload)}`,
+        `전달 ${ms(t.transfer)} (${t.mb.toFixed(1)} MB${slowPath ? ", 느린 경로" : ""}) · 올리기 ${ms(t.upload)}`,
     );
   } catch (e) {
     status(`열지 못했습니다: ${e}`);
@@ -88,3 +102,5 @@ window.addEventListener("keydown", (e) => {
 });
 
 invoke("app_version").then((v) => ($("version").textContent = v));
+// 실행할 때 넘긴 도면이 있으면 바로 연다
+invoke("startup_file").then((p) => p && open(p));

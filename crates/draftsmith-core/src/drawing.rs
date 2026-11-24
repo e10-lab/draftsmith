@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::curve;
 use crate::geom::{Affine, Bbox, Vec2};
 
 /// 레이어
@@ -25,6 +26,36 @@ pub struct Entity {
     /// 객체 자체 색. `None` 이면 레이어 색
     pub color: Option<[u8; 3]>,
     pub shape: Shape,
+}
+
+/// 문자 세로 맞춤
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VAlign {
+    /// 글자 바탕선 (TEXT 기본)
+    #[default]
+    Baseline,
+    Bottom,
+    Middle,
+    /// 첫 줄 위 (MTEXT 기본)
+    Top,
+}
+
+/// 문자
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextShape {
+    /// 맞춤 기준점
+    pub at: Vec2,
+    /// 글자 높이 (도면 단위)
+    pub height: f64,
+    /// 진행 방향 (라디안)
+    pub rotation: f64,
+    /// 가로 폭 배율 (1 = 보통)
+    pub width_factor: f64,
+    /// 가로 맞춤: 0 왼쪽, 0.5 가운데, 1 오른쪽
+    pub halign: f64,
+    pub valign: VAlign,
+    /// 보이는 글자 (서식 코드 걷어 냄). 여러 줄이면 `\n`
+    pub value: String,
 }
 
 /// 모양. 각도는 라디안, 반시계 방향.
@@ -58,40 +89,15 @@ pub enum Shape {
         start: f64,
         end: f64,
     },
-    /// 한 줄 문자. 글꼴 처리는 M0 ⑥ 에서 — 지금은 위치·크기만 쓴다.
-    Text {
-        at: Vec2,
-        height: f64,
-        rotation: f64,
-        value: String,
+    /// 칠한 영역 (짝홀 규칙). 솔리드 해치·SOLID·치수 화살표
+    Fill {
+        loops: Vec<Vec<Vec2>>,
     },
-}
-
-/// 불지 호 하나를 꼭짓점으로 펼친다 (끝점 `b` 는 넣지 않음). 비균등 변환 전에 쓴다.
-fn bulge_points(a: Vec2, b: Vec2, bulge: f64, out: &mut Vec<(Vec2, f64)>) {
-    out.push((a, 0.0));
-    let chord = a.dist(b);
-    if bulge.abs() < 1e-9 || chord < 1e-12 {
-        return;
-    }
-    let sweep = 4.0 * bulge.atan();
-    let r = chord / (2.0 * (sweep / 2.0).sin().abs());
-    let m = a.lerp(b, 0.5);
-    let h = (r * r - (chord / 2.0).powi(2)).max(0.0).sqrt();
-    let (ux, uy) = ((b.x - a.x) / chord, (b.y - a.y) / chord);
-    // 반원보다 작은 호는 중심이 진행 방향 왼쪽(불지 양수일 때), 큰 호는 반대쪽
-    let side = if (bulge > 0.0) == (sweep.abs() < std::f64::consts::PI) {
-        1.0
-    } else {
-        -1.0
-    };
-    let c = Vec2::new(m.x - uy * h * side, m.y + ux * h * side);
-    let start = (a.y - c.y).atan2(a.x - c.x);
-    let n = 32;
-    for i in 1..n {
-        let t = start + sweep * i as f64 / n as f64;
-        out.push((Vec2::new(c.x + r * t.cos(), c.y + r * t.sin()), 0.0));
-    }
+    /// 선분 묶음 (해치 무늬처럼 한 객체가 선분 여럿)
+    Segments {
+        lines: Vec<(Vec2, Vec2)>,
+    },
+    Text(TextShape),
 }
 
 impl Shape {
@@ -104,24 +110,21 @@ impl Shape {
             },
             Shape::Polyline { points, closed } => {
                 let pts = if t.is_conformal() || points.iter().all(|(_, g)| g.abs() < 1e-9) {
-                    // 등각이면 불지가 그대로 (대칭은 is_conformal 에서 빠지므로 부호도 그대로)
+                    // 등각이면 불지가 그대로
                     points.iter().map(|(p, g)| (t.apply(*p), *g)).collect()
                 } else if t.is_anticonformal() {
                     // 대칭 + 균등 축척(+회전): 호 모양은 그대로, 방향만 바뀌어 불지 부호를 뒤집는다
                     points.iter().map(|(p, g)| (t.apply(*p), -*g)).collect()
                 } else {
-                    // 그 밖(비균등 축척 등): 호를 꼭짓점으로 펼친 뒤 변환
-                    let n = points.len();
-                    let mut flat = Vec::new();
-                    for i in 0..n {
-                        let (p, g) = points[i];
-                        if i + 1 < n || *closed {
-                            bulge_points(p, points[(i + 1) % n].0, g, &mut flat);
-                        } else {
-                            flat.push((p, 0.0));
-                        }
-                    }
-                    flat.into_iter().map(|(p, _)| (t.apply(p), 0.0)).collect()
+                    // 그 밖(비균등 축척 등): 호를 꼭짓점으로 펼친 뒤 변환 (호 하나 32 조각 이상)
+                    let r = points
+                        .iter()
+                        .map(|(p, _)| p.x.abs().max(p.y.abs()))
+                        .fold(1.0, f64::max);
+                    curve::polyline_points(points, *closed, r * 1e-4)
+                        .into_iter()
+                        .map(|p| (t.apply(p), 0.0))
+                        .collect()
                 };
                 Shape::Polyline {
                     points: pts,
@@ -192,22 +195,40 @@ impl Shape {
                 start: *start,
                 end: *end,
             },
-            Shape::Text {
-                at,
-                height,
-                rotation,
-                value,
-            } => {
-                // 높이는 글자 위쪽 방향이 늘어난 만큼, 방향은 글자 진행 방향이 돈 만큼
-                let (s, c) = rotation.sin_cos();
+            Shape::Fill { loops } => Shape::Fill {
+                loops: loops
+                    .iter()
+                    .map(|r| r.iter().map(|p| t.apply(*p)).collect())
+                    .collect(),
+            },
+            Shape::Segments { lines } => Shape::Segments {
+                lines: lines
+                    .iter()
+                    .map(|(a, b)| (t.apply(*a), t.apply(*b)))
+                    .collect(),
+            },
+            Shape::Text(x) => {
+                // 높이는 글자 위쪽 방향이 늘어난 만큼, 방향은 진행 방향이 돈 만큼.
+                // 대칭이면 글자는 뒤집지 않고 읽을 수 있게 둔다 (AutoCAD MIRRTEXT=0 과 같음).
+                let (s, c) = x.rotation.sin_cos();
                 let up = t.linear(Vec2::new(-s, c));
                 let dir = t.linear(Vec2::new(c, s));
-                Shape::Text {
-                    at: t.apply(*at),
-                    height: height * up.x.hypot(up.y),
+                let (dir, halign) = if t.mirrors() {
+                    (Vec2::new(-dir.x, -dir.y), 1.0 - x.halign)
+                } else {
+                    (dir, x.halign)
+                };
+                let h = up.x.hypot(up.y);
+                let w = dir.x.hypot(dir.y);
+                Shape::Text(TextShape {
+                    at: t.apply(x.at),
+                    height: x.height * h,
                     rotation: dir.y.atan2(dir.x),
-                    value: value.clone(),
-                }
+                    width_factor: x.width_factor * if h > 0.0 { w / h } else { 1.0 },
+                    halign,
+                    valign: x.valign,
+                    value: x.value.clone(),
+                })
             }
         }
     }
@@ -235,13 +256,29 @@ impl Shape {
                 b.add(Vec2::new(center.x - hx, center.y - hy));
                 b.add(Vec2::new(center.x + hx, center.y + hy));
             }
-            Shape::Text {
-                at, height, value, ..
-            } => {
-                b.add(*at);
-                // 대략 폭: 글자 수 × 높이
-                let w = value.chars().count() as f64 * height;
-                b.add(Vec2::new(at.x + w, at.y + height));
+            Shape::Fill { loops } => {
+                for p in loops.iter().flatten() {
+                    b.add(*p);
+                }
+            }
+            Shape::Segments { lines } => {
+                for (p, q) in lines {
+                    b.add(*p);
+                    b.add(*q);
+                }
+            }
+            Shape::Text(x) => {
+                // 대략: 글자 수 × 높이 (돌림은 무시)
+                b.add(x.at);
+                let w = x
+                    .value
+                    .lines()
+                    .map(|l| l.chars().count())
+                    .max()
+                    .unwrap_or(0) as f64
+                    * x.height
+                    * x.width_factor;
+                b.add(Vec2::new(x.at.x + w, x.at.y + x.height));
             }
         }
         b
@@ -293,7 +330,9 @@ impl Drawing {
                 Shape::Circle { .. } => "원",
                 Shape::Arc { .. } => "호",
                 Shape::Ellipse { .. } => "타원",
-                Shape::Text { .. } => "문자",
+                Shape::Fill { .. } => "채움",
+                Shape::Segments { .. } => "해치 무늬",
+                Shape::Text(_) => "문자",
             };
             *m.entry(k).or_insert(0) += 1;
         }

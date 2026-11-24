@@ -906,6 +906,7 @@ name = "draftsmith-core"
 version = "0.1.0"
 dependencies = [
  "acadrust",
+ "earcut",
  "thiserror 2.0.21",
 ]
 
@@ -935,6 +936,15 @@ name = "dyn-clone"
 version = "1.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
+
+[[package]]
+name = "earcut"
+version = "0.4.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "beecb4bee051769371e9fd229b2168782e484bd50fc5f48e9ccce4172a0037d7"
+dependencies = [
+ "num-traits",
+]
 
 [[package]]
 name = "either"

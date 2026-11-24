@@ -1,8 +1,8 @@
 //! DXF·DWG 가져오기 (acadrust → 도면 모델).
 //!
 //! 모형 공간 객체를 읽고, 블록 참조(INSERT)는 블록 정의를 변환해 펼친다 (구현 노트 §5).
-//! 가져오는 모양: 선·폴리선(LW·2D)·원·호·타원·한 줄 문자·여러 줄 문자(위치만)·블록 속성값.
-//! 해치·치수 등 그 밖의 객체는 [`Drawing::skipped`] 에 개수만 남긴다.
+//! 가져오는 모양: 선·폴리선(LW·2D)·원·호·타원·스플라인·솔리드·해치(채움·무늬)·치수(치수 블록)·
+//! 한 줄 문자·여러 줄 문자·블록 속성값. 그 밖의 객체는 [`Drawing::skipped`] 에 개수만 남긴다.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -11,8 +11,14 @@ use acadrust::types::{Color, Vector3};
 use acadrust::{CadDocument, DwgReader, DxfReader, EntityType};
 use thiserror::Error;
 
-use crate::drawing::{Drawing, Entity, Shape};
-use crate::geom::{Affine, Vec2};
+use crate::curve;
+use crate::drawing::{Drawing, Entity, Shape, TextShape, VAlign};
+use crate::fill::{self, PatternLine};
+use crate::geom::{Affine, Bbox, Vec2};
+use crate::text::{plain_mtext, plain_text};
+
+/// 해치 하나에서 만들 무늬 선분의 최대 수. 넘으면 무늬 대신 경계선만 그린다.
+pub const MAX_PATTERN_SEGMENTS: usize = 200_000;
 
 /// 블록 안 블록을 펼치는 최대 깊이. 정의가 서로를 부르는 깨진 도면에서 끝없이 돌지 않게.
 pub const MAX_BLOCK_DEPTH: usize = 16;
@@ -194,20 +200,71 @@ impl<'a> Converter<'a> {
                 }
             }
             EntityType::Text(x) => {
-                let s = Shape::Text {
+                return self.push(layer, color, text_shape(x), &ocs(&x.normal).then(t));
+            }
+            EntityType::MText(x) => {
+                // 붙는 점 1–9: (위·가운데·아래) × (왼·가운데·오른)
+                let k = (x.attachment_point as i32 - 1).clamp(0, 8);
+                let valign = match k / 3 {
+                    0 => VAlign::Top,
+                    1 => VAlign::Middle,
+                    _ => VAlign::Bottom,
+                };
+                Shape::Text(TextShape {
                     at: v2(&x.insertion_point),
                     height: x.height,
                     rotation: x.rotation,
-                    value: x.value.clone(),
-                };
+                    width_factor: 1.0,
+                    halign: (k % 3) as f64 / 2.0,
+                    valign,
+                    value: plain_mtext(&x.value),
+                })
+            }
+            EntityType::Solid(x) => {
+                // SOLID 꼭짓점 순서는 1-2-4-3 (3·4 가 같으면 삼각형)
+                let mut ring = vec![
+                    v2(&x.first_corner),
+                    v2(&x.second_corner),
+                    v2(&x.fourth_corner),
+                    v2(&x.third_corner),
+                ];
+                ring.dedup();
+                if ring.len() > 1 && ring.first() == ring.last() {
+                    ring.pop();
+                }
+                let s = Shape::Fill { loops: vec![ring] };
                 return self.push(layer, color, s, &ocs(&x.normal).then(t));
             }
-            EntityType::MText(x) => Shape::Text {
-                at: v2(&x.insertion_point),
-                height: x.height,
-                rotation: x.rotation,
-                value: x.value.clone(),
-            },
+            EntityType::Spline(x) => {
+                let pts = spline_entity_points(x);
+                if pts.len() < 2 {
+                    self.skip("SPLINE(빈 것)");
+                    return;
+                }
+                Shape::Polyline {
+                    points: pts.into_iter().map(|p| (p, 0.0)).collect(),
+                    closed: x.flags.closed,
+                }
+            }
+            EntityType::Hatch(x) => return self.hatch(x, layer, color, t),
+            EntityType::Dimension(x) => {
+                // 치수는 그려 둔 익명 블록(*D…)을 펼친다. 블록 안 좌표는 이미 세계 좌표.
+                let name = x.base().block_name.clone();
+                if name.is_empty() || self.doc.block_records.get(&name).is_none() {
+                    // 블록이 없는 파일(다른 프로그램이 쓴 것 등): 선형·평행 치수는 간단히 그린다
+                    match simple_dimension(x) {
+                        Some(shapes) => {
+                            for s in shapes {
+                                self.push(layer, color, s, t);
+                            }
+                        }
+                        None => self.skip("DIMENSION(치수 블록 없음)"),
+                    }
+                    return;
+                }
+                self.block(&name, &[Affine::IDENTITY.then(t)], Inherit { layer, color });
+                return;
+            }
             EntityType::Insert(x) => return self.insert(x, layer, color, t),
             other => {
                 self.skip(other.as_entity().entity_type());
@@ -219,6 +276,67 @@ impl<'a> Converter<'a> {
 
     /// 블록 참조 펼치기:
     /// 블록 안 좌표 → (−기준점) → 축척 → 회전 → 삽입점(배열이면 칸마다) → 돌출 방향(OCS) → 바깥 변환 `t`
+    /// 블록 정의를 `places` 의 변환마다 펼친다 (블록 참조·치수 공용).
+    fn block(&mut self, name: &str, places: &[Affine], inherit: Inherit) {
+        if self.stack.len() >= MAX_BLOCK_DEPTH || self.stack.iter().any(|n| n == name) {
+            self.skip("블록 순환·깊이 초과");
+            return;
+        }
+        let doc = self.doc;
+        self.stack.push(name.to_string());
+        for place in places {
+            for e in doc.entities_in_block(name) {
+                self.entity(e, place, Some(inherit));
+            }
+        }
+        self.stack.pop();
+    }
+
+    /// 해치: 경계 고리를 만들고, 솔리드·그러데이션이면 채움, 무늬면 경계 안 무늬 선분.
+    fn hatch(
+        &mut self,
+        h: &acadrust::entities::Hatch,
+        layer: u32,
+        color: Option<[u8; 3]>,
+        t: &Affine,
+    ) {
+        let loops = hatch_loops(h);
+        if loops.is_empty() {
+            self.skip("HATCH(경계 없음)");
+            return;
+        }
+        let place = ocs(&h.normal).then(t);
+        let lines: Vec<PatternLine> = h
+            .pattern
+            .lines
+            .iter()
+            .map(|l| PatternLine {
+                angle: l.angle,
+                base: Vec2::new(l.base_point.x, l.base_point.y),
+                offset: Vec2::new(l.offset.x, l.offset.y),
+                dashes: l.dash_lengths.clone(),
+            })
+            .collect();
+        let shape = if h.is_solid || lines.is_empty() {
+            Shape::Fill { loops }
+        } else {
+            match fill::pattern_segments(&loops, &lines, MAX_PATTERN_SEGMENTS) {
+                Some(segs) => Shape::Segments { lines: segs },
+                None => {
+                    // 너무 촘촘한 무늬(축척이 잘못된 해치 등): 경계선만
+                    self.skip("HATCH(무늬 과밀 — 경계선만)");
+                    Shape::Segments {
+                        lines: loops
+                            .iter()
+                            .flat_map(|r| (0..r.len()).map(move |i| (r[i], r[(i + 1) % r.len()])))
+                            .collect(),
+                    }
+                }
+            }
+        };
+        self.push(layer, color, shape, &place);
+    }
+
     fn insert(
         &mut self,
         x: &acadrust::entities::Insert,
@@ -231,10 +349,6 @@ impl<'a> Converter<'a> {
             self.skip("블록 정의 없음");
             return;
         };
-        if self.stack.len() >= MAX_BLOCK_DEPTH || self.stack.iter().any(|n| n == &x.block_name) {
-            self.skip("블록 순환·깊이 초과");
-            return;
-        }
         let base = &block.base_point;
         let local = Affine::translate(-base.x, -base.y)
             .then(&Affine::scale(x.x_scale(), x.y_scale()))
@@ -249,15 +363,12 @@ impl<'a> Converter<'a> {
             self.skip("배열 블록 한도 초과");
         }
         let inherit = Some(Inherit { layer, color });
-        self.stack.push(x.block_name.clone());
-        for p in points {
-            self.d.inserts += 1;
-            let place = local.then(&Affine::translate(p.x, p.y)).then(&outer);
-            for e in doc.entities_in_block(&x.block_name) {
-                self.entity(e, &place, inherit);
-            }
-        }
-        self.stack.pop();
+        let places: Vec<Affine> = points
+            .iter()
+            .map(|p| local.then(&Affine::translate(p.x, p.y)).then(&outer))
+            .collect();
+        self.d.inserts += places.len();
+        self.block(&x.block_name, &places, Inherit { layer, color });
 
         // 속성값(ATTRIB)은 이미 세계 좌표 — 블록 참조의 바깥 변환만 건다
         for a in &x.attributes {
@@ -265,15 +376,262 @@ impl<'a> Converter<'a> {
                 continue;
             }
             let (al, ac) = self.style(&a.common.layer, &a.common.color, inherit);
-            let s = Shape::Text {
+            let s = Shape::Text(TextShape {
                 at: v2(&a.insertion_point),
                 height: a.height,
                 rotation: a.rotation,
-                value: a.value.clone(),
-            };
+                width_factor: if a.width_factor > 0.0 {
+                    a.width_factor
+                } else {
+                    1.0
+                },
+                halign: 0.0,
+                valign: VAlign::Baseline,
+                value: plain_text(&a.value),
+            });
             self.push(al, ac, s, t);
         }
     }
+}
+
+/// TEXT 의 맞춤: 왼쪽·바탕선(또는 양쪽 맞춤·채움)이면 삽입점, 아니면 맞춤점이 기준
+fn text_shape(x: &acadrust::entities::Text) -> Shape {
+    use acadrust::entities::{TextHorizontalAlignment as H, TextVerticalAlignment as V};
+    let (halign, mut valign) = match x.horizontal_alignment {
+        H::Center => (0.5, None),
+        H::Right => (1.0, None),
+        H::Middle => (0.5, Some(VAlign::Middle)),
+        _ => (0.0, None),
+    };
+    let v = match x.vertical_alignment {
+        V::Bottom => VAlign::Bottom,
+        V::Middle => VAlign::Middle,
+        V::Top => VAlign::Top,
+        _ => VAlign::Baseline,
+    };
+    let valign = valign.take().unwrap_or(v);
+    let plain = matches!(x.horizontal_alignment, H::Left | H::Aligned | H::Fit)
+        && valign == VAlign::Baseline;
+    let at = if plain {
+        v2(&x.insertion_point)
+    } else {
+        x.alignment_point
+            .as_ref()
+            .map(v2)
+            .unwrap_or_else(|| v2(&x.insertion_point))
+    };
+    Shape::Text(TextShape {
+        at,
+        height: x.height,
+        rotation: x.rotation,
+        width_factor: if x.width_factor > 0.0 {
+            x.width_factor
+        } else {
+            1.0
+        },
+        halign,
+        valign,
+        value: plain_text(&x.value),
+    })
+}
+
+/// SPLINE 위의 점들 (조정점이 없으면 맞춤점을 잇는다)
+fn spline_entity_points(x: &acadrust::entities::Spline) -> Vec<Vec2> {
+    let ctrl: Vec<Vec2> = x.control_points.iter().map(v2).collect();
+    if ctrl.len() >= 2 {
+        let w = if x.flags.rational {
+            x.weights.as_slice()
+        } else {
+            &[]
+        };
+        curve::spline_points(x.degree.max(1) as usize, &x.knots, &ctrl, w, 16)
+    } else {
+        x.fit_points.iter().map(v2).collect()
+    }
+}
+
+/// 해치 경계 고리들 (해치 OCS 좌표). 곡선 변은 경계 크기의 1/5000 오차로 펼친다.
+fn hatch_loops(h: &acadrust::entities::Hatch) -> Vec<Vec<Vec2>> {
+    use acadrust::entities::BoundaryEdge as E;
+    // 허용 오차를 정하려고 먼저 대략의 크기를 잰다
+    let mut bb = Bbox::EMPTY;
+    for path in &h.paths {
+        for e in &path.edges {
+            match e {
+                E::Line(l) => {
+                    bb.add(Vec2::new(l.start.x, l.start.y));
+                    bb.add(Vec2::new(l.end.x, l.end.y));
+                }
+                E::CircularArc(a) => {
+                    bb.add(Vec2::new(a.center.x - a.radius, a.center.y - a.radius));
+                    bb.add(Vec2::new(a.center.x + a.radius, a.center.y + a.radius));
+                }
+                E::EllipticArc(a) => bb.add(Vec2::new(a.center.x, a.center.y)),
+                E::Spline(s) => s.control_points.iter().for_each(|p| bb.add(v2(p))),
+                E::Polyline(p) => p.vertices.iter().for_each(|v| bb.add(Vec2::new(v.x, v.y))),
+            }
+        }
+    }
+    let tol = (bb.width().hypot(bb.height()) / 5000.0).max(1e-9);
+    let mut loops = Vec::new();
+    for path in &h.paths {
+        let mut ring: Vec<Vec2> = Vec::new();
+        for e in &path.edges {
+            let mut pts = Vec::new();
+            match e {
+                E::Line(l) => pts.push(Vec2::new(l.start.x, l.start.y)),
+                E::CircularArc(a) => {
+                    // 시계 방향 호는 각도가 거울상으로 저장된다: −시작에서 −끝까지 시계 방향
+                    let c = Vec2::new(a.center.x, a.center.y);
+                    let (u, v) = (Vec2::new(a.radius, 0.0), Vec2::new(0.0, a.radius));
+                    let sweep = curve::ccw_sweep(a.start_angle, a.end_angle);
+                    if a.counter_clockwise {
+                        curve::ellipse_points(c, u, v, a.start_angle, sweep, tol, &mut pts);
+                    } else {
+                        curve::ellipse_points(c, u, v, -a.start_angle, -sweep, tol, &mut pts);
+                    }
+                    pts.pop();
+                }
+                E::EllipticArc(a) => {
+                    let c = Vec2::new(a.center.x, a.center.y);
+                    let u = Vec2::new(a.major_axis_endpoint.x, a.major_axis_endpoint.y);
+                    let v = Vec2::new(-u.y * a.minor_axis_ratio, u.x * a.minor_axis_ratio);
+                    let sweep = curve::ccw_sweep(a.start_angle, a.end_angle);
+                    if a.counter_clockwise {
+                        curve::ellipse_points(c, u, v, a.start_angle, sweep, tol, &mut pts);
+                    } else {
+                        curve::ellipse_points(c, u, v, -a.start_angle, -sweep, tol, &mut pts);
+                    }
+                    pts.pop();
+                }
+                E::Spline(sp) => {
+                    let ctrl: Vec<Vec2> = sp.control_points.iter().map(v2).collect();
+                    pts = if ctrl.len() >= 2 {
+                        let w: Vec<f64> = if sp.rational {
+                            sp.control_points
+                                .iter()
+                                .map(|p| if p.z > 0.0 { p.z } else { 1.0 })
+                                .collect()
+                        } else {
+                            Vec::new()
+                        };
+                        curve::spline_points(sp.degree.max(1) as usize, &sp.knots, &ctrl, &w, 16)
+                    } else {
+                        sp.fit_points.iter().map(|p| Vec2::new(p.x, p.y)).collect()
+                    };
+                    pts.pop();
+                }
+                E::Polyline(p) => {
+                    let v: Vec<(Vec2, f64)> = p
+                        .vertices
+                        .iter()
+                        .map(|v| (Vec2::new(v.x, v.y), v.z))
+                        .collect();
+                    pts = curve::polyline_points(&v, true, tol);
+                }
+            }
+            ring.extend(pts);
+        }
+        ring.dedup_by(|a, b| a.dist(*b) < 1e-12);
+        if ring.len() > 1 && ring[0].dist(ring[ring.len() - 1]) < 1e-12 {
+            ring.pop();
+        }
+        if ring.len() >= 3 {
+            loops.push(ring);
+        }
+    }
+    loops
+}
+
+/// 치수 블록이 없을 때의 대체 그림: 선형·평행 치수만. 치수선·보조선·사선 끝·치수 문자.
+/// 치수 유형(글자 크기 등)은 읽지 않으므로 글자 높이는 치수 길이의 1/20 로 어림한다.
+fn simple_dimension(x: &acadrust::entities::Dimension) -> Option<Vec<Shape>> {
+    use acadrust::entities::Dimension as D;
+    let (p1, p2, dp, dir) = match x {
+        D::Linear(l) => {
+            let (s, c) = l.rotation.sin_cos();
+            (
+                v2(&l.first_point),
+                v2(&l.second_point),
+                v2(&l.definition_point),
+                Vec2::new(c, s),
+            )
+        }
+        D::Aligned(a) => {
+            let (p1, p2) = (v2(&a.first_point), v2(&a.second_point));
+            let len = p1.dist(p2);
+            if len < 1e-12 {
+                return None;
+            }
+            (
+                p1,
+                p2,
+                v2(&a.definition_point),
+                Vec2::new((p2.x - p1.x) / len, (p2.y - p1.y) / len),
+            )
+        }
+        _ => return None,
+    };
+    // 치수선은 정의점을 지나고 dir 방향. 두 점을 치수선에 내린다.
+    let foot = |p: Vec2| {
+        let t = (p.x - dp.x) * dir.x + (p.y - dp.y) * dir.y;
+        Vec2::new(dp.x + dir.x * t, dp.y + dir.y * t)
+    };
+    let (q1, q2) = (foot(p1), foot(p2));
+    let len = q1.dist(q2);
+    if len < 1e-12 {
+        return None;
+    }
+    let h = len / 20.0;
+    // 건축 도면식 사선 끝 (45°)
+    let tick = |q: Vec2| {
+        let k = h * 0.35;
+        let (dx, dy) = ((dir.x - dir.y) * k, (dir.y + dir.x) * k);
+        Shape::Line {
+            a: Vec2::new(q.x - dx, q.y - dy),
+            b: Vec2::new(q.x + dx, q.y + dy),
+        }
+    };
+    let b = x.base();
+    let value = match &b.user_text {
+        Some(t) if !t.is_empty() && t != "<>" => plain_mtext(t),
+        _ => {
+            let m = if b.actual_measurement > 0.0 {
+                b.actual_measurement
+            } else {
+                len
+            };
+            format!("{}", (m * 100.0).round() / 100.0)
+        }
+    };
+    let mid = q1.lerp(q2, 0.5);
+    let tm = v2(&b.text_middle_point);
+    let at = if tm.x == 0.0 && tm.y == 0.0 {
+        Vec2::new(mid.x - dir.y * h * 0.6, mid.y + dir.x * h * 0.6)
+    } else {
+        tm
+    };
+    let mut rot = dir.y.atan2(dir.x);
+    // 글자는 거꾸로 서지 않게
+    if rot > std::f64::consts::FRAC_PI_2 + 1e-9 || rot <= -std::f64::consts::FRAC_PI_2 {
+        rot += std::f64::consts::PI;
+    }
+    Some(vec![
+        Shape::Line { a: p1, b: q1 },
+        Shape::Line { a: p2, b: q2 },
+        Shape::Line { a: q1, b: q2 },
+        tick(q1),
+        tick(q2),
+        Shape::Text(TextShape {
+            at,
+            height: h,
+            rotation: rot,
+            width_factor: 1.0,
+            halign: 0.5,
+            valign: VAlign::Middle,
+            value,
+        }),
+    ])
 }
 
 /// acadrust 문서를 도면 모델로 바꾼다 (모형 공간, 블록 참조는 펼침).
@@ -519,5 +877,55 @@ mod tests {
             firsts.iter().any(|p| close(*p, (1200.0, 110.0))),
             "{firsts:?}"
         );
+    }
+
+    #[test]
+    fn dimension_without_block_is_drawn_simply() {
+        use acadrust::entities::{Dimension, DimensionLinear};
+        let mut doc = CadDocument::new();
+        let mut dim = DimensionLinear::horizontal(
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(3000.0, 0.0, 0.0),
+        );
+        dim.definition_point = Vector3::new(3000.0, 500.0, 0.0);
+        doc.add_entity(EntityType::Dimension(Box::new(Dimension::Linear(dim))))
+            .unwrap();
+        let d = from_document(&doc);
+        assert!(d.skipped.is_empty(), "{:?}", d.skipped);
+        // 보조선 2 + 치수선 + 사선 2 + 문자
+        assert_eq!(d.entities.len(), 6);
+        let (a, b) = line_of(&d, 2);
+        assert!(
+            close(a, (0.0, 500.0)) && close(b, (3000.0, 500.0)),
+            "{a:?} {b:?}"
+        );
+        match &d.entities[5].shape {
+            Shape::Text(t) => assert_eq!(t.value, "3000"),
+            s => panic!("{s:?}"),
+        }
+    }
+
+    #[test]
+    fn spline_becomes_polyline_through_ends() {
+        use acadrust::entities::Spline;
+        let mut doc = CadDocument::new();
+        let mut sp = Spline::new();
+        sp.degree = 2;
+        sp.knots = vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+        sp.control_points = vec![
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(1.0, 2.0, 0.0),
+            Vector3::new(2.0, 0.0, 0.0),
+        ];
+        doc.add_entity(EntityType::Spline(sp)).unwrap();
+        let d = from_document(&doc);
+        match &d.entities[0].shape {
+            Shape::Polyline { points, .. } => {
+                assert!(close(points[0].0, (0.0, 0.0)));
+                assert!(close(points[points.len() - 1].0, (2.0, 0.0)));
+                assert!(points.len() > 8);
+            }
+            s => panic!("{s:?}"),
+        }
     }
 }
