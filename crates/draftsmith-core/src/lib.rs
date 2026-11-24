@@ -13,6 +13,7 @@ pub mod drawing;
 pub mod fill;
 pub mod geom;
 pub mod import;
+pub mod pick;
 pub mod sample;
 pub mod snap;
 pub mod text;

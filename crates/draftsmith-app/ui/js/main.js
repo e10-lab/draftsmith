@@ -1,6 +1,7 @@
 // DraftSmith 화면 진입점. Rust 명령은 window.__TAURI__.core.invoke 로 부른다 (BEATS 와 같음).
 import { Viewer } from "./viewer.js";
 import { MeasureTool } from "./measure.js";
+import { SelectTool } from "./select.js";
 
 const invoke = window.__TAURI__.core.invoke;
 const $ = (id) => document.getElementById(id);
@@ -9,6 +10,7 @@ const ms = (v) => `${Math.round(v)} ms`;
 
 let opened = false;
 let measure = null;
+let select = null;
 
 const viewer = new Viewer($("view"), $("text"), $("overlay"), (x, y) => {
   const lat = measure && viewer.tool === measure ? measure.latency() : null;
@@ -16,6 +18,8 @@ const viewer = new Viewer($("view"), $("text"), $("overlay"), (x, y) => {
     `X ${fmt(Math.round(x))}  Y ${fmt(Math.round(y))}` + (lat != null ? `  · 스냅 ${lat.toFixed(1)} ms` : "");
 });
 measure = new MeasureTool(viewer, invoke, status);
+select = new SelectTool(viewer, invoke, $("props"));
+viewer.tool = select; // 기본 도구: 눌러서 고르기
 
 function status(text) {
   $("status").textContent = text;
@@ -55,6 +59,7 @@ function renderLayers(sum) {
     cb.checked = l.visible;
     cb.addEventListener("change", async () => {
       await invoke("set_layer_visible", { index: i, visible: cb.checked });
+      select.clear();
       await refresh(true);
     });
     const sw = document.createElement("span");
@@ -87,6 +92,7 @@ async function open(path) {
   status("읽는 중…");
   try {
     const sum = await invoke("open_drawing", { path });
+    select.clear();
     renderLayers(sum);
     const t = await refresh();
     const name = path.split(/[\\/]/).pop();
@@ -111,7 +117,8 @@ async function pickAndOpen() {
 
 function setMeasure(on) {
   if (on && !opened) return;
-  viewer.tool = on ? measure : null;
+  select.clear();
+  viewer.tool = on ? measure : select;
   $("measure").classList.toggle("on", on);
   if (on) measure.start();
   else measure.stop();
@@ -139,7 +146,8 @@ window.addEventListener("keydown", (e) => {
   } else if (!mod && e.code === "KeyD") {
     setMeasure(viewer.tool !== measure);
   } else if (e.key === "Escape") {
-    setMeasure(false);
+    if (viewer.tool === measure) setMeasure(false);
+    else select.clear();
   }
 });
 

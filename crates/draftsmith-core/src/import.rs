@@ -640,6 +640,7 @@ pub fn from_document(doc: &CadDocument) -> Drawing {
         doc,
         d: Drawing {
             code_page: doc.header.code_page.clone(),
+            units: doc.header.insertion_units,
             ..Default::default()
         },
         layer_ids: HashMap::new(),

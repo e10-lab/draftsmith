@@ -69,3 +69,8 @@ select {
 #view { cursor: crosshair; }
 #text, #overlay { pointer-events: none; }
 .cursor { position: absolute; right: 10px; bottom: 8px; color: #9a9ca3; font-variant-numeric: tabular-nums; }
+
+.props-panel { border-top: 1px solid var(--line); margin-top: 10px; padding-top: 10px; }
+.props { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; margin: 0; font-size: 12px; }
+.props dt { color: var(--muted); }
+.props dd { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: pre-wrap; word-break: break-all; user-select: text; font-variant-numeric: tabular-nums; }

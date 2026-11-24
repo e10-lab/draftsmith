@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Instant;
 
+use draftsmith_core::pick::{self, PickIndex};
 use draftsmith_core::snap::SnapIndex;
 use draftsmith_core::{Drawing, Vec2, display, import};
 use serde::Serialize;
@@ -26,6 +27,8 @@ struct Open {
     path: Option<PathBuf>,
     /// 스냅 점 색인 (켜진 레이어만)
     snaps: Option<SnapIndex>,
+    /// 객체 고르기 색인 (켜진 레이어만)
+    picks: Option<PickIndex>,
 }
 
 /// 최근 파일 목록 최대 개수
@@ -160,10 +163,11 @@ async fn open_drawing(
     let t = Instant::now();
     let p = PathBuf::from(&path);
     // 읽기·스냅 색인은 시간이 걸릴 수 있어 작업 스레드에서
-    let (d, snaps) = tauri::async_runtime::spawn_blocking(move || {
+    let (d, snaps, picks) = tauri::async_runtime::spawn_blocking(move || {
         import::read_file(&p).map(|d| {
             let s = SnapIndex::build(&d);
-            (d, s)
+            let k = PickIndex::build(&d);
+            (d, s, k)
         })
     })
     .await
@@ -175,6 +179,7 @@ async fn open_drawing(
     let mut open = state.lock().map_err(err)?;
     open.drawing = Some(d);
     open.snaps = Some(snaps);
+    open.picks = Some(picks);
     open.path = Some(PathBuf::from(path));
     Ok(s)
 }
@@ -218,8 +223,36 @@ fn set_layer_visible(
     l.visible = visible;
     // 꺼진 레이어에는 스냅하지 않게 색인을 다시 만든다
     let snaps = SnapIndex::build(d);
+    let picks = PickIndex::build(d);
     open.snaps = Some(snaps);
+    open.picks = Some(picks);
     Ok(())
+}
+
+#[derive(Serialize)]
+struct PickOut {
+    index: usize,
+    /// (이름, 값) — 속성 칸에 그대로
+    props: Vec<(String, String)>,
+    /// 강조 표시 선분 [x0, y0, x1, y1] (도면 좌표)
+    outline: Vec<[f64; 4]>,
+}
+
+/// 도면 좌표 (x, y) 에서 반지름 r 안의 가장 가까운 객체와 그 속성. 없으면 null
+#[tauri::command]
+fn pick_at(x: f64, y: f64, r: f64, state: State<'_, AppState>) -> Result<Option<PickOut>, String> {
+    let open = state.lock().map_err(err)?;
+    let (Some(d), Some(idx)) = (open.drawing.as_ref(), open.picks.as_ref()) else {
+        return Ok(None);
+    };
+    Ok(idx.pick(d, Vec2::new(x, y), r).map(|i| PickOut {
+        index: i,
+        props: pick::properties(d, i),
+        outline: pick::outline(&d.entities[i].shape, r / 4.0, 20_000)
+            .into_iter()
+            .map(|(a, b)| [a.x, a.y, b.x, b.y])
+            .collect(),
+    }))
 }
 
 /// 표시 데이터 (바이너리, 형식은 `draftsmith_core::display`)
@@ -248,6 +281,7 @@ fn main() {
             recent_files,
             open_drawing,
             snap,
+            pick_at,
             set_layer_visible,
             display_data,
             text_data

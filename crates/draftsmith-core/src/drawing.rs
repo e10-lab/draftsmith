@@ -296,6 +296,8 @@ pub struct Drawing {
     pub skipped: BTreeMap<String, usize>,
     /// 펼친 블록 참조 수 (배열 블록은 칸마다, 블록 안 블록도 하나씩)
     pub inserts: usize,
+    /// 도면 단위 (DXF `$INSUNITS`: 0 단위 없음, 1 인치, 2 피트, 4 mm, 5 cm, 6 m)
+    pub units: i16,
 }
 
 impl Drawing {
@@ -337,6 +339,18 @@ impl Drawing {
             *m.entry(k).or_insert(0) += 1;
         }
         m
+    }
+
+    /// 도면 단위 1 이 몇 미터인가. 단위가 없으면 국내 건축 도면 관례대로 mm 로 본다 (두 번째 값 true).
+    pub fn meters_per_unit(&self) -> (f64, bool) {
+        match self.units {
+            1 => (0.0254, false),
+            2 => (0.3048, false),
+            4 => (0.001, false),
+            5 => (0.01, false),
+            6 => (1.0, false),
+            _ => (0.001, true),
+        }
     }
 
     /// 객체의 표시 색 (객체 색이 없으면 레이어 색)
