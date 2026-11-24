@@ -193,6 +193,8 @@ struct Summary {
     read_ms: f64,
     /// 배치 이름 (탭 순서)
     layouts: Vec<String>,
+    /// 복구 모드로 읽었으면 처음 오류
+    recovered: Option<String>,
 }
 
 fn summary(d: &Drawing, path: String, read_ms: f64) -> Summary {
@@ -221,6 +223,7 @@ fn summary(d: &Drawing, path: String, read_ms: f64) -> Summary {
         skipped: d.skipped.iter().map(|(k, n)| (k.clone(), *n)).collect(),
         read_ms,
         layouts: d.layouts.iter().map(|l| l.name.clone()).collect(),
+        recovered: d.recovered.clone(),
     }
 }
 

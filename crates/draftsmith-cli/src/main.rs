@@ -62,6 +62,9 @@ fn main() -> Result<()> {
             let d = import::read_file(&file)?;
             let b = d.bbox();
             println!("파일      {}", file.display());
+            if let Some(e) = &d.recovered {
+                println!("복구      깨진 곳이 있어 복구 모드로 읽었습니다 ({e})");
+            }
             println!(
                 "문자 코드 {}",
                 if d.code_page.is_empty() {

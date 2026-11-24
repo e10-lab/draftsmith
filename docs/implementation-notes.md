@@ -184,3 +184,11 @@ CI 가 최신 안정판(1.100)으로 돌다가 새 clippy 경고(`chunks_exact_t
 - 앱: 도면 아래 「모형 | 배치…」 탭. 배치를 고르면 PDF 축척이 1:1 로 바뀐다. CLI: `dsmith pdf … --layout 이름 --scale 1`,
   `dsmith info` 에 배치 목록.
 - PDF 는 범위를 정했을 때만 잘라낸다 (도면 전체를 자르면 경계 위 도곽선이 반쯤 잘려 안 보였다), 자를 때는 1 mm 여유.
+
+## §14 복구 읽기·옛 DXF 한글 (2026-11-24)
+
+- 엄격하게 읽다 실패하면 acadrust 복구 모드(`recover`: 깨진 객체는 건너뛰고 보수적으로 고침)로 다시 읽는다.
+  성공하면 `Drawing::recovered` 에 처음 오류를 남기고 화면·CLI 에 「복구해서 읽음」 을 알린다. 복구도 실패하면
+  처음 오류를 알린다. (잘린 DXF 는 복구도 실패 — 정상. 값 하나가 깨진 DXF 는 acadrust 가 엄격 모드에서도 넘어갔다.)
+- 2007 이전 DXF 에 문자 코드(`$DWGCODEPAGE`)가 없으면 CP949 로 본다 (`DxfReaderConfiguration::default_encoding`).
+  CP949 「거실」 만 든 최소 R12 DXF 로 확인 — 화면·PDF 모두 「거실」.

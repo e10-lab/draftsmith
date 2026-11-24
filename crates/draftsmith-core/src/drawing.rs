@@ -323,6 +323,8 @@ pub struct Drawing {
     pub linetypes: Vec<LinePattern>,
     /// 배치 (종이 공간). 탭 순서대로
     pub layouts: Vec<crate::layout::Layout>,
+    /// 깨진 곳이 있어 복구 모드로 읽었으면 처음 오류 내용
+    pub recovered: Option<String>,
 }
 
 impl Drawing {

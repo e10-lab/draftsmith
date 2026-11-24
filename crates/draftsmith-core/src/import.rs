@@ -42,19 +42,44 @@ fn is_dwg(path: &Path) -> std::io::Result<bool> {
     Ok(n == 4 && &head[..2] == b"AC" && head[2].is_ascii_digit())
 }
 
-/// DXF 또는 DWG 파일을 읽는다.
+/// DXF 또는 DWG 파일을 읽는다. 엄격하게 읽다가 실패하면 복구 모드(깨진 객체는 건너뜀)로 다시 읽고,
+/// 그때는 [`Drawing::recovered`] 를 켠다 (구현 노트 §14).
 pub fn read_file(path: impl AsRef<Path>) -> Result<Drawing, ImportError> {
     let path = path.as_ref();
-    let doc = if is_dwg(path)? {
-        DwgReader::from_file(path)
-            .and_then(|mut r| r.read())
-            .map_err(|e| ImportError::Cad(e.to_string()))?
+    let dwg = is_dwg(path)?;
+    let strict = if dwg {
+        DwgReader::from_file(path).and_then(|mut r| r.read())
     } else {
-        DxfReader::from_file(path)
-            .and_then(|r| r.read())
-            .map_err(|e| ImportError::Cad(e.to_string()))?
+        DxfReader::from_file(path).and_then(|r| r.with_configuration(dxf_config(false)).read())
     };
-    Ok(from_document(&doc))
+    match strict {
+        Ok(doc) => Ok(from_document(&doc)),
+        Err(first) => {
+            let recovered = if dwg {
+                DwgReader::from_file(path).and_then(|mut r| r.recover())
+            } else {
+                DxfReader::from_file(path)
+                    .and_then(|r| r.with_configuration(dxf_config(true)).recover())
+            };
+            match recovered {
+                Ok(outcome) => {
+                    let mut d = from_document(&outcome.document);
+                    d.recovered = Some(first.to_string());
+                    Ok(d)
+                }
+                // 복구도 안 되면 처음 오류를 알린다 (더 알아보기 쉬움)
+                Err(_) => Err(ImportError::Cad(first.to_string())),
+            }
+        }
+    }
+}
+
+/// DXF 읽기 설정: 문자 코드가 적히지 않은 옛 DXF(2007 이전)는 한글(CP949)로 본다
+fn dxf_config(failsafe: bool) -> acadrust::DxfReaderConfiguration {
+    acadrust::DxfReaderConfiguration {
+        failsafe,
+        default_encoding: Some("ANSI_949".into()),
+    }
 }
 
 fn v2(v: &Vector3) -> Vec2 {

@@ -131,6 +131,7 @@ async function open(path) {
     status(
       `${name} · 객체 ${fmt(sum.entities)} 개` +
         (sum.inserts ? ` (블록 ${fmt(sum.inserts)} 개 펼침)` : "") +
+        (sum.recovered ? " · 깨진 곳이 있어 복구해서 읽음" : "") +
         ` · 읽기 ${ms(sum.read_ms)} · ` +
         `전달 ${ms(t.transfer)} (${t.mb.toFixed(1)} MB${slowPath ? ", 느린 경로" : ""}) · 올리기 ${ms(t.upload)}`,
     );
