@@ -134,6 +134,20 @@ $("recent").addEventListener("change", (e) => {
 $("fit").addEventListener("click", () => viewer.fit());
 $("measure").addEventListener("click", () => setMeasure(viewer.tool !== measure));
 
+/** 흰 배경 켜기·끄기 (이 컴퓨터에 기억) */
+function setPaper(on) {
+  viewer.paper = on;
+  $("paper").classList.toggle("on", on);
+  try {
+    localStorage.setItem("paper", on ? "1" : "0");
+  } catch {}
+  viewer.draw();
+}
+$("paper").addEventListener("click", () => setPaper(!viewer.paper));
+try {
+  setPaper(localStorage.getItem("paper") === "1");
+} catch {}
+
 window.addEventListener("keydown", (e) => {
   if (e.isComposing || e.target instanceof HTMLInputElement) return; // 한글 조합 중·입력칸에서는 단축키 없음
   // 한글 입력기가 켜져 있어도 같은 자판 위치로 동작하게 글자(e.key)가 아니라 자판 위치(e.code)로 본다
@@ -143,6 +157,8 @@ window.addEventListener("keydown", (e) => {
     pickAndOpen();
   } else if (!mod && e.code === "KeyF") {
     viewer.fit();
+  } else if (!mod && e.code === "KeyB") {
+    setPaper(!viewer.paper);
   } else if (!mod && e.code === "KeyD") {
     setMeasure(viewer.tool !== measure);
   } else if (e.key === "Escape") {

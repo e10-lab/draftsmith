@@ -15,8 +15,18 @@ void main() {
 const FS = `#version 300 es
 precision mediump float;
 in vec4 vcol;
+uniform float paper;   // 1 = 흰 배경: 흰색(ACI 7) 선을 검게 (AutoCAD 와 같음)
 out vec4 color;
-void main() { color = vcol; }`;
+void main() {
+  vec3 c = vcol.rgb;
+  if (paper > 0.5) {
+    if (min(c.r, min(c.g, c.b)) > 0.92) c = vec3(0.0);
+    // 노랑·하늘색처럼 밝은 색은 흰 바탕에서 안 보여 조금 어둡게
+    float lum = dot(c, vec3(0.299, 0.587, 0.114));
+    if (lum > 0.5) c *= 0.45 / lum;
+  }
+  color = vec4(c, vcol.a);
+}`;
 
 // 도면 글자 높이(대문자·한글 높이)에 맞추려면 글꼴 크기를 조금 키워야 한다
 const EM_PER_HEIGHT = 1.35;
@@ -61,7 +71,13 @@ function parseTexts(buf) {
     const t = { x: f(0), y: f(1), h: f(2), rot: f(3), wf: f(4), ha: f(5) };
     p += 24;
     t.va = dv.getUint8(p);
-    t.color = `rgb(${dv.getUint8(p + 1)},${dv.getUint8(p + 2)},${dv.getUint8(p + 3)})`;
+    const [cr, cg, cb] = [dv.getUint8(p + 1), dv.getUint8(p + 2), dv.getUint8(p + 3)];
+    t.color = `rgb(${cr},${cg},${cb})`;
+    t.white = Math.min(cr, cg, cb) > 235;
+    // 흰 배경용 색: 흰색은 검정, 밝은 색은 조금 어둡게 (셰이더와 같은 규칙)
+    const lum = (0.299 * cr + 0.587 * cg + 0.114 * cb) / 255;
+    const k = lum > 0.5 ? 0.45 / lum : 1;
+    t.paperColor = t.white ? "#000" : `rgb(${Math.round(cr * k)},${Math.round(cg * k)},${Math.round(cb * k)})`;
     const len = dv.getUint32(p + 4, true);
     p += 8;
     t.lines = dec.decode(new Uint8Array(buf, p, len)).split("\n");
@@ -101,6 +117,9 @@ export class Viewer {
     this.prog = p;
     this.uCenter = gl.getUniformLocation(p, "center");
     this.uScale = gl.getUniformLocation(p, "scale");
+    this.uPaper = gl.getUniformLocation(p, "paper");
+    /** 흰 배경 모드 */
+    this.paper = false;
     this.lines = this.mesh();
     this.tris = this.mesh();
     this.texts = [];
@@ -215,12 +234,13 @@ export class Viewer {
       if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
     }
     gl.viewport(0, 0, w, h);
-    const bg = getComputedStyle(cv.parentElement).backgroundColor.match(/\d+/g) || [27, 29, 33];
+    const bg = this.paper ? [255, 255, 255] : getComputedStyle(cv.parentElement).backgroundColor.match(/\d+/g) || [27, 29, 33];
     gl.clearColor(bg[0] / 255, bg[1] / 255, bg[2] / 255, 1);
     gl.clear(gl.COLOR_BUFFER_BIT);
     gl.useProgram(this.prog);
     gl.uniform2f(this.uCenter, this.center[0], this.center[1]);
     gl.uniform2f(this.uScale, (2 * this.ppu) / r.width, (2 * this.ppu) / r.height);
+    gl.uniform1f(this.uPaper, this.paper ? 1 : 0);
     // 채움 먼저, 그 위에 선
     for (const [m, mode] of [[this.tris, gl.TRIANGLES], [this.lines, gl.LINES]]) {
       if (!m.count) continue;
@@ -257,7 +277,7 @@ export class Viewer {
       ctx.rotate(-t.rot);
       ctx.scale(t.wf || 1, 1);
       ctx.font = `${px * EM_PER_HEIGHT}px ${FONT}`;
-      ctx.fillStyle = t.color;
+      ctx.fillStyle = this.paper ? t.paperColor : t.color;
       ctx.textAlign = t.ha >= 0.75 ? "right" : t.ha >= 0.25 ? "center" : "left";
       ctx.textBaseline = "alphabetic";
       for (let i = 0; i < n; i++) ctx.fillText(t.lines[i], 0, dy + i * gap);
