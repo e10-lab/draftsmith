@@ -4,3 +4,4 @@
 output/
 # M0 측정용으로 만든 큰 도면 (dsmith sample)
 examples/bench-*.dxf
+examples/bench-*.dwg
