@@ -149,7 +149,7 @@ pub fn export(d: &Drawing, o: &PdfOptions) -> Result<Vec<u8>, String> {
     let o_x = s.origin.x;
     let o_y = s.origin.y;
     let mut by_color: std::collections::BTreeMap<[u8; 3], PathBuilder> = Default::default();
-    for (i, q) in s.tri_colors.chunks_exact(4).enumerate() {
+    for (i, q) in s.tri_colors.as_chunks::<4>().0.iter().enumerate() {
         let t = &s.tris[i * 6..i * 6 + 6];
         let pb = by_color.entry([q[0], q[1], q[2]]).or_default();
         let p = |j: usize| to_page(t[j * 2] as f64 + o_x, t[j * 2 + 1] as f64 + o_y);
@@ -172,7 +172,7 @@ pub fn export(d: &Drawing, o: &PdfOptions) -> Result<Vec<u8>, String> {
     }
     // 선: (색, 굵기) 마다 경로 하나
     let mut by_style: std::collections::BTreeMap<([u8; 3], u16), PathBuilder> = Default::default();
-    for (i, q) in s.colors.chunks_exact(4).enumerate() {
+    for (i, q) in s.colors.as_chunks::<4>().0.iter().enumerate() {
         let t = &s.coords[i * 4..i * 4 + 4];
         let w = s.weights.get(i).copied().unwrap_or(0);
         let pb = by_style.entry(([q[0], q[1], q[2]], w)).or_default();

@@ -152,7 +152,7 @@ pub fn pattern_segments(
             }
             ts.sort_by(f64::total_cmp);
             let at = |t: f64| Vec2::new(o.x + d.x * t, o.y + d.y * t);
-            for span in ts.chunks_exact(2) {
+            for span in ts.as_chunks::<2>().0 {
                 let (t0, t1) = (span[0], span[1]);
                 if period < 1e-12 {
                     out.push((at(t0), at(t1)));

@@ -1,0 +1,5 @@
+# 로컬과 CI 가 같은 Rust 로 검사하게 고정한다 (새 판의 clippy 경고로 CI 만 실패하지 않게 — 구현 노트 §12).
+# 올릴 때는 이 값을 바꾸고 tools/check.sh 를 통과시킨다.
+[toolchain]
+channel = "1.97.0"
+components = ["clippy", "rustfmt"]

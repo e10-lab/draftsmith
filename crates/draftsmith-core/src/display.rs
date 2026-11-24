@@ -216,7 +216,7 @@ pub fn segments(d: &Drawing) -> Segments {
             }
             Shape::Fill { loops } => {
                 let t = fill::triangulate(loops);
-                for tri in t.chunks_exact(3) {
+                for tri in t.as_chunks::<3>().0 {
                     s.tri(tri, col);
                 }
             }

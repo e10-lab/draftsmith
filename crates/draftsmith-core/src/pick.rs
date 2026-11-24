@@ -310,7 +310,7 @@ pub fn properties(d: &Drawing, i: usize) -> Vec<(String, String)> {
         Shape::Fill { loops } => {
             // 짝홀 규칙 면적 = 삼각형 넓이 합
             let t = fill::triangulate(loops);
-            let a: f64 = t.chunks_exact(3).map(ring_area).sum();
+            let a: f64 = t.as_chunks::<3>().0.iter().map(|c| ring_area(&c[..])).sum();
             out.push(("고리".into(), loops.len().to_string()));
             out.push(("면적".into(), f(a)));
             out.push(area_m2(d, a));
