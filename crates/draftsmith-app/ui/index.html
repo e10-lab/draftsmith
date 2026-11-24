@@ -9,8 +9,11 @@
 <body>
   <header class="bar">
     <strong class="brand">DraftSmith</strong>
-    <button id="open" data-tip="도면 열기 (⌘O)">열기</button>
-    <button id="fit" data-tip="도면 전체 보기 (F)">전체 보기</button>
+    <button id="open" title="도면 열기 (⌘O / Ctrl+O) — 파일을 창에 끌어 놓아도 됩니다">열기</button>
+    <select id="recent" title="최근에 연 도면"><option value="">최근 파일</option></select>
+    <span class="sep"></span>
+    <button id="fit" title="도면 전체 보기 (F, 두 번 누르기)">전체 보기</button>
+    <button id="measure" class="toggle" title="거리 재기 (D) — 끝점·중간점·중심에 붙습니다. Esc 로 끝">측정</button>
     <span class="sep"></span>
     <span id="status" class="status">DWG·DXF 도면을 여세요</span>
     <span class="grow"></span>
@@ -25,6 +28,7 @@
     <section class="stage">
       <canvas id="view"></canvas>
       <canvas id="text"></canvas>
+      <canvas id="overlay"></canvas>
       <div id="cursor" class="cursor muted small"></div>
     </section>
   </main>

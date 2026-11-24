@@ -10,16 +10,64 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Instant;
 
-use draftsmith_core::{Drawing, display, import};
+use draftsmith_core::snap::SnapIndex;
+use draftsmith_core::{Drawing, Vec2, display, import};
 use serde::Serialize;
-use tauri::State;
 use tauri::ipc::Response;
+use tauri::{AppHandle, Manager, State};
 
 /// 열린 도면
 #[derive(Default)]
 struct Open {
     drawing: Option<Drawing>,
     path: Option<PathBuf>,
+    /// 스냅 점 색인 (켜진 레이어만)
+    snaps: Option<SnapIndex>,
+}
+
+/// 최근 파일 목록 최대 개수
+const RECENT_MAX: usize = 12;
+
+/// 최근 파일 목록 파일 (앱 설정 폴더의 recent.txt, 한 줄에 경로 하나)
+fn recent_path(app: &AppHandle) -> Option<PathBuf> {
+    app.path()
+        .app_config_dir()
+        .ok()
+        .map(|d| d.join("recent.txt"))
+}
+
+fn read_recent(app: &AppHandle) -> Vec<String> {
+    recent_path(app)
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|s| {
+            s.lines()
+                .filter(|l| !l.is_empty())
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 최근 파일 목록 (있는 파일만)
+#[tauri::command]
+fn recent_files(app: AppHandle) -> Vec<String> {
+    read_recent(&app)
+        .into_iter()
+        .filter(|p| std::path::Path::new(p).is_file())
+        .collect()
+}
+
+fn remember(app: &AppHandle, path: &str) {
+    let mut list = read_recent(app);
+    list.retain(|p| p != path);
+    list.insert(0, path.to_string());
+    list.truncate(RECENT_MAX);
+    if let Some(p) = recent_path(app) {
+        if let Some(dir) = p.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(p, list.join("\n") + "\n");
+    }
 }
 
 type AppState = Mutex<Open>;
@@ -101,20 +149,54 @@ fn summary(d: &Drawing, path: String, read_ms: f64) -> Summary {
 
 /// 도면을 읽어 앱에 들고, 요약을 돌려준다
 #[tauri::command]
-async fn open_drawing(path: String, state: State<'_, AppState>) -> Result<Summary, String> {
+async fn open_drawing(
+    path: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Summary, String> {
     let t = Instant::now();
     let p = PathBuf::from(&path);
-    // 읽기는 시간이 걸릴 수 있어 작업 스레드에서
-    let d = tauri::async_runtime::spawn_blocking(move || import::read_file(&p))
-        .await
-        .map_err(err)?
-        .map_err(err)?;
+    // 읽기·스냅 색인은 시간이 걸릴 수 있어 작업 스레드에서
+    let (d, snaps) = tauri::async_runtime::spawn_blocking(move || {
+        import::read_file(&p).map(|d| {
+            let s = SnapIndex::build(&d);
+            (d, s)
+        })
+    })
+    .await
+    .map_err(err)?
+    .map_err(err)?;
     let read_ms = t.elapsed().as_secs_f64() * 1000.0;
     let s = summary(&d, path.clone(), read_ms);
+    remember(&app, &path);
     let mut open = state.lock().map_err(err)?;
     open.drawing = Some(d);
+    open.snaps = Some(snaps);
     open.path = Some(PathBuf::from(path));
     Ok(s)
+}
+
+#[derive(Serialize)]
+struct SnapOut {
+    x: f64,
+    y: f64,
+    /// 0 끝점, 1 중간점, 2 중심, 3 사분점, 4 삽입점
+    kind: u8,
+}
+
+/// 도면 좌표 (x, y) 에서 반지름 r 안의 가장 가까운 스냅 점. 없으면 null
+#[tauri::command]
+fn snap(x: f64, y: f64, r: f64, state: State<'_, AppState>) -> Result<Option<SnapOut>, String> {
+    let open = state.lock().map_err(err)?;
+    Ok(open
+        .snaps
+        .as_ref()
+        .and_then(|i| i.nearest(Vec2::new(x, y), r))
+        .map(|s| SnapOut {
+            x: s.at.x,
+            y: s.at.y,
+            kind: s.kind as u8,
+        }))
 }
 
 /// 레이어 켜기·끄기
@@ -131,6 +213,9 @@ fn set_layer_visible(
         .get_mut(index)
         .ok_or("레이어 번호가 잘못되었습니다")?;
     l.visible = visible;
+    // 꺼진 레이어에는 스냅하지 않게 색인을 다시 만든다
+    let snaps = SnapIndex::build(d);
+    open.snaps = Some(snaps);
     Ok(())
 }
 
@@ -157,7 +242,9 @@ fn main() {
             app_version,
             startup_file,
             pick_drawing,
+            recent_files,
             open_drawing,
+            snap,
             set_layer_visible,
             display_data,
             text_data

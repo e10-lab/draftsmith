@@ -14,6 +14,7 @@ pub mod fill;
 pub mod geom;
 pub mod import;
 pub mod sample;
+pub mod snap;
 pub mod text;
 
 pub use drawing::{Drawing, Entity, Layer, Shape, TextShape, VAlign};

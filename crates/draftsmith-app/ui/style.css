@@ -1,3 +1,7 @@
+/* 내장 글꼴: Pretendard (SIL OFL 1.1, fonts/Pretendard-LICENSE.txt) — 화면과 도면 문자가 macOS·Windows 에서 같게 */
+@font-face { font-family: "Pretendard"; font-weight: 400; src: url("fonts/Pretendard-Regular.woff2") format("woff2"); }
+@font-face { font-family: "Pretendard"; font-weight: 600; src: url("fonts/Pretendard-SemiBold.woff2") format("woff2"); }
+
 /* DraftSmith 화면. 색·간격은 아래 변수(디자인 토큰)로만 쓴다 — 시안(M0 ⑦)이 나오면 여기서 바꾼다. */
 :root {
   --bg: #f6f6f4;
@@ -41,7 +45,12 @@ button {
   font: inherit; color: var(--text); background: transparent;
   border: 1px solid var(--line); border-radius: var(--radius); padding: 3px 10px; cursor: pointer;
 }
-button:hover { border-color: var(--accent); }
+button:hover, select:hover { border-color: var(--accent); }
+button.toggle.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+select {
+  font: inherit; color: var(--text); background: transparent; max-width: 220px;
+  border: 1px solid var(--line); border-radius: var(--radius); padding: 2px 6px;
+}
 .status { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .muted { color: var(--muted); }
 .small { font-size: 11px; }
@@ -56,7 +65,7 @@ button:hover { border-color: var(--accent); }
 .layers .sw { width: 10px; height: 10px; border-radius: 2px; flex: none; box-shadow: inset 0 0 0 1px var(--line); }
 .layers .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .stage { flex: 1; position: relative; background: var(--stage); }
-#view, #text { position: absolute; inset: 0; width: 100%; height: 100%; }
+#view, #text, #overlay { position: absolute; inset: 0; width: 100%; height: 100%; }
 #view { cursor: crosshair; }
-#text { pointer-events: none; }
+#text, #overlay { pointer-events: none; }
 .cursor { position: absolute; right: 10px; bottom: 8px; color: #9a9ca3; font-variant-numeric: tabular-nums; }

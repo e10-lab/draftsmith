@@ -75,11 +75,21 @@ function parseTexts(buf) {
 }
 
 export class Viewer {
-  constructor(canvas, textCanvas, onCursor) {
+  /**
+   * @param canvas      WebGL2 (선·채움)
+   * @param textCanvas  Canvas 2D (문자)
+   * @param overlay     Canvas 2D (도구: 스냅 표시·측정선 — 마우스가 움직일 때마다 이것만 다시 그림)
+   * @param onCursor    (x, y) 도면 좌표 커서 위치 알림
+   */
+  constructor(canvas, textCanvas, overlay, onCursor) {
     this.cv = canvas;
     this.tc = textCanvas;
+    this.ov = overlay;
     this.ctx = textCanvas.getContext("2d");
+    this.octx = overlay.getContext("2d");
     this.onCursor = onCursor;
+    /** 지금 도구: { move(m), click(m), paint(ctx, toScreen) } — m 은 도면 좌표 [x, y] */
+    this.tool = null;
     const gl = canvas.getContext("webgl2", { antialias: true, alpha: false });
     if (!gl) throw new Error("WebGL2 를 쓸 수 없습니다");
     this.gl = gl;
@@ -101,6 +111,27 @@ export class Viewer {
     this.pending = false;
     this.bindInput();
     new ResizeObserver(() => this.draw()).observe(canvas);
+    // 내장 글꼴을 읽은 뒤 문자를 다시 그린다 (처음엔 대체 글꼴로 그려질 수 있음)
+    document.fonts?.load(`16px "Pretendard"`, "가A").then(() => this.draw(), () => {});
+  }
+
+  /** 도면 좌표 → 화면 점 (CSS px) */
+  toScreen(x, y) {
+    const r = this.cv.getBoundingClientRect();
+    return [
+      r.width / 2 + (x - this.origin[0] - this.center[0]) * this.ppu,
+      r.height / 2 - (y - this.origin[1] - this.center[1]) * this.ppu,
+    ];
+  }
+
+  /** 도구 층만 다시 그린다 */
+  drawOverlay() {
+    const dpr = window.devicePixelRatio || 1;
+    const ctx = this.octx;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, this.ov.width, this.ov.height);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    this.tool?.paint?.(ctx, (x, y) => this.toScreen(x, y));
   }
 
   mesh() {
@@ -180,7 +211,7 @@ export class Viewer {
     const dpr = window.devicePixelRatio || 1;
     const r = cv.getBoundingClientRect();
     const w = Math.max(1, Math.round(r.width * dpr)), h = Math.max(1, Math.round(r.height * dpr));
-    for (const c of [cv, this.tc]) {
+    for (const c of [cv, this.tc, this.ov]) {
       if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
     }
     gl.viewport(0, 0, w, h);
@@ -198,6 +229,7 @@ export class Viewer {
     }
     gl.bindVertexArray(null);
     this.renderTexts(r.width, r.height, dpr);
+    this.drawOverlay();
   }
 
   renderTexts(W, H, dpr) {
@@ -237,23 +269,35 @@ export class Viewer {
 
   bindInput() {
     const cv = this.cv;
-    let drag = null;
+    // 끌기 = 화면 이동 (왼쪽·가운데 버튼), 제자리 누르기 = 도구 클릭
+    let down = null;
+    const model = (e) => {
+      const r = cv.getBoundingClientRect();
+      const [mx, my] = this.toModel(e.clientX - r.left, e.clientY - r.top);
+      return [mx + this.origin[0], my + this.origin[1]];
+    };
     cv.addEventListener("pointerdown", (e) => {
-      drag = { x: e.clientX, y: e.clientY, c: [...this.center] };
+      down = { x: e.clientX, y: e.clientY, c: [...this.center], moved: false, button: e.button };
       cv.setPointerCapture(e.pointerId);
     });
     cv.addEventListener("pointermove", (e) => {
-      const r = cv.getBoundingClientRect();
-      const [mx, my] = this.toModel(e.clientX - r.left, e.clientY - r.top);
-      this.onCursor?.(mx + this.origin[0], my + this.origin[1]);
-      if (!drag) return;
-      this.center = [
-        drag.c[0] - (e.clientX - drag.x) / this.ppu,
-        drag.c[1] + (e.clientY - drag.y) / this.ppu,
-      ];
-      this.draw();
+      const m = model(e);
+      this.onCursor?.(m[0], m[1]);
+      if (down) {
+        const dx = e.clientX - down.x, dy = e.clientY - down.y;
+        if (!down.moved && Math.hypot(dx, dy) < 4) return;
+        down.moved = true;
+        this.center = [down.c[0] - dx / this.ppu, down.c[1] + dy / this.ppu];
+        this.draw();
+        return;
+      }
+      this.tool?.move?.(m);
     });
-    cv.addEventListener("pointerup", () => (drag = null));
+    cv.addEventListener("pointerup", (e) => {
+      const click = down && !down.moved && down.button === 0;
+      down = null;
+      if (click) this.tool?.click?.(model(e));
+    });
     // 휠·트랙패드: 커서 위치를 중심으로 확대·축소 (트랙패드 두 손가락 오므리기는 ctrlKey 로 온다)
     cv.addEventListener("wheel", (e) => {
       e.preventDefault();
