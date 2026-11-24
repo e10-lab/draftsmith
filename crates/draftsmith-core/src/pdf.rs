@@ -67,15 +67,10 @@ impl Default for PdfOptions {
     }
 }
 
-/// 흰 종이용 색: 흰색은 검정, 밝은 색은 어둡게 (화면 흰 배경과 같은 규칙). 흑백이면 검정 (채움은 회색 유지).
-fn paper_color(c: [u8; 3], mono: bool, fill: bool) -> rgb::Color {
+/// 흰 종이용 색: 흰색은 검정, 밝은 색은 어둡게 (화면 흰 배경과 같은 규칙).
+/// 흑백이면 선·글자·채움 모두 검정 (AutoCAD monochrome.ctb 와 같음 — 설계사무소에서 익숙한 결과).
+fn paper_color(c: [u8; 3], mono: bool) -> rgb::Color {
     if mono {
-        if fill {
-            // 채움은 밝기를 회색으로 (솔리드 해치가 새까맣게 덮지 않게)
-            let lum = (0.299 * c[0] as f64 + 0.587 * c[1] as f64 + 0.114 * c[2] as f64) / 255.0;
-            let g = (255.0 * (0.35 + 0.5 * (1.0 - lum).min(1.0))).round() as u8;
-            return rgb::Color::new(g, g, g);
-        }
         return rgb::Color::new(0, 0, 0);
     }
     if c.iter().all(|&v| v > 235) {
@@ -168,28 +163,36 @@ pub fn export(d: &Drawing, o: &PdfOptions) -> Result<Vec<u8>, String> {
         if let Some(path) = pb.finish() {
             surface.set_stroke(None);
             surface.set_fill(Some(Fill {
-                paint: paper_color(col, o.mono, true).into(),
+                paint: paper_color(col, o.mono).into(),
                 opacity: NormalizedF32::ONE,
                 rule: FillRule::NonZero,
             }));
             surface.draw_path(&path);
         }
     }
+    // 선: (색, 굵기) 마다 경로 하나
+    let mut by_style: std::collections::BTreeMap<([u8; 3], u16), PathBuilder> = Default::default();
     for (i, q) in s.colors.chunks_exact(4).enumerate() {
         let t = &s.coords[i * 4..i * 4 + 4];
-        let pb = by_color.entry([q[0], q[1], q[2]]).or_default();
+        let w = s.weights.get(i).copied().unwrap_or(0);
+        let pb = by_style.entry(([q[0], q[1], q[2]], w)).or_default();
         let a = to_page(t[0] as f64 + o_x, t[1] as f64 + o_y);
         let b = to_page(t[2] as f64 + o_x, t[3] as f64 + o_y);
         pb.move_to(a.0, a.1);
         pb.line_to(b.0, b.1);
     }
-    let width = (o.line_mm * PT_PER_MM) as f32;
     surface.set_fill(None);
-    for (col, pb) in by_color {
+    for ((col, w), pb) in by_style {
         if let Some(path) = pb.finish() {
+            // 객체 굵기가 있으면 그것 (가장 가는 펜 0.05 mm), 없으면 기본 굵기
+            let mm = if w > 0 {
+                (w as f64 / 100.0).max(0.05)
+            } else {
+                o.line_mm
+            };
             surface.set_stroke(Some(Stroke {
-                paint: paper_color(col, o.mono, false).into(),
-                width,
+                paint: paper_color(col, o.mono).into(),
+                width: (mm * PT_PER_MM) as f32,
                 miter_limit: 4.0,
                 line_cap: LineCap::Round,
                 line_join: LineJoin::Round,
@@ -212,7 +215,7 @@ pub fn export(d: &Drawing, o: &PdfOptions) -> Result<Vec<u8>, String> {
             continue;
         }
         surface.set_fill(Some(Fill {
-            paint: paper_color(d.color_of(e), o.mono, false).into(),
+            paint: paper_color(d.color_of(e), o.mono).into(),
             opacity: NormalizedF32::ONE,
             rule: FillRule::NonZero,
         }));

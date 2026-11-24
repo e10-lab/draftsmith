@@ -79,6 +79,8 @@ struct Inherit {
     color: Option<[u8; 3]>,
     /// 블록 참조의 선 종류 — 블록 안 ByBlock 선 종류 객체가 이것으로 (배율에 블록 축척은 아직 안 곱함)
     linetype: Option<LineStyle>,
+    /// 블록 참조의 선 굵기 — 블록 안 ByBlock 선 굵기 객체가 이것으로
+    weight: Option<u16>,
 }
 
 struct Converter<'a> {
@@ -95,6 +97,10 @@ struct Converter<'a> {
     ltscale: f64,
     /// 지금 넣는 객체의 선 종류 (`style` 이 정하고 `push` 가 쓴다)
     cur_lt: Option<LineStyle>,
+    /// 레이어 번호 → 레이어 선 굵기 (1/100 mm)
+    layer_w: Vec<Option<u16>>,
+    /// 지금 넣는 객체의 선 굵기
+    cur_w: Option<u16>,
 }
 
 impl<'a> Converter<'a> {
@@ -151,6 +157,14 @@ impl<'a> Converter<'a> {
                 scale: self.ltscale * own,
             }),
         };
+        self.cur_w = match common.line_weight {
+            acadrust::types::LineWeight::ByLayer => {
+                self.layer_w.get(layer as usize).copied().flatten()
+            }
+            acadrust::types::LineWeight::ByBlock => inherit.and_then(|h| h.weight),
+            acadrust::types::LineWeight::Default => None,
+            acadrust::types::LineWeight::Value(v) => (v >= 0).then_some(v as u16),
+        };
         (layer, color)
     }
 
@@ -168,8 +182,13 @@ impl<'a> Converter<'a> {
         } else {
             shape.transformed(t)
         };
+        let weight = match shape {
+            Shape::Fill { .. } | Shape::Text(_) => None,
+            _ => self.cur_w,
+        };
         self.d.entities.push(Entity {
             layer,
+            weight,
             linetype,
             color,
             shape,
@@ -307,6 +326,7 @@ impl<'a> Converter<'a> {
                     return;
                 }
                 let linetype = self.cur_lt;
+                let weight = self.cur_w;
                 self.block(
                     &name,
                     &[Affine::IDENTITY.then(t)],
@@ -314,6 +334,7 @@ impl<'a> Converter<'a> {
                         layer,
                         color,
                         linetype,
+                        weight,
                     },
                 );
                 return;
@@ -416,10 +437,12 @@ impl<'a> Converter<'a> {
             self.skip("배열 블록 한도 초과");
         }
         let linetype = self.cur_lt;
+        let weight = self.cur_w;
         let inherit = Some(Inherit {
             layer,
             color,
             linetype,
+            weight,
         });
         let places: Vec<Affine> = points
             .iter()
@@ -433,6 +456,7 @@ impl<'a> Converter<'a> {
                 layer,
                 color,
                 linetype,
+                weight,
             },
         );
 
@@ -719,6 +743,8 @@ pub fn from_document(doc: &CadDocument) -> Drawing {
             1.0
         },
         cur_lt: None,
+        layer_w: Vec::new(),
+        cur_w: None,
     };
     // 선 종류 무늬 (대시가 있는 것만 — CONTINUOUS 등 실선은 넣지 않는다)
     for lt in doc.line_types.iter() {
@@ -741,6 +767,13 @@ pub fn from_document(doc: &CadDocument) -> Drawing {
             c.layer_lt.resize(i + 1, None);
         }
         c.layer_lt[i] = lt;
+        if c.layer_w.len() <= i {
+            c.layer_w.resize(i + 1, None);
+        }
+        c.layer_w[i] = match l.line_weight {
+            acadrust::types::LineWeight::Value(v) if v >= 0 => Some(v as u16),
+            _ => None,
+        };
         let layer = &mut c.d.layers[i];
         if let Some((r, g, b)) = l.color.rgb() {
             layer.color = [r, g, b];

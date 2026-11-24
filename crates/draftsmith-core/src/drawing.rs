@@ -27,6 +27,8 @@ pub struct Entity {
     pub color: Option<[u8; 3]>,
     /// 선 종류 (점선·중심선 등). `None` 이면 실선
     pub linetype: Option<LineStyle>,
+    /// 선 굵기 (1/100 mm). `None` 이면 기본 굵기 (출력 설정에서 정함)
+    pub weight: Option<u16>,
     pub shape: Shape,
 }
 

@@ -407,6 +407,7 @@ mod tests {
         let mut put = |shape| {
             d.entities.push(Entity {
                 layer,
+                weight: None,
                 linetype: None,
                 color: None,
                 shape,

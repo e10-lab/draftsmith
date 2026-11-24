@@ -149,6 +149,12 @@ pub fn plan_grid(n: usize) -> CadDocument {
         if name == "A-GRID" {
             layer.line_type = "CENTER".into();
         }
+        // 선 굵기 (1/100 mm): 벽 0.5, 치수 0.13
+        match name {
+            "A-WALL" => layer.line_weight = acadrust::types::LineWeight::Value(50),
+            "A-DIMS" => layer.line_weight = acadrust::types::LineWeight::Value(13),
+            _ => {}
+        }
         let _ = doc.layers.add(layer);
     }
     define_door(&mut doc);
@@ -293,6 +299,19 @@ mod tests {
             .and_then(|e| e.linetype)
             .expect("선 종류");
         assert_eq!(d.linetypes[lt.pattern as usize].name, "CENTER", "{ext}");
+        // 레이어 선 굵기: 벽 0.5 mm, 치수 블록 안(「0」 레이어 → 치수 레이어) 0.13 mm
+        let wall = d.layers.iter().position(|l| l.name == "A-WALL").unwrap() as u32;
+        let dims = d.layers.iter().position(|l| l.name == "A-DIMS").unwrap() as u32;
+        let w_of = |layer: u32| {
+            d.entities
+                .iter()
+                .find(|e| {
+                    e.layer == layer && !matches!(e.shape, Shape::Text(_) | Shape::Fill { .. })
+                })
+                .and_then(|e| e.weight)
+        };
+        assert_eq!(w_of(wall), Some(50), "{ext}");
+        assert_eq!(w_of(dims), Some(13), "{ext}");
         // 해치: 무늬(선분 묶음)와 솔리드(채움)가 모두 있다
         let kinds = d.counts();
         assert!(

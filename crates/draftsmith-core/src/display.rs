@@ -54,6 +54,10 @@ pub struct Segments {
     /// 삼각형 x0, y0, x1, y1, x2, y2 (origin 기준)
     pub tris: Vec<f32>,
     pub tri_colors: Vec<u8>,
+    /// 선분 굵기 (1/100 mm, 0 = 기본) — 바이너리에는 넣지 않음 (PDF 용)
+    pub weights: Vec<u16>,
+    /// 지금 넣는 객체의 굵기
+    cur_w: u16,
 }
 
 impl Segments {
@@ -79,6 +83,7 @@ impl Segments {
             (b.y - o.y) as f32,
         ]);
         self.colors.extend_from_slice(&c);
+        self.weights.push(self.cur_w);
     }
 
     fn strip(&mut self, pts: &[Vec2], closed: bool, c: [u8; 4]) {
@@ -149,6 +154,7 @@ pub fn segments(d: &Drawing) -> Segments {
         }
         let [r, g, b] = d.color_of(e);
         let col = [r, g, b, 255];
+        s.cur_w = e.weight.unwrap_or(0);
         let dash = e.linetype.and_then(|l| {
             d.linetypes
                 .get(l.pattern as usize)
@@ -329,6 +335,7 @@ mod tests {
         let layer = d.layer_index("0");
         d.entities.push(Entity {
             layer,
+            weight: None,
             linetype: None,
             color: None,
             shape,
@@ -376,6 +383,7 @@ mod tests {
         });
         d.entities.push(Entity {
             layer: 0,
+            weight: None,
             linetype: None,
             color: Some([1, 2, 3]),
             shape: Shape::Fill {
@@ -388,6 +396,7 @@ mod tests {
         });
         d.entities.push(Entity {
             layer: 0,
+            weight: None,
             linetype: None,
             color: None,
             shape: Shape::Text(TextShape {
