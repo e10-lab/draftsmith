@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+members = ["crates/draftsmith-core", "crates/draftsmith-cli", "crates/draftsmith-app"]
+# `cargo build/test/run` 기본 대상: 코어와 CLI. 데스크톱 앱(웹 화면)은 `-p draftsmith-app`
+default-members = ["crates/draftsmith-core", "crates/draftsmith-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+authors = ["zero architects <archi_zero@naver.com>"]
+rust-version = "1.85"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

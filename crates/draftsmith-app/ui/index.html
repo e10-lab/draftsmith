@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DraftSmith</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="bar">
+    <strong class="brand">DraftSmith</strong>
+    <button id="open" data-tip="도면 열기 (⌘O)">열기</button>
+    <button id="fit" data-tip="도면 전체 보기 (F)">전체 보기</button>
+    <span class="sep"></span>
+    <span id="status" class="status">DWG·DXF 도면을 여세요</span>
+    <span class="grow"></span>
+    <span id="version" class="muted small"></span>
+  </header>
+  <main class="body">
+    <aside class="side">
+      <h4>레이어</h4>
+      <ul id="layers" class="layers"></ul>
+      <div id="skipped" class="muted small"></div>
+    </aside>
+    <section class="stage">
+      <canvas id="view"></canvas>
+      <div id="cursor" class="cursor muted small"></div>
+    </section>
+  </main>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

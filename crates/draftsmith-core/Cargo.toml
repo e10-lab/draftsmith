@@ -1,0 +1,16 @@
+[package]
+name = "draftsmith-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "DraftSmith 코어 — 도면 모델, DXF·DWG 가져오기, 화면용 표시 데이터"
+
+[dependencies]
+# DXF·DWG 읽기·쓰기 (MPL-2.0, 순수 Rust) — 구현 노트 §3
+acadrust = "0.6.8"
+thiserror = "2"
+
+[lints]
+workspace = true
