@@ -301,13 +301,26 @@ pub fn opening_marks(m: &ArchModel) -> Vec<(u64, String)> {
 
 /// 건축 객체로 평면 선을 만들어 모형 객체 뒤에 붙인 도면. 건축 객체가 없으면 None
 pub fn with_arch(d: &Drawing) -> Option<Drawing> {
-    if d.arch.is_empty() {
+    with_arch_owned(d).map(|(v, _)| v)
+}
+
+/// [`with_arch`] 와 같고, 덧붙인 객체마다 주인 (종류, 번호) 도 함께. 블록 참조를 펼친 것은 ("block", 참조 객체 번호)
+pub fn with_arch_owned(d: &Drawing) -> Option<(Drawing, Vec<(String, u64)>)> {
+    let has_insert = d
+        .entities
+        .iter()
+        .any(|e| matches!(e.shape, Shape::Insert { .. }));
+    if d.arch.is_empty() && !has_insert {
         return None;
     }
     let mut out = d.clone();
     let made = generate(&mut out);
+    let owners = made
+        .iter()
+        .map(|(_, (k, id))| (k.to_string(), *id))
+        .collect();
     out.entities.extend(made.into_iter().map(|(e, _)| e));
-    Some(out)
+    Some((out, owners))
 }
 
 /// 생성 객체 `k` (모형 객체 뒤 k 번째)의 주인
@@ -321,7 +334,18 @@ pub fn owner(d: &Drawing, k: usize) -> Option<(String, u64)> {
 /// 생성 (레이어가 없으면 `d` 에 더한다)
 fn generate(d: &mut Drawing) -> Vec<(Entity, Owner)> {
     let m = d.arch.clone();
-    let mut g = Gen { d, out: Vec::new() };
+    // 블록 참조 펼치기 (§30)
+    let mut blocks = Vec::new();
+    for (i, e) in d.entities.iter().enumerate() {
+        if matches!(e.shape, Shape::Insert { .. }) {
+            blocks.extend(
+                crate::block::expand(d, e)
+                    .into_iter()
+                    .map(|x| (x, ("block", i as u64))),
+            );
+        }
+    }
+    let mut g = Gen { d, out: blocks };
     let level = m.active_level;
     let walls: Vec<&Wall> = m.walls.iter().filter(|w| w.level == level).collect();
     let marks = opening_marks(&m);
@@ -516,6 +540,13 @@ fn generate(d: &mut Drawing) -> Vec<(Entity, Owner)> {
     // 치수 (§28)
     for dm in m.dims.iter().filter(|x| x.level == level) {
         let own = ("dim", dm.id);
+        // 묶인 객체를 따라간 지금 끝점
+        let (ea, eb) = dm.ends(&m);
+        let dm = &crate::arch::Dim {
+            a: ea,
+            b: eb,
+            ..dm.clone()
+        };
         let len = dm.length();
         if len < 1e-9 {
             continue;
@@ -1055,6 +1086,10 @@ pub fn apply(ed: &mut Editor, req: ArchReq) -> Result<(), String> {
             }
             let u = mul(sub(b, a), 1.0 / len);
             let offset = dot(sub(at, a), Vec2::new(-u.y, u.x));
+            // 끝점이 벽·그리드·기둥 위면 묶는다 (§28)
+            let tol = (text_height * 0.02).max(1.0);
+            let ka = m.anchor_at(level, a, u, tol);
+            let kb = m.anchor_at(level, b, u, tol);
             let id = m.new_id();
             m.dims.push(crate::arch::Dim {
                 id,
@@ -1064,6 +1099,8 @@ pub fn apply(ed: &mut Editor, req: ArchReq) -> Result<(), String> {
                 offset,
                 text_height,
                 text: String::new(),
+                ka,
+                kb,
             });
         }
         ArchReq::Column { at, width, depth } => {
@@ -1233,9 +1270,13 @@ pub fn apply(ed: &mut Editor, req: ArchReq) -> Result<(), String> {
                     }
                 }
                 "dim" => {
+                    // 치수 옮기기 = 치수선 옮기기 (끝점은 그대로 — 묶인 객체를 따른다)
+                    let mm = m.clone();
                     if let Some(x) = m.dims.iter_mut().find(|x| x.id == id) {
-                        x.a = add(x.a, d);
-                        x.b = add(x.b, d);
+                        let (a, b) = x.ends(&mm);
+                        let l = a.dist(b).max(1e-12);
+                        let n = Vec2::new(-(b.y - a.y) / l, (b.x - a.x) / l);
+                        x.offset += dot(d, n);
                     }
                 }
                 "column" => {
@@ -1449,8 +1490,17 @@ pub fn properties(m: &ArchModel, what: &str, id: u64) -> Vec<(String, String)> {
         }
         "dim" => {
             if let Some(x) = m.dims.iter().find(|x| x.id == id) {
+                let (a, b) = x.ends(m);
                 out.push(("종류".into(), "치수".into()));
-                out.push(("길이".into(), comma(x.length())));
+                out.push(("길이".into(), comma(a.dist(b))));
+                let tie =
+                    |k: &Option<crate::arch::Anchor>| match k.as_ref().map(|k| k.what.as_str()) {
+                        Some("wall") => "벽",
+                        Some("grid") => "그리드",
+                        Some("column") => "기둥",
+                        _ => "없음",
+                    };
+                out.push(("묶음".into(), format!("{} · {}", tie(&x.ka), tie(&x.kb))));
                 out.push(("글자:고침".into(), x.text.clone()));
                 out.push(("글자 높이:고침".into(), f(x.text_height)));
                 out.push(("치수선 거리:고침".into(), f(x.offset)));
@@ -2034,5 +2084,67 @@ mod tests {
         // 3D: 기둥 12 + 계단 18 × 12
         assert_eq!(crate::model3d::mesh(&ed.d.arch).tris.len(), 12 + 18 * 12);
         assert_eq!(comma(1234567.0), "1,234,567");
+    }
+
+    #[test]
+    fn dim_follows_grid() {
+        let mut ed = Editor::new(new_drawing());
+        apply(
+            &mut ed,
+            ArchReq::GridSet {
+                origin: [0.0, 0.0],
+                xs: vec![6000.0],
+                ys: vec![5000.0],
+                extend: 1500.0,
+            },
+        )
+        .unwrap();
+        apply(
+            &mut ed,
+            ArchReq::Dim {
+                a: [0.0, 0.0],
+                b: [6000.0, 0.0],
+                at: [3000.0, -2000.0],
+                text_height: 250.0,
+            },
+        )
+        .unwrap();
+        let dm = ed.d.arch.dims[0].clone();
+        // 교점이라 Y1 에도 걸리지만, 가로 치수라 세로 그리드(X1·X2)에 묶인다
+        let x2 = ed.d.arch.grids.iter().find(|g| g.label == "X2").unwrap().id;
+        assert_eq!(
+            dm.kb.as_ref().map(|k| (k.what.as_str(), k.id)),
+            Some(("grid", x2))
+        );
+        apply(
+            &mut ed,
+            ArchReq::Move {
+                what: "grid".into(),
+                id: x2,
+                dx: 500.0,
+                dy: 0.0,
+            },
+        )
+        .unwrap();
+        let (a, b) = ed.d.arch.dims[0].ends(&ed.d.arch);
+        assert!((a.dist(b) - 6500.0).abs() < 1e-9);
+        let g = with_arch(&ed.d).unwrap();
+        assert!(
+            g.entities
+                .iter()
+                .any(|e| matches!(&e.shape, Shape::Text(t) if t.value == "6,500"))
+        );
+        // 치수 옮기기는 치수선만
+        apply(
+            &mut ed,
+            ArchReq::Move {
+                what: "dim".into(),
+                id: dm.id,
+                dx: 0.0,
+                dy: -500.0,
+            },
+        )
+        .unwrap();
+        assert_eq!(ed.d.arch.dims[0].offset, dm.offset - 500.0);
     }
 }

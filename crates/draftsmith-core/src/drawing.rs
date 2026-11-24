@@ -121,12 +121,40 @@ pub enum Shape {
         lines: Vec<(Vec2, Vec2)>,
     },
     Text(TextShape),
+    /// 블록 참조 (DraftSmith 에서 만든 블록 — 구현 노트 §30). 화면·출력에는 펼친 객체가 대신 나온다
+    Insert {
+        block: String,
+        at: Vec2,
+        /// x·y 배율 (y 가 음수면 대칭)
+        scale: Vec2,
+        rotation: f64,
+    },
 }
 
 impl Shape {
     /// 아핀 변환을 건 모양. 원은 변환이 등각(회전·균등 축척)이면 원으로, 아니면 타원이 된다.
     pub fn transformed(&self, t: &Affine) -> Shape {
         match self {
+            Shape::Insert {
+                block,
+                at,
+                scale,
+                rotation,
+            } => {
+                // 대칭이면 y 배율을 뒤집고 각도는 거울 쪽으로 (구현 노트 §30)
+                let k = t.scale_x();
+                let (rot, sy) = if t.mirrors() {
+                    (t.angle() - rotation, -scale.y)
+                } else {
+                    (t.angle() + rotation, scale.y)
+                };
+                Shape::Insert {
+                    block: block.clone(),
+                    at: t.apply(*at),
+                    scale: Vec2::new(scale.x * k, sy * k),
+                    rotation: rot,
+                }
+            }
             Shape::Line { a, b } => Shape::Line {
                 a: t.apply(*a),
                 b: t.apply(*b),
@@ -259,6 +287,7 @@ impl Shape {
     pub fn bbox(&self) -> Bbox {
         let mut b = Bbox::EMPTY;
         match self {
+            Shape::Insert { at, .. } => b.add(*at),
             Shape::Line { a, b: e } => {
                 b.add(*a);
                 b.add(*e);
@@ -332,6 +361,24 @@ pub struct Drawing {
     pub current_layer: u32,
     /// 건축 객체 (벽·문·창·실·그리드·층) — M3
     pub arch: crate::arch::ArchModel,
+    /// 블록 정의 (DraftSmith 에서 만든 것 — 가져온 DWG 블록은 펼쳐서 들어온다)
+    pub blocks: Vec<Block>,
+}
+
+/// 블록 정의: 기준점(0,0) 기준 객체들
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Block {
+    pub name: String,
+    pub entities: Vec<Entity>,
+}
+
+impl Block {
+    /// 블록 참조의 변환: 배율 → 회전 → 이동
+    pub fn transform(at: Vec2, scale: Vec2, rotation: f64) -> Affine {
+        Affine::scale(scale.x, scale.y)
+            .then(&Affine::rotate(rotation))
+            .then(&Affine::translate(at.x, at.y))
+    }
 }
 
 impl Drawing {
@@ -361,6 +408,7 @@ impl Drawing {
         let mut m = BTreeMap::new();
         for e in &self.entities {
             let k = match e.shape {
+                Shape::Insert { .. } => "블록 참조",
                 Shape::Line { .. } => "선",
                 Shape::Polyline { .. } => "폴리선",
                 Shape::Circle { .. } => "원",

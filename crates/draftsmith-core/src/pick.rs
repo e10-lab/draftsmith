@@ -83,6 +83,7 @@ pub fn text_box(t: &crate::drawing::TextShape) -> [Vec2; 4] {
 /// 점 p 에서 모양까지의 거리 (`tol` 은 곡선을 펼칠 때의 허용 오차)
 pub fn distance(shape: &Shape, p: Vec2, tol: f64) -> f64 {
     match shape {
+        Shape::Insert { .. } => f64::INFINITY,
         Shape::Line { a, b } => seg_dist(p, *a, *b),
         Shape::Polyline { points, closed } => {
             chain_dist(p, &curve::polyline_points(points, *closed, tol), *closed)
@@ -277,6 +278,7 @@ pub fn properties(d: &Drawing, i: usize) -> Vec<(String, String)> {
     let deg = |r: f64| format!("{:.2}°", r.to_degrees().rem_euclid(360.0));
     let mut out: Vec<(String, String)> = Vec::new();
     let kind = match &e.shape {
+        Shape::Insert { .. } => "블록 참조",
         Shape::Line { .. } => "선",
         Shape::Polyline { closed: true, .. } => "닫힌 폴리선",
         Shape::Polyline { .. } => "폴리선",
@@ -304,6 +306,17 @@ pub fn properties(d: &Drawing, i: usize) -> Vec<(String, String)> {
         ),
     ));
     match &e.shape {
+        Shape::Insert {
+            block,
+            at,
+            scale,
+            rotation,
+        } => {
+            out.push(("블록".into(), block.clone()));
+            out.push(("삽입점".into(), format!("{}, {}", f(at.x), f(at.y))));
+            out.push(("배율".into(), format!("{} × {}", f(scale.x), f(scale.y))));
+            out.push(("회전".into(), deg(*rotation)));
+        }
         Shape::Line { a, b } => {
             out.push(("길이".into(), f(a.dist(*b))));
             out.push(("각도".into(), deg((b.y - a.y).atan2(b.x - a.x))));
@@ -380,6 +393,7 @@ pub fn outline(shape: &Shape, tol: f64, limit: usize) -> Vec<(Vec2, Vec2)> {
         v
     };
     let mut out = match shape {
+        Shape::Insert { .. } => Vec::new(),
         Shape::Line { a, b } => vec![(*a, *b)],
         Shape::Polyline { points, closed } => {
             chain(&curve::polyline_points(points, *closed, tol), *closed)

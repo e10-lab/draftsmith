@@ -59,6 +59,7 @@ fn principal_axes(u: Vec2, v: Vec2) -> (Vec2, f64, f64, bool) {
 /// 객체 하나 → acadrust 객체들
 fn to_cad(e: &Entity) -> Vec<EntityType> {
     match &e.shape {
+        Shape::Insert { .. } => Vec::new(),
         Shape::Line { a, b } => vec![EntityType::Line(Line::from_coords(
             a.x, a.y, 0.0, b.x, b.y, 0.0,
         ))],

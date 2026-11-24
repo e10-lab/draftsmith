@@ -277,7 +277,28 @@ class TextTool extends Tool {
 
 /** 정렬 치수: 두 점, 치수선 위치 → 치수 객체 (값은 두 점에서 늘 새로 셈 — 구현 노트 §28). 미리보기만 여기서 그린다 */
 class DimTool extends Tool {
-  start() { this.say("치수: 첫 점"); }
+  start() {
+    this.chain = null;
+    this.say("치수: 첫 점 (벽·그리드·기둥 위 점은 그 객체에 묶여 따라감)");
+  }
+  base() { return this.chain && !this.pts.length ? this.chain.from : super.base(); }
+  input(t) {
+    if (t.trim().toUpperCase() === "N" && this.chain) {
+      this.start();
+      return true;
+    }
+    return super.input(t);
+  }
+  /** 연속 치수의 다음 점 */
+  async chainTo(p) {
+    const { from, n, off } = this.chain;
+    const at = [from[0] + n[0] * off, from[1] + n[1] * off];
+    this.pts = [from, p, at];
+    const [a, b] = [from, p];
+    await this.app.apply({ kind: "arch", op: { kind: "dim", a, b, at, text_height: this.app.textHeight } });
+    this.chain = { from: p, n, off };
+    this.pts = [];
+  }
   shapes(a, b, at) {
     const L = dist(a, b);
     if (L < 1e-9) return [];
@@ -305,19 +326,27 @@ class DimTool extends Tool {
     ];
   }
   async take(p) {
+    if (this.chain && !this.pts.length) return this.chainTo(p);
     this.pts.push(p);
     if (this.pts.length === 1) return this.say("치수: 둘째 점");
     if (this.pts.length === 2) return this.say("치수: 치수선 위치");
     const [a, b, at] = this.pts;
     await this.app.apply({ kind: "arch", op: { kind: "dim", a, b, at, text_height: this.app.textHeight } });
+    // 연속 치수: 앞 치수 끝에서 같은 치수선으로 이어 간다
+    const L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+    const n = [-(b[1] - a[1]) / L, (b[0] - a[0]) / L];
+    this.chain = { from: b, n, off: (at[0] - a[0]) * n[0] + (at[1] - a[1]) * n[1] };
     this.pts = [];
-    this.say("치수: 다음 첫 점 (Enter 로 끝)");
+    this.say("치수: 이어서 다음 점 (연속 치수) — Enter 로 끝, N 으로 새 치수");
   }
   paint(ctx, ts) {
     if (!this.cur) return;
     if (this.pts.length === 1) strokePath(ctx, ts, [this.pts[0], this.cur], false, true);
-    if (this.pts.length === 2) {
-      for (const s of this.shapes(this.pts[0], this.pts[1], this.cur)) {
+    const c = this.chain;
+    const trio = this.pts.length === 2 ? [this.pts[0], this.pts[1], this.cur]
+      : c && !this.pts.length ? [c.from, this.cur, [c.from[0] + c.n[0] * c.off, c.from[1] + c.n[1] * c.off]] : null;
+    if (trio) {
+      for (const s of this.shapes(...trio)) {
         if (s.Line) strokePath(ctx, ts, [[s.Line.a.x, s.Line.a.y], [s.Line.b.x, s.Line.b.y]]);
         else label(ctx, ts, [s.Text.at.x, s.Text.at.y], s.Text.value);
       }
@@ -903,6 +932,86 @@ class StairTool extends Tool {
   }
 }
 
+// ── 블록 (§30) ───────────────────────────────────────────────────────────────
+class BlockTool extends ModifyTool {
+  get title() { return "블록 만들기"; }
+  get freeText() { return this.pts.length === 1; }
+  go() { this.say("블록 만들기: 기준점 (넣을 때 이 점이 커서에 붙음)"); }
+  take(p) {
+    if (this.picking || this.pts.length) return;
+    this.pts.push(p);
+    this.say(`블록 만들기: 이름을 치고 Enter${this.app.doc?.blocks?.length ? ` (있는 것: ${this.app.doc.blocks.join(", ")})` : ""}`);
+  }
+  input(t) {
+    if (this.pts.length === 1) {
+      const name = t.trim();
+      if (!name) return true;
+      this.app.apply({ kind: "make_block", name, ids: this.app.select.ids, base: this.pts[0] }).then((st) => {
+        if (st) {
+          this.app.select.set(st.added);
+          this.app.report(`블록 「${name}」 을 만들었습니다 — I 로 넣기, X 로 펼치기`);
+          this.app.done();
+        }
+      });
+      return true;
+    }
+    return super.input(t);
+  }
+}
+
+class InsertTool extends Tool {
+  get freeText() { return !this.name; }
+  get snaps() { return !!this.name; }
+  start() {
+    const list = this.app.doc?.blocks ?? [];
+    this.name = list.length === 1 ? list[0] : null;
+    this.scale = 1;
+    this.rot = 0;
+    if (!list.length) {
+      this.app.report("블록이 없습니다 — 객체를 고르고 B 로 만드세요");
+      return this.app.done();
+    }
+    this.name ? this.ask() : this.say(`블록 넣기: 이름을 치세요 (${list.join(", ")})`);
+  }
+  ask() { this.say(`블록 「${this.name}」 넣기: 삽입점 (S2 배율, R90 회전 — 지금 ${this.scale} · ${this.rot}°)`); }
+  input(t) {
+    const k = t.trim();
+    if (!this.name) {
+      if (!(this.app.doc?.blocks ?? []).includes(k)) {
+        this.app.report(`「${k}」 블록이 없습니다`);
+        return true;
+      }
+      this.name = k;
+      this.ask();
+      return true;
+    }
+    let m;
+    if ((m = k.match(/^S(-?[\d.]+)$/i))) { this.scale = Number(m[1]) || 1; this.ask(); return true; }
+    if ((m = k.match(/^R(-?[\d.]+)$/i))) { this.rot = Number(m[1]) || 0; this.ask(); return true; }
+    return super.input(t);
+  }
+  async take(p) {
+    if (!this.name) return;
+    await this.app.apply({ kind: "insert_block", name: this.name, at: p, scale: this.scale, rotation: this.rot });
+    this.say(`블록 「${this.name}」: 다음 삽입점 (Enter 로 끝)`);
+  }
+  paint(ctx, ts) {
+    if (!this.name || !this.cur) return;
+    const [x, y] = ts(...this.cur);
+    ctx.strokeStyle = PREVIEW;
+    ctx.strokeRect(x - 6, y - 6, 12, 12);
+  }
+}
+
+class ExplodeTool extends ModifyTool {
+  get title() { return "펼치기"; }
+  async go() {
+    await this.app.apply({ kind: "explode", ids: this.app.select.ids });
+    this.app.select.clear();
+    this.app.done();
+  }
+}
+
 export const TOOLS = {
   line: LineTool,
   pline: PlineTool,
@@ -932,4 +1041,7 @@ export const TOOLS = {
   hatch: HatchTool,
   column: ColumnTool,
   stair: StairTool,
+  block: BlockTool,
+  insert: InsertTool,
+  explode: ExplodeTool,
 };

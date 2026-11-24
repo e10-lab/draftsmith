@@ -194,11 +194,33 @@ pub struct Dim {
     /// 비우면 길이, 아니면 이 글자 (「<>」 는 길이로 바뀜)
     #[serde(default)]
     pub text: String,
+    /// 끝점을 묶은 건축 객체 (벽·그리드·기둥) — 그 객체가 움직이면 따라간다 (§28)
+    #[serde(default)]
+    pub ka: Option<Anchor>,
+    #[serde(default)]
+    pub kb: Option<Anchor>,
+}
+
+/// 건축 객체에 묶은 점: 그 객체 좌표계(원점·방향)에서 (t 앞, s 왼쪽)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Anchor {
+    pub what: String,
+    pub id: u64,
+    pub t: f64,
+    pub s: f64,
 }
 
 impl Dim {
+    /// 저장된 두 점 길이 (묶인 점은 [`Dim::ends`] 로)
     pub fn length(&self) -> f64 {
         self.a.dist(self.b)
+    }
+
+    /// 지금 두 끝점: 묶인 객체가 있으면 그 객체를 따라, 없으면 저장된 점
+    pub fn ends(&self, m: &ArchModel) -> (Vec2, Vec2) {
+        let get =
+            |k: &Option<Anchor>, p: Vec2| k.as_ref().and_then(|k| m.anchor_point(k)).unwrap_or(p);
+        (get(&self.ka, self.a), get(&self.kb, self.b))
     }
 }
 
@@ -282,6 +304,88 @@ impl ArchModel {
 
     pub fn level(&self, id: u64) -> Option<&Level> {
         self.levels.iter().find(|l| l.id == id)
+    }
+
+    /// 객체 좌표계 (원점, 단위 방향): 벽·그리드는 a 에서 b 로, 기둥은 가운데에서 회전 방향
+    pub fn frame(&self, what: &str, id: u64) -> Option<(Vec2, Vec2)> {
+        let unit = |a: Vec2, b: Vec2| {
+            let l = a.dist(b).max(1e-12);
+            Vec2::new((b.x - a.x) / l, (b.y - a.y) / l)
+        };
+        match what {
+            "wall" => self.wall(id).map(|w| (w.a, unit(w.a, w.b))),
+            "grid" => self
+                .grids
+                .iter()
+                .find(|g| g.id == id)
+                .map(|g| (g.a, unit(g.a, g.b))),
+            "column" => self
+                .columns
+                .iter()
+                .find(|c| c.id == id)
+                .map(|c| (c.at, Vec2::new(c.angle.cos(), c.angle.sin()))),
+            _ => None,
+        }
+    }
+
+    /// 묶인 점의 지금 자리
+    pub fn anchor_point(&self, k: &Anchor) -> Option<Vec2> {
+        let (o, u) = self.frame(&k.what, k.id)?;
+        Some(Vec2::new(
+            o.x + u.x * k.t - u.y * k.s,
+            o.y + u.y * k.t + u.x * k.s,
+        ))
+    }
+
+    /// 점 p 를 묶을 객체 찾기 (층 `level`, 치수 방향 `dir`). 그리드 선 위 > 기둥 안 > 벽 안 순, 같은 종류면 치수와 가장
+    /// 직각인 것 (가로 치수 끝은 세로 그리드에 묶여야 그리드를 옮길 때 따라간다)
+    pub fn anchor_at(&self, level: u64, p: Vec2, dir: Vec2, tol: f64) -> Option<Anchor> {
+        let local = |o: Vec2, u: Vec2| {
+            let (dx, dy) = (p.x - o.x, p.y - o.y);
+            (dx * u.x + dy * u.y, -dx * u.y + dy * u.x)
+        };
+        let perp = |u: Vec2| (u.x * dir.x + u.y * dir.y).abs();
+        let mut best: Option<(f64, Anchor)> = None;
+        let mut offer = |rank: f64, what: &str, id: u64, o: Vec2, u: Vec2| {
+            let (t, s) = local(o, u);
+            let score = rank + perp(u);
+            if best.as_ref().is_none_or(|(b, _)| score < *b) {
+                best = Some((
+                    score,
+                    Anchor {
+                        what: what.into(),
+                        id,
+                        t,
+                        s,
+                    },
+                ));
+            }
+        };
+        for g in &self.grids {
+            let (o, u) = self.frame("grid", g.id)?;
+            let (t, s) = local(o, u);
+            if s.abs() <= tol && t >= -tol && t <= g.a.dist(g.b) + tol {
+                offer(0.0, "grid", g.id, o, u);
+            }
+        }
+        for c in self.columns.iter().filter(|c| c.level == level) {
+            let (o, u) = (c.at, Vec2::new(c.angle.cos(), c.angle.sin()));
+            let (t, s) = local(o, u);
+            if t.abs() <= c.width / 2.0 + tol && s.abs() <= c.depth / 2.0 + tol {
+                offer(10.0, "column", c.id, o, u);
+            }
+        }
+        for w in self.walls.iter().filter(|w| w.level == level) {
+            let (o, u) = (w.a, w.dir());
+            let (t, s) = local(o, u);
+            if s.abs() <= w.thickness / 2.0 + tol
+                && t >= -w.thickness - tol
+                && t <= w.length() + w.thickness + tol
+            {
+                offer(20.0, "wall", w.id, o, u);
+            }
+        }
+        best.map(|(_, a)| a)
     }
 
     pub fn wall(&self, id: u64) -> Option<&Wall> {

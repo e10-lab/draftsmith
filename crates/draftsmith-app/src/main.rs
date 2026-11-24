@@ -43,6 +43,8 @@ struct Open {
     picks: Option<PickIndex>,
     /// 변경 기록으로 이미 내보낸 작업 수 (M5)
     journal_mark: usize,
+    /// 모형 객체 뒤에 덧붙인 객체(블록 펼친 것·건축 객체 선)의 주인 (종류, 번호)
+    owners: Vec<(String, u64)>,
 }
 
 impl Open {
@@ -53,10 +55,14 @@ impl Open {
 
     /// 편집한 뒤: 보이는 도면을 다시 만들고 스냅·고르기 색인도 다시
     fn refresh(&mut self) {
+        self.owners.clear();
         self.view = match (&self.ed, self.sheet) {
             (None, _) => None,
             (Some(e), Some(i)) => sheet::compose(&e.d, i),
-            (Some(e), None) => archgen::with_arch(&e.d),
+            (Some(e), None) => archgen::with_arch_owned(&e.d).map(|(v, o)| {
+                self.owners = o;
+                v
+            }),
         };
         let (snaps, picks) = match self.shown() {
             Some(d) => (Some(SnapIndex::build(d)), Some(PickIndex::build(d))),
@@ -64,6 +70,41 @@ impl Open {
         };
         self.snaps = snaps;
         self.picks = picks;
+    }
+
+    /// 화면 객체 번호 → (모형 객체 번호, 건축 객체 주인). 블록을 펼친 객체는 그 참조 번호로
+    fn owner_of(&self, i: usize) -> (Option<usize>, Option<(String, u64)>) {
+        if self.sheet.is_some() {
+            return (None, None);
+        }
+        let base = self.ed.as_ref().map(|e| e.d.entities.len()).unwrap_or(0);
+        if i < base {
+            return (Some(i), None);
+        }
+        match self.owners.get(i - base) {
+            Some((k, id)) if k == "block" => (Some(*id as usize), None),
+            Some(o) => (None, Some(o.clone())),
+            None => (None, None),
+        }
+    }
+
+    /// 모형 객체 i 의 강조선 (블록 참조면 펼친 객체들)
+    fn outline_model(&self, i: usize, tol: f64) -> Vec<[f64; 4]> {
+        let Some(d) = self.shown() else {
+            return Vec::new();
+        };
+        let base = self.ed.as_ref().map(|e| e.d.entities.len()).unwrap_or(0);
+        let mut out = if i < d.entities.len() {
+            outline_of(d, i, tol)
+        } else {
+            Vec::new()
+        };
+        for (k, (kind, id)) in self.owners.iter().enumerate() {
+            if kind == "block" && *id as usize == i && out.len() < 60_000 {
+                out.extend(outline_of(d, base + k, tol));
+            }
+        }
+        out
     }
 
     fn editor(&mut self) -> Result<&mut Editor, String> {
@@ -215,6 +256,8 @@ struct DocState {
     entities: usize,
     inserts: usize,
     layers: Vec<LayerInfo>,
+    /// 블록 이름들
+    blocks: Vec<String>,
     /// 모형 도면 레이어 수 (그 뒤는 건축 객체가 더한 레이어 — 고칠 수 없음)
     base_layers: usize,
     current_layer: u32,
@@ -285,6 +328,7 @@ fn state_of(open: &Open, read_ms: f64, added: Vec<usize>) -> Result<DocState, St
             })
             .collect(),
         base_layers: d.layers.len(),
+        blocks: d.blocks.iter().map(|b| b.name.clone()).collect(),
         current_layer: d.current_layer,
         skipped: d.skipped.iter().map(|(k, n)| (k.clone(), *n)).collect(),
         layouts: d.layouts.iter().map(|l| l.name.clone()).collect(),
@@ -494,6 +538,23 @@ enum EditReq {
         pattern: String,
         spacing: f64,
     },
+    /// 블록 만들기 (§30)
+    MakeBlock {
+        name: String,
+        ids: Vec<usize>,
+        base: [f64; 2],
+    },
+    /// 블록 넣기
+    InsertBlock {
+        name: String,
+        at: [f64; 2],
+        scale: f64,
+        rotation: f64,
+    },
+    /// 블록 펼치기
+    Explode {
+        ids: Vec<usize>,
+    },
     /// 도면 시트 만들기 (M4)
     AddSheet(sheet::SheetReq),
     /// 도면 시트 지우기
@@ -608,6 +669,29 @@ fn edit(req: EditReq, state: State<'_, AppState>) -> Result<DocState, String> {
                 ed.add_layout(l);
             }
             EditReq::DeleteSheet { index } => ed.remove_layout(index),
+            EditReq::MakeBlock { name, ids, base } => {
+                added = vec![ed.make_block(&name, &ids, Vec2::new(base[0], base[1]))?]
+            }
+            EditReq::InsertBlock {
+                name,
+                at,
+                scale,
+                rotation,
+            } => {
+                added = vec![ed.insert_block(
+                    &name,
+                    Vec2::new(at[0], at[1]),
+                    scale,
+                    rotation.to_radians(),
+                )?];
+            }
+            EditReq::Explode { mut ids } => {
+                // 뒤에서부터 (앞 번호가 밀리지 않게)
+                ids.sort_unstable();
+                for i in ids.into_iter().rev() {
+                    ed.explode(i);
+                }
+            }
             EditReq::Trim { .. } | EditReq::Extend { .. } | EditReq::Fillet { .. } => {
                 added = ed.reshape(reshape.take().unwrap_or_default()).collect();
             }
@@ -705,26 +789,22 @@ fn pick_at(x: f64, y: f64, r: f64, state: State<'_, AppState>) -> Result<Option<
     let (Some(d), Some(idx)) = (open.shown(), open.picks.as_ref()) else {
         return Ok(None);
     };
-    let base = open.ed.as_ref().map(|e| e.d.entities.len()).unwrap_or(0);
     Ok(idx.pick(d, Vec2::new(x, y), r).map(|i| {
-        let model = open.sheet.is_none() && i < base;
-        let arch = (open.sheet.is_none() && i >= base)
-            .then(|| {
-                open.ed
-                    .as_ref()
-                    .and_then(|e| archgen::owner(&e.d, i - base))
-            })
-            .flatten();
-        let mut props = pick::properties(d, i);
+        let (model, arch) = open.owner_of(i);
+        let mut props = pick::properties(d, model.unwrap_or(i));
         if let (Some((k, id)), Some(e)) = (&arch, open.ed.as_ref()) {
             props = archgen::properties(&e.d.arch, k, *id);
         }
+        let outline = match model {
+            Some(m) => open.outline_model(m, r / 4.0),
+            None => outline_of(d, i, r / 4.0),
+        };
         PickOut {
-            index: i,
-            editable: model,
+            index: model.unwrap_or(i),
+            editable: model.is_some(),
             arch,
             props,
-            outline: outline_of(d, i, r / 4.0),
+            outline,
         }
     }))
 }
@@ -743,15 +823,17 @@ fn pick_box(
     let (Some(d), Some(idx)) = (open.shown(), open.picks.as_ref()) else {
         return Ok(Vec::new());
     };
-    let base = open.ed.as_ref().map(|e| e.d.entities.len()).unwrap_or(0);
     let mut b = Bbox::EMPTY;
     b.add(Vec2::new(rect[0], rect[1]));
     b.add(Vec2::new(rect[2], rect[3]));
-    Ok(idx
+    let mut out: Vec<usize> = idx
         .in_box(d, &b, crossing)
         .into_iter()
-        .filter(|&i| i < base)
-        .collect())
+        .filter_map(|i| open.owner_of(i).0)
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    Ok(out)
 }
 
 /// 여러 객체의 강조 표시 선분과 요약 속성
@@ -771,7 +853,7 @@ fn selection_info(ids: Vec<usize>, tol: f64, state: State<'_, AppState>) -> Resu
         if outline.len() > 60_000 {
             break;
         }
-        outline.extend(outline_of(d, i, tol));
+        outline.extend(open.outline_model(i, tol));
     }
     let props = if ids.len() == 1 {
         pick::properties(d, ids[0])

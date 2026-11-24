@@ -171,6 +171,7 @@ pub fn segments(d: &Drawing) -> Segments {
         });
         pieces.clear();
         match &e.shape {
+            Shape::Insert { .. } => continue,
             Shape::Line { a, b } => pieces.push(vec![*a, *b]),
             Shape::Polyline { points, closed } => {
                 if dash.is_some() {

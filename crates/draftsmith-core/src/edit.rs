@@ -32,6 +32,11 @@ pub enum Op {
         old: Vec<crate::layout::Layout>,
         new: Vec<crate::layout::Layout>,
     },
+    /// 블록 정의 표 바꾸기 (이전, 이후) — §30
+    Blocks {
+        old: Vec<crate::drawing::Block>,
+        new: Vec<crate::drawing::Block>,
+    },
     /// 여러 작업을 하나로
     Batch(Vec<Op>),
 }
@@ -72,6 +77,7 @@ fn apply(d: &mut Drawing, op: &Op) {
         Op::CurrentLayer { new, .. } => d.current_layer = *new,
         Op::Arch { new, .. } => d.arch = (**new).clone(),
         Op::Layouts { new, .. } => d.layouts = new.clone(),
+        Op::Blocks { new, .. } => d.blocks = new.clone(),
         Op::Batch(ops) => ops.iter().for_each(|o| apply(d, o)),
     }
 }
@@ -96,6 +102,7 @@ fn revert(d: &mut Drawing, op: &Op) {
         Op::CurrentLayer { old, .. } => d.current_layer = *old,
         Op::Arch { old, .. } => d.arch = (**old).clone(),
         Op::Layouts { old, .. } => d.layouts = old.clone(),
+        Op::Blocks { old, .. } => d.blocks = old.clone(),
         Op::Batch(ops) => ops.iter().rev().for_each(|o| revert(d, o)),
     }
 }
@@ -197,6 +204,10 @@ impl Editor {
                 old: self.d.layouts.clone(),
                 new: new.clone(),
             },
+            Op::Blocks { new, .. } => Op::Blocks {
+                old: self.d.blocks.clone(),
+                new: new.clone(),
+            },
             Op::Batch(ops) => {
                 // 묶음은 앞 작업을 적용한 도면 기준이라 사본에서 차례로 맞춘다
                 let mut tmp = Editor::new(self.d.clone());
@@ -262,6 +273,106 @@ impl Editor {
         // 지운 것만큼 더한 객체 번호가 앞으로 당겨진다
         let start = n - removed.len();
         start..start + k
+    }
+
+    /// 블록 만들기: 고른 객체를 블록 정의로 옮기고 그 자리에 블록 참조 하나 (한 단계). 참조 번호
+    pub fn make_block(&mut self, name: &str, idx: &[usize], base: Vec2) -> Result<usize, String> {
+        crate::block::check_name(&self.d, name)?;
+        let mut v: Vec<usize> = idx
+            .iter()
+            .copied()
+            .filter(|&i| i < self.d.entities.len())
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        if v.is_empty() {
+            return Err("블록으로 만들 객체를 고르세요".into());
+        }
+        let items: Vec<Entity> = v.iter().map(|&i| self.d.entities[i].clone()).collect();
+        let def = crate::block::define(name.trim(), &items, base);
+        let old = self.d.blocks.clone();
+        let mut new = old.clone();
+        new.push(def);
+        let layer = self.d.current_layer;
+        let removed: Vec<(usize, Entity)> =
+            v.iter().map(|&i| (i, self.d.entities[i].clone())).collect();
+        let start = self.d.entities.len() - removed.len();
+        let insert = Entity {
+            layer,
+            color: None,
+            aci: None,
+            linetype: None,
+            weight: None,
+            shape: Shape::Insert {
+                block: name.trim().to_string(),
+                at: base,
+                scale: Vec2::new(1.0, 1.0),
+                rotation: 0.0,
+            },
+        };
+        self.run(Op::Batch(vec![
+            Op::Blocks { old, new },
+            Op::Remove { items: removed },
+            Op::Add {
+                start,
+                items: vec![insert],
+            },
+        ]));
+        Ok(start)
+    }
+
+    /// 블록 참조 넣기 (현재 레이어). 참조 번호
+    pub fn insert_block(
+        &mut self,
+        name: &str,
+        at: Vec2,
+        scale: f64,
+        rotation: f64,
+    ) -> Result<usize, String> {
+        if !self.d.blocks.iter().any(|b| b.name == name) {
+            return Err(format!("「{name}」 블록이 없습니다"));
+        }
+        let k = if scale.abs() < 1e-12 { 1.0 } else { scale };
+        let r = self.add_shapes(vec![Shape::Insert {
+            block: name.to_string(),
+            at,
+            scale: Vec2::new(k, k),
+            rotation,
+        }]);
+        Ok(r.start)
+    }
+
+    /// 블록 참조 펼치기 (안의 객체로 바꾼다)
+    pub fn explode(&mut self, i: usize) {
+        let Some(e) = self.d.entities.get(i).cloned() else {
+            return;
+        };
+        if !matches!(e.shape, Shape::Insert { .. }) {
+            return;
+        }
+        let parts = crate::block::expand(&self.d, &e);
+        let n = self.d.entities.len();
+        let mut it = parts.into_iter();
+        let mut ops = Vec::new();
+        match it.next() {
+            Some(first) => ops.push(Op::Replace {
+                items: vec![(i, e, first)],
+            }),
+            None => {
+                self.run(Op::Remove {
+                    items: vec![(i, e)],
+                });
+                return;
+            }
+        }
+        let rest: Vec<Entity> = it.collect();
+        if !rest.is_empty() {
+            ops.push(Op::Add {
+                start: n,
+                items: rest,
+            });
+        }
+        self.run(Op::Batch(ops));
     }
 
     /// 배치(도면 시트) 더하기

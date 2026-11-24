@@ -9,6 +9,7 @@
 
 pub mod arch;
 pub mod archgen;
+pub mod block;
 pub mod ctb;
 pub mod curve;
 pub mod display;
