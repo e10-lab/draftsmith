@@ -59,6 +59,10 @@ pub struct Segments {
     pub weights: Vec<u16>,
     /// 지금 넣는 객체의 굵기
     cur_w: u16,
+    /// 선분·삼각형 색 번호 (ACI, 0 = 없음) — 바이너리에는 넣지 않음 (PDF 출력 스타일용)
+    pub acis: Vec<u8>,
+    pub tri_acis: Vec<u8>,
+    cur_aci: u8,
 }
 
 impl Segments {
@@ -85,6 +89,7 @@ impl Segments {
         ]);
         self.colors.extend_from_slice(&c);
         self.weights.push(self.cur_w);
+        self.acis.push(self.cur_aci);
     }
 
     fn strip(&mut self, pts: &[Vec2], closed: bool, c: [u8; 4]) {
@@ -103,6 +108,7 @@ impl Segments {
             self.tris.push((p.y - o.y) as f32);
         }
         self.tri_colors.extend_from_slice(&c);
+        self.tri_acis.push(self.cur_aci);
     }
 
     /// 형식에 맞춘 바이너리
@@ -157,6 +163,7 @@ pub fn segments(d: &Drawing) -> Segments {
         let [r, g, b] = d.color_of(e);
         let col = [r, g, b, 255];
         s.cur_w = e.weight.unwrap_or(0);
+        s.cur_aci = e.aci.unwrap_or(0);
         let dash = e.linetype.and_then(|l| {
             d.linetypes
                 .get(l.pattern as usize)
@@ -337,6 +344,7 @@ mod tests {
         let layer = d.layer_index("0");
         d.entities.push(Entity {
             layer,
+            aci: None,
             weight: None,
             linetype: None,
             color: None,
@@ -385,6 +393,7 @@ mod tests {
         });
         d.entities.push(Entity {
             layer: 0,
+            aci: None,
             weight: None,
             linetype: None,
             color: Some([1, 2, 3]),
@@ -398,6 +407,7 @@ mod tests {
         });
         d.entities.push(Entity {
             layer: 0,
+            aci: None,
             weight: None,
             linetype: None,
             color: None,

@@ -107,6 +107,8 @@ struct Inherit {
     linetype: Option<LineStyle>,
     /// 블록 참조의 선 굵기 — 블록 안 ByBlock 선 굵기 객체가 이것으로
     weight: Option<u16>,
+    /// 블록 참조의 색 번호 — 블록 안 ByBlock 색 객체가 이것으로
+    aci: Option<u8>,
 }
 
 struct Converter<'a> {
@@ -127,6 +129,10 @@ struct Converter<'a> {
     layer_w: Vec<Option<u16>>,
     /// 지금 넣는 객체의 선 굵기
     cur_w: Option<u16>,
+    /// 레이어 번호 → 레이어 색 번호
+    layer_aci: Vec<Option<u8>>,
+    /// 지금 넣는 객체의 색 번호
+    cur_aci: Option<u8>,
 }
 
 impl<'a> Converter<'a> {
@@ -157,6 +163,12 @@ impl<'a> Converter<'a> {
         let color = match (&common.color, inherit) {
             (Color::ByBlock, Some(h)) => h.color,
             (c, _) => c.rgb().map(|(r, g, b)| [r, g, b]),
+        };
+        self.cur_aci = match (&common.color, inherit) {
+            (Color::ByBlock, Some(h)) => h.aci,
+            (Color::ByLayer, _) => self.layer_aci.get(layer as usize).copied().flatten(),
+            (Color::Index(i), _) => Some(*i),
+            _ => None,
         };
         let own = if common.linetype_scale > 0.0 {
             common.linetype_scale
@@ -214,6 +226,7 @@ impl<'a> Converter<'a> {
         };
         self.d.entities.push(Entity {
             layer,
+            aci: self.cur_aci,
             weight,
             linetype,
             color,
@@ -353,6 +366,7 @@ impl<'a> Converter<'a> {
                 }
                 let linetype = self.cur_lt;
                 let weight = self.cur_w;
+                let aci = self.cur_aci;
                 self.block(
                     &name,
                     &[Affine::IDENTITY.then(t)],
@@ -361,6 +375,7 @@ impl<'a> Converter<'a> {
                         color,
                         linetype,
                         weight,
+                        aci,
                     },
                 );
                 return;
@@ -464,11 +479,13 @@ impl<'a> Converter<'a> {
         }
         let linetype = self.cur_lt;
         let weight = self.cur_w;
+        let aci = self.cur_aci;
         let inherit = Some(Inherit {
             layer,
             color,
             linetype,
             weight,
+            aci,
         });
         let places: Vec<Affine> = points
             .iter()
@@ -483,6 +500,7 @@ impl<'a> Converter<'a> {
                 color,
                 linetype,
                 weight,
+                aci,
             },
         );
 
@@ -771,6 +789,8 @@ pub fn from_document(doc: &CadDocument) -> Drawing {
         cur_lt: None,
         layer_w: Vec::new(),
         cur_w: None,
+        layer_aci: Vec::new(),
+        cur_aci: None,
     };
     // 선 종류 무늬 (대시가 있는 것만 — CONTINUOUS 등 실선은 넣지 않는다)
     for lt in doc.line_types.iter() {
@@ -804,6 +824,13 @@ pub fn from_document(doc: &CadDocument) -> Drawing {
         if let Some((r, g, b)) = l.color.rgb() {
             layer.color = [r, g, b];
         }
+        if c.layer_aci.len() <= i {
+            c.layer_aci.resize(i + 1, None);
+        }
+        c.layer_aci[i] = match l.color {
+            Color::Index(k) => Some(k),
+            _ => None,
+        };
         layer.visible = !l.flags.frozen && !l.is_off();
     }
     for e in doc.model_space_entities() {

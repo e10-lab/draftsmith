@@ -191,6 +191,30 @@ function togglePdf(show = $("pdf-pop").hidden) {
   $("pdf-pop").hidden = !show;
 }
 $("pdf").addEventListener("click", () => togglePdf());
+
+// 출력 스타일(CTB): 고른 파일을 목록에 넣고 기억한다
+function setCtb(path, save = true) {
+  const sel = $("pdf-ctb");
+  for (const o of [...sel.options]) if (o.dataset.file) o.remove();
+  if (path) {
+    const o = new Option(path.split(/[\\/]/).pop(), path);
+    o.dataset.file = "1";
+    o.title = path;
+    sel.insertBefore(o, sel.options[1]);
+  }
+  sel.value = path || "";
+  if (save) invoke("set_setting", { key: "ctb", value: path || "" }).catch(() => {});
+}
+$("pdf-ctb").addEventListener("change", async (e) => {
+  if (e.target.value !== "pick") {
+    invoke("set_setting", { key: "ctb", value: e.target.value }).catch(() => {});
+    return;
+  }
+  const path = await invoke("pick_ctb");
+  const kept = [...e.target.options].find((o) => o.dataset.file)?.value || "";
+  setCtb(path || kept);
+});
+invoke("get_setting", { key: "ctb" }).then((v) => setCtb(v || "", false), () => {});
 $("pdf-cancel").addEventListener("click", () => togglePdf(false));
 $("pdf-save").addEventListener("click", async () => {
   const scale = $("pdf-scale").value;
@@ -200,6 +224,7 @@ $("pdf-save").addEventListener("click", async () => {
     scale: scale ? Number(scale) : null,
     area: $("pdf-area").value === "view" ? viewer.viewBox() : null,
     mono: $("pdf-color").value === "mono",
+    ctb: $("pdf-ctb").value || null,
   };
   togglePdf(false);
   status("PDF 만드는 중…");

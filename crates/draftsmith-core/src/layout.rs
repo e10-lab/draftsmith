@@ -270,6 +270,7 @@ mod tests {
         let layer = d.layer_index("0");
         d.entities.push(Entity {
             layer,
+            aci: None,
             weight: None,
             linetype: None,
             color: None,

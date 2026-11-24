@@ -11,6 +11,7 @@ use krilla::page::PageSettings;
 use krilla::paint::{Fill, FillRule, LineCap, LineJoin, Stroke};
 use krilla::text::{Font, TextDirection};
 
+use crate::ctb::PenTable;
 use crate::display;
 use crate::drawing::{Drawing, Shape, VAlign};
 use crate::geom::{Bbox, Vec2};
@@ -52,6 +53,8 @@ pub struct PdfOptions {
     pub mono: bool,
     /// 선 굵기 (mm)
     pub line_mm: f64,
+    /// 색 기준 출력 스타일(CTB). 있으면 색 번호마다 출력 색·굵기를 이것으로 (구현 노트 §16)
+    pub pens: Option<PenTable>,
 }
 
 impl Default for PdfOptions {
@@ -63,23 +66,52 @@ impl Default for PdfOptions {
             area: None,
             mono: false,
             line_mm: 0.18,
+            pens: None,
         }
     }
 }
 
 /// 흰 종이용 색: 흰색은 검정, 밝은 색은 어둡게 (화면 흰 배경과 같은 규칙).
 /// 흑백이면 선·글자·채움 모두 검정 (AutoCAD monochrome.ctb 와 같음 — 설계사무소에서 익숙한 결과).
-fn paper_color(c: [u8; 3], mono: bool) -> rgb::Color {
-    if mono {
-        return rgb::Color::new(0, 0, 0);
-    }
-    if c.iter().all(|&v| v > 235) {
-        return rgb::Color::new(0, 0, 0);
+fn paper_color(c: [u8; 3], mono: bool) -> [u8; 3] {
+    if mono || c.iter().all(|&v| v > 235) {
+        return [0, 0, 0];
     }
     let lum = (0.299 * c[0] as f64 + 0.587 * c[1] as f64 + 0.114 * c[2] as f64) / 255.0;
     let k = if lum > 0.5 { 0.45 / lum } else { 1.0 };
-    let f = |v: u8| (v as f64 * k).round() as u8;
-    rgb::Color::new(f(c[0]), f(c[1]), f(c[2]))
+    c.map(|v| (v as f64 * k).round() as u8)
+}
+
+/// 출력 색: 출력 스타일이 있으면 그 펜 색(객체 색이면 흰색만 검정으로), 없으면 종이용 색. 흑백이 가장 우선.
+fn out_color(o: &PdfOptions, raw: [u8; 3], aci: u8) -> [u8; 3] {
+    match &o.pens {
+        Some(t) if !o.mono => {
+            let pen = t.pen(aci);
+            if pen.color.is_none() && raw.iter().all(|&v| v > 235) {
+                // 흰색(색 7)은 종이에서 검정 (AutoCAD 와 같음). 농도는 그대로 적용
+                t.apply_color(aci, [0, 0, 0])
+            } else {
+                t.apply_color(aci, raw)
+            }
+        }
+        _ => paper_color(raw, o.mono),
+    }
+}
+
+/// 출력 굵기 (mm): 출력 스타일 펜 굵기 → 객체 굵기 → 기본 굵기 순서
+fn out_weight(o: &PdfOptions, w: u16, aci: u8) -> f64 {
+    if let Some(mm) = o.pens.as_ref().and_then(|t| t.pen(aci).lineweight_mm) {
+        return mm.max(0.05);
+    }
+    if w > 0 {
+        (w as f64 / 100.0).max(0.05)
+    } else {
+        o.line_mm
+    }
+}
+
+fn rgb_of(c: [u8; 3]) -> rgb::Color {
+    rgb::Color::new(c[0], c[1], c[2])
 }
 
 /// 글자 폭 (글꼴 단위 → 글꼴 크기 1 기준). 없는 글자는 1 em 으로.
@@ -161,7 +193,10 @@ pub fn export(d: &Drawing, o: &PdfOptions) -> Result<Vec<u8>, String> {
     let mut by_color: std::collections::BTreeMap<[u8; 3], PathBuilder> = Default::default();
     for (i, q) in s.tri_colors.as_chunks::<4>().0.iter().enumerate() {
         let t = &s.tris[i * 6..i * 6 + 6];
-        let pb = by_color.entry([q[0], q[1], q[2]]).or_default();
+        let aci = s.tri_acis.get(i).copied().unwrap_or(0);
+        let pb = by_color
+            .entry(out_color(o, [q[0], q[1], q[2]], aci))
+            .or_default();
         let p = |j: usize| to_page(t[j * 2] as f64 + o_x, t[j * 2 + 1] as f64 + o_y);
         let (a, b, cc) = (p(0), p(1), p(2));
         pb.move_to(a.0, a.1);
@@ -173,19 +208,24 @@ pub fn export(d: &Drawing, o: &PdfOptions) -> Result<Vec<u8>, String> {
         if let Some(path) = pb.finish() {
             surface.set_stroke(None);
             surface.set_fill(Some(Fill {
-                paint: paper_color(col, o.mono).into(),
+                paint: rgb_of(col).into(),
                 opacity: NormalizedF32::ONE,
                 rule: FillRule::NonZero,
             }));
             surface.draw_path(&path);
         }
     }
-    // 선: (색, 굵기) 마다 경로 하나
-    let mut by_style: std::collections::BTreeMap<([u8; 3], u16), PathBuilder> = Default::default();
+    // 선: (출력 색, 출력 굵기 µm) 마다 경로 하나
+    let mut by_style: std::collections::BTreeMap<([u8; 3], u32), PathBuilder> = Default::default();
     for (i, q) in s.colors.as_chunks::<4>().0.iter().enumerate() {
         let t = &s.coords[i * 4..i * 4 + 4];
-        let w = s.weights.get(i).copied().unwrap_or(0);
-        let pb = by_style.entry(([q[0], q[1], q[2]], w)).or_default();
+        let aci = s.acis.get(i).copied().unwrap_or(0);
+        let w = out_weight(o, s.weights.get(i).copied().unwrap_or(0), aci);
+        let key = (
+            out_color(o, [q[0], q[1], q[2]], aci),
+            (w * 1000.0).round() as u32,
+        );
+        let pb = by_style.entry(key).or_default();
         let a = to_page(t[0] as f64 + o_x, t[1] as f64 + o_y);
         let b = to_page(t[2] as f64 + o_x, t[3] as f64 + o_y);
         pb.move_to(a.0, a.1);
@@ -194,14 +234,9 @@ pub fn export(d: &Drawing, o: &PdfOptions) -> Result<Vec<u8>, String> {
     surface.set_fill(None);
     for ((col, w), pb) in by_style {
         if let Some(path) = pb.finish() {
-            // 객체 굵기가 있으면 그것 (가장 가는 펜 0.05 mm), 없으면 기본 굵기
-            let mm = if w > 0 {
-                (w as f64 / 100.0).max(0.05)
-            } else {
-                o.line_mm
-            };
+            let mm = w as f64 / 1000.0;
             surface.set_stroke(Some(Stroke {
-                paint: paper_color(col, o.mono).into(),
+                paint: rgb_of(col).into(),
                 width: (mm * PT_PER_MM) as f32,
                 miter_limit: 4.0,
                 line_cap: LineCap::Round,
@@ -225,7 +260,7 @@ pub fn export(d: &Drawing, o: &PdfOptions) -> Result<Vec<u8>, String> {
             continue;
         }
         surface.set_fill(Some(Fill {
-            paint: paper_color(d.color_of(e), o.mono).into(),
+            paint: rgb_of(out_color(o, d.color_of(e), e.aci.unwrap_or(0))).into(),
             opacity: NormalizedF32::ONE,
             rule: FillRule::NonZero,
         }));
@@ -305,5 +340,22 @@ mod tests {
         assert!(export(&d, &o).unwrap().len() > 1000);
         // 한글 글꼴이 부분 삽입되어 원본(1.6 MB)보다 훨씬 작다
         assert!(pdf.len() < 600_000, "{}", pdf.len());
+    }
+
+    #[test]
+    fn ctb_overrides_color_and_weight() {
+        let d = crate::import::from_document(&crate::sample::plan_grid(30));
+        let pens = PenTable::parse(&crate::ctb::tests::sample_bytes(), "시험.ctb").unwrap();
+        let o = PdfOptions {
+            pens: Some(pens),
+            ..Default::default()
+        };
+        // 색 1(빨강, 문 레이어) → 검정 0.35 mm
+        assert_eq!(out_color(&o, [255, 0, 0], 1), [0, 0, 0]);
+        assert!((out_weight(&o, 0, 1) - 0.35).abs() < 1e-9);
+        // 색 2 는 객체 그대로, 흰색(7)은 검정
+        assert_eq!(out_color(&o, [255, 255, 0], 2), [255, 255, 0]);
+        assert_eq!(out_color(&o, [255, 255, 255], 7), [0, 0, 0]);
+        assert!(export(&d, &o).unwrap().starts_with(b"%PDF-"));
     }
 }

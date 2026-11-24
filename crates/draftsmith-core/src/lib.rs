@@ -7,6 +7,7 @@
 //!
 //! 화면(앱)과 CLI 는 이 crate 만 쓴다. 화면 관련 코드는 여기에 두지 않는다.
 
+pub mod ctb;
 pub mod curve;
 pub mod display;
 pub mod drawing;

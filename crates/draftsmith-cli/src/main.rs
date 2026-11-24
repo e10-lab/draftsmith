@@ -53,6 +53,9 @@ enum Cmd {
         /// 배치 이름 (없으면 모형). 배치는 종이 단위라 보통 --scale 1
         #[arg(long)]
         layout: Option<String>,
+        /// 색 기준 출력 스타일 (.ctb 파일)
+        #[arg(long)]
+        ctb: Option<PathBuf>,
     },
 }
 
@@ -131,6 +134,7 @@ fn main() -> Result<()> {
             scale,
             mono,
             layout: lay,
+            ctb,
         } => {
             let model = import::read_file(&file)?;
             let d = match &lay {
@@ -148,7 +152,18 @@ fn main() -> Result<()> {
             let (w, h) =
                 pdf::paper_size(&paper).ok_or_else(|| anyhow::anyhow!("모르는 용지: {paper}"))?;
             let paper_mm = if portrait { (w, h) } else { (h, w) };
+            let pens = match &ctb {
+                Some(p) => Some(
+                    draftsmith_core::ctb::PenTable::parse(
+                        &std::fs::read(p)?,
+                        &p.display().to_string(),
+                    )
+                    .map_err(anyhow::Error::msg)?,
+                ),
+                None => None,
+            };
             let o = pdf::PdfOptions {
+                pens,
                 paper_mm,
                 scale,
                 mono,

@@ -359,6 +359,18 @@ struct PdfRequest {
     /// 출력 범위 [x0, y0, x1, y1] (도면 좌표). 없으면 도면 전체
     area: Option<[f64; 4]>,
     mono: bool,
+    /// 색 기준 출력 스타일 (.ctb 경로). 없으면 쓰지 않음
+    ctb: Option<String>,
+}
+
+/// CTB 파일 고르기 대화상자. 취소하면 null
+#[tauri::command]
+fn pick_ctb() -> Option<String> {
+    rfd::FileDialog::new()
+        .set_title("출력 스타일 (CTB) 고르기")
+        .add_filter("출력 스타일 (CTB)", &["ctb", "CTB"])
+        .pick_file()
+        .map(|p| p.display().to_string())
 }
 
 /// PDF 저장: 저장 대화상자 → 파일 쓰기. 취소하면 null, 저장하면 경로
@@ -371,7 +383,15 @@ fn export_pdf(req: PdfRequest, state: State<'_, AppState>) -> Result<Option<Stri
         b.add(Vec2::new(x1, y1));
         b
     });
+    let pens = match &req.ctb {
+        Some(p) if !p.is_empty() => Some(
+            draftsmith_core::ctb::PenTable::parse(&std::fs::read(p).map_err(err)?, p)
+                .map_err(|e| format!("출력 스타일을 읽지 못했습니다: {e}"))?,
+        ),
+        _ => None,
+    };
     let o = PdfOptions {
+        pens,
         paper_mm: if req.landscape { (h, w) } else { (w, h) },
         scale: req.scale,
         area,
@@ -438,6 +458,7 @@ fn main() {
             snap,
             pick_at,
             export_pdf,
+            pick_ctb,
             set_layer_visible,
             set_space,
             display_data,

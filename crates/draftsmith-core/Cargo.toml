@@ -19,6 +19,8 @@ rstar = "0.14"
 krilla = "0.8"
 # 글자 폭 (PDF 문자 맞춤) — MIT OR Apache-2.0
 ttf-parser = "0.25"
+# CTB 출력 스타일 압축 풀기 — MIT OR Apache-2.0
+flate2 = "1"
 
 [lints]
 workspace = true

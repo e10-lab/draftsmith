@@ -25,6 +25,8 @@ pub struct Entity {
     pub layer: u32,
     /// 객체 자체 색. `None` 이면 레이어 색
     pub color: Option<[u8; 3]>,
+    /// 색 번호 (ACI 1–255, ByLayer·ByBlock 을 풀어 낸 것). 트루컬러면 None — 출력 스타일(CTB)에 쓴다
+    pub aci: Option<u8>,
     /// 선 종류 (점선·중심선 등). `None` 이면 실선
     pub linetype: Option<LineStyle>,
     /// 선 굵기 (1/100 mm). `None` 이면 기본 굵기 (출력 설정에서 정함)

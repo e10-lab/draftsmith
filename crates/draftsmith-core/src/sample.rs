@@ -386,6 +386,14 @@ mod tests {
             "{ext}: {kinds:?}"
         );
         assert_eq!(d.layers[door as usize].color, [255, 0, 0], "{ext}");
+        // 색 번호: 문 블록 안 ByBlock 객체 → 참조(ByLayer) → 레이어 색 1
+        assert!(
+            d.entities
+                .iter()
+                .filter(|e| e.layer == door)
+                .all(|e| e.aci == Some(1)),
+            "{ext}"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
