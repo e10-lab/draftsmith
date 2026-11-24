@@ -9,7 +9,7 @@ use crate::curve;
 use crate::geom::{Affine, Bbox, Vec2};
 
 /// 레이어
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Layer {
     pub name: String,
     /// 표시 색 (RGB)
@@ -19,7 +19,7 @@ pub struct Layer {
 }
 
 /// 작도 객체 하나
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Entity {
     /// [`Drawing::layers`] 의 번호
     pub layer: u32,
@@ -35,7 +35,7 @@ pub struct Entity {
 }
 
 /// 객체에 적용한 선 종류
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LineStyle {
     /// [`Drawing::linetypes`] 의 번호
     pub pattern: u16,
@@ -44,7 +44,7 @@ pub struct LineStyle {
 }
 
 /// 선 종류 무늬
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LinePattern {
     pub name: String,
     /// 대시 길이: 양수 = 선, 음수 = 빈칸, 0 = 점
@@ -52,7 +52,7 @@ pub struct LinePattern {
 }
 
 /// 문자 세로 맞춤
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum VAlign {
     /// 글자 바탕선 (TEXT 기본)
     #[default]
@@ -64,7 +64,7 @@ pub enum VAlign {
 }
 
 /// 문자
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TextShape {
     /// 맞춤 기준점
     pub at: Vec2,
@@ -82,7 +82,7 @@ pub struct TextShape {
 }
 
 /// 모양. 각도는 라디안, 반시계 방향.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Shape {
     Line {
         a: Vec2,
@@ -309,7 +309,8 @@ impl Shape {
 }
 
 /// 도면 한 장
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Drawing {
     pub layers: Vec<Layer>,
     pub entities: Vec<Entity>,
@@ -327,6 +328,10 @@ pub struct Drawing {
     pub layouts: Vec<crate::layout::Layout>,
     /// 깨진 곳이 있어 복구 모드로 읽었으면 처음 오류 내용
     pub recovered: Option<String>,
+    /// 새로 그리는 객체가 들어갈 레이어 (현재 레이어)
+    pub current_layer: u32,
+    /// 건축 객체 (벽·문·창·실·그리드·층) — M3
+    pub arch: crate::arch::ArchModel,
 }
 
 impl Drawing {

@@ -1,7 +1,7 @@
 //! 2D 기하 기본형. 좌표는 모두 f64 (도면 단위, 보통 mm).
 
 /// 2D 점·벡터
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Vec2 {
     pub x: f64,
     pub y: f64,
@@ -22,7 +22,7 @@ impl Vec2 {
 }
 
 /// 축 정렬 경계 상자. 비어 있으면 `min > max`.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Bbox {
     pub min: Vec2,
     pub max: Vec2,
@@ -89,7 +89,7 @@ impl Bbox {
 
 /// 2D 아핀 변환: `x' = a·x + c·y + e`, `y' = b·x + d·y + f`.
 /// 블록 참조(INSERT)의 이동·회전·축척·대칭을 담는다.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Affine {
     pub a: f64,
     pub b: f64,

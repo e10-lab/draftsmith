@@ -21,6 +21,10 @@ krilla = "0.8"
 ttf-parser = "0.25"
 # CTB 출력 스타일 압축 풀기 — MIT OR Apache-2.0
 flate2 = "1"
+# 도면 저장(.dsmith) — MIT OR Apache-2.0 / MIT
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [lints]
 workspace = true

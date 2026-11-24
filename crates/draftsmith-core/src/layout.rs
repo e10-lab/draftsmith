@@ -9,7 +9,7 @@ use crate::geom::{Affine, Bbox, Vec2};
 use crate::pick;
 
 /// 뷰포트 하나 (종이 공간 사각형 안에 모형 공간을 보여 줌)
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ViewportView {
     /// 종이 위 가운데·크기 (종이 단위, 보통 mm)
     pub center: Vec2,
@@ -58,7 +58,7 @@ impl ViewportView {
 }
 
 /// 배치 하나
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Layout {
     pub name: String,
     /// 탭 순서

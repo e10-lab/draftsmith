@@ -46,6 +46,9 @@ fn is_dwg(path: &Path) -> std::io::Result<bool> {
 /// 그때는 [`Drawing::recovered`] 를 켠다 (구현 노트 §14).
 pub fn read_file(path: impl AsRef<Path>) -> Result<Drawing, ImportError> {
     let path = path.as_ref();
+    if crate::docfile::is_dsmith(path) {
+        return crate::docfile::load(path).map_err(ImportError::Cad);
+    }
     let dwg = is_dwg(path)?;
     let strict = if dwg {
         DwgReader::from_file(path).and_then(|mut r| r.read())
