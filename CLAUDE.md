@@ -14,6 +14,7 @@
 ## 개발
 - 구조는 BEATS 와 같다: `draftsmith-core`(화면 코드 없음) · `draftsmith-cli`(`dsmith`) · `draftsmith-app`(Tauri 2, `ui/` 는 순수 JS 모듈, npm 없음).
 - 대상 OS 는 macOS·Windows. 브라우저·Linux 는 대상이 아니다 (Linux 는 개발 환경에서 시험용으로만 쓴다).
-- 커밋 전에 `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test` 를 통과시킨다.
+- 커밋 전에 `sh tools/check.sh` 를 돌려 통과한 뒤 커밋한다 (fmt 검사·clippy 경고 금지·시험 — 하나라도 실패하면 멈춤).
+  검사와 커밋을 `;` 나 `&&` 로 한 줄에 묶지 말고, 검사 결과를 본 다음 커밋한다.
 - 측정용 큰 도면(`examples/bench-*`)은 저장소에 넣지 않는다. `dsmith sample` 로 다시 만든다.
 - `main` 에 올리면 CI 가 macOS·Windows 앱을 만든다. 빌드가 도는 중에 다시 올리면 앞 빌드가 취소되므로, 앱 빌드 결과가 필요할 때는 끝난 뒤 올린다.
