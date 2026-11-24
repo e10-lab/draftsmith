@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Instant;
 
+use draftsmith_core::layout;
 use draftsmith_core::pdf::{self, PdfOptions};
 use draftsmith_core::pick::{self, PickIndex};
 use draftsmith_core::snap::SnapIndex;
@@ -24,12 +25,35 @@ use tauri::{AppHandle, Manager, State};
 /// 열린 도면
 #[derive(Default)]
 struct Open {
+    /// 모형 공간 도면 (배치 정보 포함)
     drawing: Option<Drawing>,
+    /// 지금 보는 배치 (번호, 종이 좌표로 합친 도면). None 이면 모형
+    sheet: Option<(usize, Drawing)>,
     path: Option<PathBuf>,
     /// 스냅 점 색인 (켜진 레이어만)
     snaps: Option<SnapIndex>,
     /// 객체 고르기 색인 (켜진 레이어만)
     picks: Option<PickIndex>,
+}
+
+impl Open {
+    /// 지금 화면에 보이는 도면 (배치를 고르면 합친 종이 도면)
+    fn shown(&self) -> Option<&Drawing> {
+        self.sheet
+            .as_ref()
+            .map(|(_, d)| d)
+            .or(self.drawing.as_ref())
+    }
+
+    /// 지금 보이는 도면으로 스냅·고르기 색인을 다시 만든다
+    fn reindex(&mut self) {
+        let (snaps, picks) = match self.shown() {
+            Some(d) => (Some(SnapIndex::build(d)), Some(PickIndex::build(d))),
+            None => (None, None),
+        };
+        self.snaps = snaps;
+        self.picks = picks;
+    }
 }
 
 /// 최근 파일 목록 최대 개수
@@ -167,6 +191,8 @@ struct Summary {
     layers: Vec<LayerInfo>,
     skipped: Vec<(String, usize)>,
     read_ms: f64,
+    /// 배치 이름 (탭 순서)
+    layouts: Vec<String>,
 }
 
 fn summary(d: &Drawing, path: String, read_ms: f64) -> Summary {
@@ -194,6 +220,7 @@ fn summary(d: &Drawing, path: String, read_ms: f64) -> Summary {
             .collect(),
         skipped: d.skipped.iter().map(|(k, n)| (k.clone(), *n)).collect(),
         read_ms,
+        layouts: d.layouts.iter().map(|l| l.name.clone()).collect(),
     }
 }
 
@@ -222,6 +249,7 @@ async fn open_drawing(
     remember(&app, &path);
     let mut open = state.lock().map_err(err)?;
     open.drawing = Some(d);
+    open.sheet = None;
     open.snaps = Some(snaps);
     open.picks = Some(picks);
     open.path = Some(PathBuf::from(path));
@@ -265,11 +293,28 @@ fn set_layer_visible(
         .get_mut(index)
         .ok_or("레이어 번호가 잘못되었습니다")?;
     l.visible = visible;
-    // 꺼진 레이어에는 스냅하지 않게 색인을 다시 만든다
-    let snaps = SnapIndex::build(d);
-    let picks = PickIndex::build(d);
-    open.snaps = Some(snaps);
-    open.picks = Some(picks);
+    // 배치를 보고 있으면 다시 합치고, 꺼진 레이어에는 스냅하지 않게 색인을 다시 만든다
+    if let Some(i) = open.sheet.as_ref().map(|(i, _)| *i) {
+        let d = open.drawing.as_ref().ok_or("열린 도면이 없습니다")?;
+        open.sheet = layout::compose(d, i).map(|s| (i, s));
+    }
+    open.reindex();
+    Ok(())
+}
+
+/// 볼 공간 고르기: null 이면 모형, 번호면 그 배치
+#[tauri::command]
+fn set_space(index: Option<usize>, state: State<'_, AppState>) -> Result<(), String> {
+    let mut open = state.lock().map_err(err)?;
+    let d = open.drawing.as_ref().ok_or("열린 도면이 없습니다")?;
+    open.sheet = match index {
+        None => None,
+        Some(i) => Some((
+            i,
+            layout::compose(d, i).ok_or("배치 번호가 잘못되었습니다")?,
+        )),
+    };
+    open.reindex();
     Ok(())
 }
 
@@ -286,7 +331,7 @@ struct PickOut {
 #[tauri::command]
 fn pick_at(x: f64, y: f64, r: f64, state: State<'_, AppState>) -> Result<Option<PickOut>, String> {
     let open = state.lock().map_err(err)?;
-    let (Some(d), Some(idx)) = (open.drawing.as_ref(), open.picks.as_ref()) else {
+    let (Some(d), Some(idx)) = (open.shown(), open.picks.as_ref()) else {
         return Ok(None);
     };
     Ok(idx.pick(d, Vec2::new(x, y), r).map(|i| PickOut {
@@ -332,7 +377,7 @@ fn export_pdf(req: PdfRequest, state: State<'_, AppState>) -> Result<Option<Stri
     };
     let (bytes, stem, dir) = {
         let open = state.lock().map_err(err)?;
-        let d = open.drawing.as_ref().ok_or("열린 도면이 없습니다")?;
+        let d = open.shown().ok_or("열린 도면이 없습니다")?;
         let stem = open
             .path
             .as_ref()
@@ -364,7 +409,7 @@ fn export_pdf(req: PdfRequest, state: State<'_, AppState>) -> Result<Option<Stri
 #[tauri::command]
 fn display_data(state: State<'_, AppState>) -> Result<Response, String> {
     let open = state.lock().map_err(err)?;
-    let d = open.drawing.as_ref().ok_or("열린 도면이 없습니다")?;
+    let d = open.shown().ok_or("열린 도면이 없습니다")?;
     Ok(Response::new(display::segments(d).to_bytes()))
 }
 
@@ -372,7 +417,7 @@ fn display_data(state: State<'_, AppState>) -> Result<Response, String> {
 #[tauri::command]
 fn text_data(state: State<'_, AppState>) -> Result<Response, String> {
     let open = state.lock().map_err(err)?;
-    let d = open.drawing.as_ref().ok_or("열린 도면이 없습니다")?;
+    let d = open.shown().ok_or("열린 도면이 없습니다")?;
     Ok(Response::new(display::texts(d)))
 }
 
@@ -391,6 +436,7 @@ fn main() {
             pick_at,
             export_pdf,
             set_layer_visible,
+            set_space,
             display_data,
             text_data
         ])

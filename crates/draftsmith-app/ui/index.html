@@ -19,7 +19,7 @@
         <h4>PDF 저장</h4>
         <label>용지 <select id="pdf-paper"><option>A4</option><option selected>A3</option><option>A2</option><option>A1</option><option>A0</option></select></label>
         <label>방향 <select id="pdf-orient"><option value="land" selected>가로</option><option value="port">세로</option></select></label>
-        <label>축척 <select id="pdf-scale"><option value="" selected>용지에 맞춤</option><option value="50">1:50</option><option value="100">1:100</option><option value="200">1:200</option><option value="300">1:300</option><option value="500">1:500</option><option value="1000">1:1000</option></select></label>
+        <label>축척 <select id="pdf-scale"><option value="" selected>용지에 맞춤</option><option value="1">1:1 (배치)</option><option value="50">1:50</option><option value="100">1:100</option><option value="200">1:200</option><option value="300">1:300</option><option value="500">1:500</option><option value="1000">1:1000</option></select></label>
         <label>범위 <select id="pdf-area"><option value="all" selected>도면 전체</option><option value="view">지금 화면</option></select></label>
         <label>색 <select id="pdf-color"><option value="color" selected>컬러</option><option value="mono">흑백</option></select></label>
         <p class="muted small">축척은 도면 단위가 mm 일 때 기준입니다.</p>
@@ -45,6 +45,7 @@
       <canvas id="text"></canvas>
       <canvas id="overlay"></canvas>
       <div id="cursor" class="cursor muted small"></div>
+      <nav id="spaces" class="spaces" hidden></nav>
     </section>
   </main>
   <script type="module" src="js/main.js"></script>

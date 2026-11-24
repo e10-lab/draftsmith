@@ -133,14 +133,24 @@ pub fn export(d: &Drawing, o: &PdfOptions) -> Result<Vec<u8>, String> {
     let mut page = doc.start_page_with(settings);
     let mut surface = page.surface();
 
-    // 출력 범위로 자르기
-    let (x0, y0) = to_page(area.min.x, area.max.y);
-    let (x1, y1) = to_page(area.max.x, area.min.y);
-    if let Some(r) = Rect::from_ltrb(x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)) {
-        let mut pb = PathBuilder::new();
-        pb.push_rect(r);
-        if let Some(clip) = pb.finish() {
-            surface.push_clip_path(&clip, &FillRule::NonZero);
+    // 범위를 정했을 때만 잘라낸다 (도면 전체면 자를 것이 없다). 경계 위 선이 반쯤 잘리지 않게 1 mm 여유
+    let mut clipped = false;
+    if o.area.is_some() {
+        let pad = (PT_PER_MM) as f32;
+        let (x0, y0) = to_page(area.min.x, area.max.y);
+        let (x1, y1) = to_page(area.max.x, area.min.y);
+        if let Some(r) = Rect::from_ltrb(
+            x0.min(x1) - pad,
+            y0.min(y1) - pad,
+            x0.max(x1) + pad,
+            y0.max(y1) + pad,
+        ) {
+            let mut pb = PathBuilder::new();
+            pb.push_rect(r);
+            if let Some(clip) = pb.finish() {
+                surface.push_clip_path(&clip, &FillRule::NonZero);
+                clipped = true;
+            }
         }
     }
 
@@ -262,7 +272,9 @@ pub fn export(d: &Drawing, o: &PdfOptions) -> Result<Vec<u8>, String> {
         }
         surface.pop();
     }
-    surface.pop(); // 자르기
+    if clipped {
+        surface.pop(); // 자르기
+    }
     surface.finish();
     page.finish();
     doc.finish()

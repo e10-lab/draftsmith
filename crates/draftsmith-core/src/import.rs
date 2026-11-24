@@ -15,6 +15,7 @@ use crate::curve;
 use crate::drawing::{Drawing, Entity, LinePattern, LineStyle, Shape, TextShape, VAlign};
 use crate::fill::{self, PatternLine};
 use crate::geom::{Affine, Bbox, Vec2};
+use crate::layout::{Layout, ViewportView};
 use crate::text::{plain_mtext, plain_text};
 
 /// 해치 하나에서 만들 무늬 선분의 최대 수. 넘으면 무늬 대신 경계선만 그린다.
@@ -783,7 +784,78 @@ pub fn from_document(doc: &CadDocument) -> Drawing {
     for e in doc.model_space_entities() {
         c.entity(e, &Affine::IDENTITY, None);
     }
+    read_layouts(&mut c);
     c.d
+}
+
+/// 배치(종이 공간)마다 종이 객체를 펼치고 뷰포트를 모은다 (구현 노트 §13).
+fn read_layouts(c: &mut Converter) {
+    use acadrust::objects::ObjectType;
+    let doc = c.doc;
+    let mut layouts = Vec::new();
+    for obj in doc.objects.values() {
+        let ObjectType::Layout(l) = obj else { continue };
+        if l.name.eq_ignore_ascii_case("Model") {
+            continue;
+        }
+        let Some(br) = doc
+            .block_records
+            .iter()
+            .find(|b| b.handle == l.block_record)
+        else {
+            continue;
+        };
+        // 종이 객체를 모형 객체와 섞지 않게 잠시 비운 목록에 받는다
+        let model = std::mem::take(&mut c.d.entities);
+        let mut viewports = Vec::new();
+        for e in doc.entities_in_block(&br.name) {
+            match e {
+                EntityType::Viewport(v) => {
+                    // 번호 1 은 종이 전체를 보여 주는 뷰포트라 뺀다. 꺼진 것·3D 방향도 뺀다
+                    let dir = &v.view_direction;
+                    if v.id == 1 || v.status.is_off || v.width <= 0.0 || v.height <= 0.0 {
+                        continue;
+                    }
+                    if dir.x.abs() > 1e-6 || dir.y.abs() > 1e-6 || dir.z < 0.0 {
+                        c.skip("VIEWPORT(3D 방향)");
+                        continue;
+                    }
+                    let frozen = v
+                        .frozen_layers
+                        .iter()
+                        .filter_map(|h| doc.layers.iter().find(|l| l.handle == *h))
+                        .map(|l| l.name.clone())
+                        .collect::<Vec<_>>()
+                        .iter()
+                        .map(|n| c.layer(n))
+                        .collect();
+                    viewports.push(ViewportView {
+                        center: v2(&v.center),
+                        width: v.width,
+                        height: v.height,
+                        view_center: v2(&v.view_center),
+                        view_height: v.view_height,
+                        twist: v.twist_angle,
+                        target: v2(&v.view_target),
+                        frozen,
+                    });
+                }
+                e => c.entity(e, &Affine::IDENTITY, None),
+            }
+        }
+        let paper = std::mem::replace(&mut c.d.entities, model);
+        if paper.is_empty() && viewports.is_empty() {
+            continue; // 빈 배치 (새 도면의 Layout1 등)
+        }
+        layouts.push(Layout {
+            name: l.name.clone(),
+            order: l.tab_order,
+            paper,
+            viewports,
+        });
+    }
+    layouts.sort_by_key(|l| l.order);
+    c.d.layouts = layouts;
 }
 
 #[cfg(test)]

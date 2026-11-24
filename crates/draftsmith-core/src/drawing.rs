@@ -321,6 +321,8 @@ pub struct Drawing {
     pub units: i16,
     /// 선 종류 무늬 (실선이 아닌 것만)
     pub linetypes: Vec<LinePattern>,
+    /// 배치 (종이 공간). 탭 순서대로
+    pub layouts: Vec<crate::layout::Layout>,
 }
 
 impl Drawing {

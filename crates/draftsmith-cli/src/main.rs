@@ -4,14 +4,14 @@
 //! - `dsmith sample 개수 출력.dxf` : M0 측정용 격자 평면 도면 만들기
 //! - `dsmith bench 도면.dxf|dwg` : 읽기·표시 데이터 만들기 시간 (M0 ①·②)
 //! - `dsmith display 도면 출력.bin` : 표시 데이터를 파일로 (화면 시험용)
-//! - `dsmith pdf 도면 출력.pdf [--paper A3] [--portrait] [--scale 100] [--mono]` : PDF 출력
+//! - `dsmith pdf 도면 출력.pdf [--paper A3] [--portrait] [--scale 100] [--mono] [--layout 이름]` : PDF 출력
 
 use std::path::PathBuf;
 use std::time::Instant;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use draftsmith_core::{display, import, pdf, sample};
+use draftsmith_core::{display, import, layout, pdf, sample};
 
 #[derive(Parser)]
 #[command(name = "dsmith", version = env!("DRAFTSMITH_VERSION"), about = "DraftSmith 명령행")]
@@ -50,6 +50,9 @@ enum Cmd {
         /// 흑백
         #[arg(long)]
         mono: bool,
+        /// 배치 이름 (없으면 모형). 배치는 종이 단위라 보통 --scale 1
+        #[arg(long)]
+        layout: Option<String>,
     },
 }
 
@@ -85,6 +88,14 @@ fn main() -> Result<()> {
             if !b.is_empty() {
                 println!("범위      {:.0} × {:.0}", b.width(), b.height());
             }
+            for l in &d.layouts {
+                println!(
+                    "배치      {} (종이 객체 {}, 뷰포트 {})",
+                    l.name,
+                    l.paper.len(),
+                    l.viewports.len()
+                );
+            }
         }
         Cmd::Sample { count, out } => {
             sample::write_plan_grid(count, &out).map_err(anyhow::Error::msg)?;
@@ -116,8 +127,21 @@ fn main() -> Result<()> {
             portrait,
             scale,
             mono,
+            layout: lay,
         } => {
-            let d = import::read_file(&file)?;
+            let model = import::read_file(&file)?;
+            let d = match &lay {
+                None => model,
+                Some(name) => {
+                    let i = model
+                        .layouts
+                        .iter()
+                        .position(|l| l.name == *name)
+                        .ok_or_else(|| anyhow::anyhow!("배치 「{name}」 가 없습니다"))?;
+                    layout::compose(&model, i)
+                        .ok_or_else(|| anyhow::anyhow!("배치를 합치지 못했습니다"))?
+                }
+            };
             let (w, h) =
                 pdf::paper_size(&paper).ok_or_else(|| anyhow::anyhow!("모르는 용지: {paper}"))?;
             let paper_mm = if portrait { (w, h) } else { (h, w) };

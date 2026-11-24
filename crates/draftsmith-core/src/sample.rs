@@ -222,7 +222,61 @@ pub fn plan_grid(n: usize) -> CadDocument {
             "A-DIMS",
         );
     }
+    add_sheet(&mut doc, cols, cells, w, h);
     doc
+}
+
+/// 배치(Layout1)에 A3 도곽·표제란과 1:100 뷰포트를 넣는다 (종이 단위 mm)
+fn add_sheet(doc: &mut CadDocument, cols: usize, cells: usize, w: f64, h: f64) {
+    let paper = |doc: &mut CadDocument, e: EntityType| {
+        let _ = doc.add_paper_space_entity(on(e, "A-ANNO", Color::ByLayer));
+    };
+    // 도곽 (A3 가로 420 × 297, 여백 10)
+    let mut frame = LwPolyline::from_points(vec![
+        Vector2::new(10.0, 10.0),
+        Vector2::new(410.0, 10.0),
+        Vector2::new(410.0, 287.0),
+        Vector2::new(10.0, 287.0),
+    ]);
+    frame.is_closed = true;
+    paper(doc, EntityType::LwPolyline(frame));
+    // 표제란
+    paper(
+        doc,
+        EntityType::Line(Line::from_coords(290.0, 10.0, 0.0, 290.0, 40.0, 0.0)),
+    );
+    paper(
+        doc,
+        EntityType::Line(Line::from_coords(290.0, 40.0, 0.0, 410.0, 40.0, 0.0)),
+    );
+    let mut title = Text::with_value("평면도  1:100", Vector3::new(300.0, 22.0, 0.0));
+    title.height = 5.0;
+    paper(doc, EntityType::Text(title));
+    // 종이 전체 뷰포트 (AutoCAD 는 배치마다 이것을 첫 뷰포트로 둔다 — DWG 는 번호를 저장하지 않아
+    // 읽을 때 순서대로 번호가 붙으므로, 이것이 먼저 와야 실제 뷰포트가 2 번이 된다. 구현 노트 §13)
+    let mut overall = acadrust::entities::Viewport::new();
+    overall.id = 1;
+    overall.center = Vector3::new(210.0, 148.5, 0.0);
+    overall.width = 462.0;
+    overall.height = 326.7;
+    overall.view_center = Vector3::new(210.0, 148.5, 0.0);
+    overall.view_height = 326.7;
+    overall.view_direction = Vector3::new(0.0, 0.0, 1.0);
+    overall.status.is_on = true;
+    paper(doc, EntityType::Viewport(Box::new(overall)));
+    // 뷰포트: 도곽 안쪽 위, 모형 왼쪽 아래 칸들을 1:100 으로
+    let rows = cells.div_ceil(cols.max(1));
+    let (mw, mh) = (cols as f64 * w, rows as f64 * h);
+    let mut vp = acadrust::entities::Viewport::new();
+    vp.id = 2;
+    vp.center = Vector3::new(210.0, 160.0, 0.0);
+    vp.width = 380.0;
+    vp.height = 220.0;
+    vp.view_height = 220.0 * 100.0;
+    vp.view_center = Vector3::new((mw / 2.0).min(19000.0), (mh / 2.0).min(11000.0), 0.0);
+    vp.view_direction = Vector3::new(0.0, 0.0, 1.0);
+    vp.status.is_on = true;
+    paper(doc, EntityType::Viewport(Box::new(vp)));
 }
 
 /// [`plan_grid`] 를 파일로 쓴다. 확장자가 `.dwg` 면 DWG, 아니면 DXF.
@@ -312,6 +366,19 @@ mod tests {
         };
         assert_eq!(w_of(wall), Some(50), "{ext}");
         assert_eq!(w_of(dims), Some(13), "{ext}");
+        // 배치: 도곽·표제란(한글)과 뷰포트 하나, 1:100
+        let lay = d.layouts.first().expect("배치");
+        assert_eq!(lay.viewports.len(), 1, "{ext}");
+        assert!(
+            (lay.viewports[0].view_height / lay.viewports[0].height - 100.0).abs() < 1e-9,
+            "{ext}"
+        );
+        let sheet = crate::layout::compose(&d, 0).unwrap();
+        assert!(texts(&sheet).contains(&"평면도  1:100"), "{ext}");
+        assert!(
+            sheet.entities.len() > lay.paper.len(),
+            "모형이 뷰포트에 들어와야 함 ({ext})"
+        );
         // 해치: 무늬(선분 묶음)와 솔리드(채움)가 모두 있다
         let kinds = d.counts();
         assert!(

@@ -89,3 +89,11 @@ select {
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 /* display 를 준 요소도 hidden 이면 숨긴다 (작성자 CSS 가 hidden 기본 스타일을 덮지 않게) */
 [hidden] { display: none !important; }
+
+/* 모형·배치 탭 (도면 아래 왼쪽) */
+.spaces { position: absolute; left: 10px; bottom: 6px; display: flex; gap: 2px; }
+.spaces button {
+  font-size: 12px; padding: 2px 10px; border-radius: 4px 4px 0 0;
+  background: rgba(127,127,127,.22); border: 1px solid transparent; color: var(--muted);
+}
+.spaces button.on { background: var(--panel); color: var(--text); border-color: var(--line); }

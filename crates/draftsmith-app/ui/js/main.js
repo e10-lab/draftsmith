@@ -80,6 +80,34 @@ function renderLayers(sum) {
     : "";
 }
 
+/** 모형·배치 탭 */
+function renderSpaces(layouts) {
+  const nav = $("spaces");
+  nav.replaceChildren();
+  nav.hidden = layouts.length === 0;
+  const tabs = [["모형", null], ...layouts.map((n, i) => [n, i])];
+  for (const [name, index] of tabs) {
+    const b = document.createElement("button");
+    b.textContent = name;
+    b.classList.toggle("on", index === null);
+    b.addEventListener("click", () => showSpace(index, b));
+    nav.append(b);
+  }
+}
+
+async function showSpace(index, button) {
+  try {
+    await invoke("set_space", { index });
+    select.clear();
+    for (const b of $("spaces").children) b.classList.toggle("on", b === button);
+    // 배치는 종이 단위(mm)라 PDF 는 1:1 이 알맞다
+    $("pdf-scale").value = index === null ? "" : "1";
+    await refresh();
+  } catch (e) {
+    status(`배치를 보여 주지 못했습니다: ${e}`);
+  }
+}
+
 async function loadRecent() {
   const list = await invoke("recent_files");
   const sel = $("recent");
@@ -94,6 +122,8 @@ async function open(path) {
     const sum = await invoke("open_drawing", { path });
     select.clear();
     renderLayers(sum);
+    renderSpaces(sum.layouts);
+    $("pdf-scale").value = "";
     const t = await refresh();
     const name = path.split(/[\\/]/).pop();
     document.title = `${name} — DraftSmith`;
