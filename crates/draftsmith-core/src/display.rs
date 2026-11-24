@@ -168,6 +168,34 @@ pub fn segments(d: &Drawing) -> Segments {
                 }
                 push_arc(&mut s, *center, *radius, *start, sweep, tol, col);
             }
+            Shape::Ellipse {
+                center,
+                u,
+                v,
+                start,
+                end,
+            } => {
+                let mut sweep = end - start;
+                if sweep <= 0.0 {
+                    sweep += TAU;
+                }
+                // 조각 수는 긴 쪽 반지름으로
+                let r = u.x.hypot(u.y).max(v.x.hypot(v.y));
+                let n = arc_steps(r, sweep, tol);
+                let at = |t: f64| {
+                    let (sn, cs) = t.sin_cos();
+                    Vec2::new(
+                        center.x + u.x * cs + v.x * sn,
+                        center.y + u.y * cs + v.y * sn,
+                    )
+                };
+                let mut prev = at(*start);
+                for i in 1..=n {
+                    let p = at(start + sweep * i as f64 / n as f64);
+                    s.push(prev, p, col);
+                    prev = p;
+                }
+            }
             Shape::Text {
                 at,
                 height,

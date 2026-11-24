@@ -61,7 +61,9 @@ async function open(path) {
     const name = path.split(/[\\/]/).pop();
     document.title = `${name} — DraftSmith`;
     status(
-      `${name} · 객체 ${fmt(sum.entities)} 개 · 읽기 ${ms(sum.read_ms)} · ` +
+      `${name} · 객체 ${fmt(sum.entities)} 개` +
+        (sum.inserts ? ` (블록 ${fmt(sum.inserts)} 개 펼침)` : "") +
+        ` · 읽기 ${ms(sum.read_ms)} · ` +
         `전달 ${ms(t.transfer)} (${t.mb.toFixed(1)} MB) · 올리기 ${ms(t.upload)}`,
     );
   } catch (e) {

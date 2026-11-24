@@ -14,4 +14,4 @@ pub mod import;
 pub mod sample;
 
 pub use drawing::{Drawing, Entity, Layer, Shape};
-pub use geom::{Bbox, Vec2};
+pub use geom::{Affine, Bbox, Vec2};

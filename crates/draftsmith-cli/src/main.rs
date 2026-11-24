@@ -50,7 +50,11 @@ fn main() -> Result<()> {
                 }
             );
             println!("레이어    {} 개", d.layers.len());
-            println!("객체      {} 개", d.entities.len());
+            println!(
+                "객체      {} 개 (블록 참조 {} 개 펼침)",
+                d.entities.len(),
+                d.inserts
+            );
             for (k, n) in d.counts() {
                 println!("  {k:<8} {n}");
             }

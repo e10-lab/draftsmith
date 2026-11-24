@@ -56,6 +56,7 @@ struct Summary {
     path: String,
     code_page: String,
     entities: usize,
+    inserts: usize,
     layers: Vec<LayerInfo>,
     skipped: Vec<(String, usize)>,
     read_ms: f64,
@@ -72,6 +73,7 @@ fn summary(d: &Drawing, path: String, read_ms: f64) -> Summary {
         path,
         code_page: d.code_page.clone(),
         entities: d.entities.len(),
+        inserts: d.inserts,
         layers: d
             .layers
             .iter()
