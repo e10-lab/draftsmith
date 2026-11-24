@@ -13,10 +13,11 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Instant;
 
+use draftsmith_core::pdf::{self, PdfOptions};
 use draftsmith_core::pick::{self, PickIndex};
 use draftsmith_core::snap::SnapIndex;
-use draftsmith_core::{Drawing, Vec2, display, import};
-use serde::Serialize;
+use draftsmith_core::{Bbox, Drawing, Vec2, display, import};
+use serde::{Deserialize, Serialize};
 use tauri::ipc::Response;
 use tauri::{AppHandle, Manager, State};
 
@@ -61,6 +62,49 @@ fn recent_files(app: AppHandle) -> Vec<String> {
         .into_iter()
         .filter(|p| std::path::Path::new(p).is_file())
         .collect()
+}
+
+/// 화면 설정 파일 (앱 설정 폴더의 settings.txt, 한 줄에 `이름=값`)
+fn settings_path(app: &AppHandle) -> Option<PathBuf> {
+    app.path()
+        .app_config_dir()
+        .ok()
+        .map(|d| d.join("settings.txt"))
+}
+
+fn read_settings(app: &AppHandle) -> Vec<(String, String)> {
+    settings_path(app)
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|s| {
+            s.lines()
+                .filter_map(|l| l.split_once('='))
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 화면 설정 하나 읽기 (없으면 null)
+#[tauri::command]
+fn get_setting(key: String, app: AppHandle) -> Option<String> {
+    read_settings(&app)
+        .into_iter()
+        .find(|(k, _)| *k == key)
+        .map(|(_, v)| v)
+}
+
+/// 화면 설정 하나 쓰기
+#[tauri::command]
+fn set_setting(key: String, value: String, app: AppHandle) -> Result<(), String> {
+    let mut all = read_settings(&app);
+    all.retain(|(k, _)| *k != key);
+    all.push((key, value.replace('\n', " ")));
+    let p = settings_path(&app).ok_or("설정 폴더를 찾지 못했습니다")?;
+    if let Some(dir) = p.parent() {
+        std::fs::create_dir_all(dir).map_err(err)?;
+    }
+    let text: String = all.iter().map(|(k, v)| format!("{k}={v}\n")).collect();
+    std::fs::write(p, text).map_err(err)
 }
 
 fn remember(app: &AppHandle, path: &str) {
@@ -255,6 +299,67 @@ fn pick_at(x: f64, y: f64, r: f64, state: State<'_, AppState>) -> Result<Option<
     }))
 }
 
+/// PDF 출력 설정 (화면에서)
+#[derive(Deserialize)]
+struct PdfRequest {
+    /// A4 … A0
+    paper: String,
+    /// 가로 방향
+    landscape: bool,
+    /// 축척 분모. 없으면 용지에 맞춤
+    scale: Option<f64>,
+    /// 출력 범위 [x0, y0, x1, y1] (도면 좌표). 없으면 도면 전체
+    area: Option<[f64; 4]>,
+    mono: bool,
+}
+
+/// PDF 저장: 저장 대화상자 → 파일 쓰기. 취소하면 null, 저장하면 경로
+#[tauri::command]
+fn export_pdf(req: PdfRequest, state: State<'_, AppState>) -> Result<Option<String>, String> {
+    let (w, h) = pdf::paper_size(&req.paper).ok_or("모르는 용지입니다")?;
+    let area = req.area.map(|[x0, y0, x1, y1]| {
+        let mut b = Bbox::EMPTY;
+        b.add(Vec2::new(x0, y0));
+        b.add(Vec2::new(x1, y1));
+        b
+    });
+    let o = PdfOptions {
+        paper_mm: if req.landscape { (h, w) } else { (w, h) },
+        scale: req.scale,
+        area,
+        mono: req.mono,
+        ..Default::default()
+    };
+    let (bytes, stem, dir) = {
+        let open = state.lock().map_err(err)?;
+        let d = open.drawing.as_ref().ok_or("열린 도면이 없습니다")?;
+        let stem = open
+            .path
+            .as_ref()
+            .and_then(|p| p.file_stem())
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "도면".into());
+        let dir = open
+            .path
+            .as_ref()
+            .and_then(|p| p.parent())
+            .map(|p| p.to_path_buf());
+        (pdf::export(d, &o)?, stem, dir)
+    };
+    let mut dlg = rfd::FileDialog::new()
+        .set_title("PDF 저장")
+        .add_filter("PDF", &["pdf"])
+        .set_file_name(format!("{stem}.pdf"));
+    if let Some(dir) = dir {
+        dlg = dlg.set_directory(dir);
+    }
+    let Some(path) = dlg.save_file() else {
+        return Ok(None);
+    };
+    std::fs::write(&path, bytes).map_err(err)?;
+    Ok(Some(path.display().to_string()))
+}
+
 /// 표시 데이터 (바이너리, 형식은 `draftsmith_core::display`)
 #[tauri::command]
 fn display_data(state: State<'_, AppState>) -> Result<Response, String> {
@@ -279,9 +384,12 @@ fn main() {
             startup_file,
             pick_drawing,
             recent_files,
+            get_setting,
+            set_setting,
             open_drawing,
             snap,
             pick_at,
+            export_pdf,
             set_layer_visible,
             display_data,
             text_data

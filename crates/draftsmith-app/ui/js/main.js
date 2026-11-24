@@ -134,25 +134,50 @@ $("recent").addEventListener("change", (e) => {
 $("fit").addEventListener("click", () => viewer.fit());
 $("measure").addEventListener("click", () => setMeasure(viewer.tool !== measure));
 
-/** 흰 배경 켜기·끄기 (이 컴퓨터에 기억) */
-function setPaper(on) {
+/** 흰 배경 켜기·끄기 (앱 설정 폴더에 기억 — 다음에 열 때도) */
+function setPaper(on, save = true) {
   viewer.paper = on;
   $("paper").classList.toggle("on", on);
-  try {
-    localStorage.setItem("paper", on ? "1" : "0");
-  } catch {}
+  if (save) invoke("set_setting", { key: "paper", value: on ? "1" : "0" }).catch(() => {});
   viewer.draw();
 }
 $("paper").addEventListener("click", () => setPaper(!viewer.paper));
-try {
-  setPaper(localStorage.getItem("paper") === "1");
-} catch {}
+invoke("get_setting", { key: "paper" }).then((v) => setPaper(v === "1", false), () => {});
+
+// PDF 저장
+function togglePdf(show = $("pdf-pop").hidden) {
+  if (show && !opened) return;
+  $("pdf-pop").hidden = !show;
+}
+$("pdf").addEventListener("click", () => togglePdf());
+$("pdf-cancel").addEventListener("click", () => togglePdf(false));
+$("pdf-save").addEventListener("click", async () => {
+  const scale = $("pdf-scale").value;
+  const req = {
+    paper: $("pdf-paper").value,
+    landscape: $("pdf-orient").value === "land",
+    scale: scale ? Number(scale) : null,
+    area: $("pdf-area").value === "view" ? viewer.viewBox() : null,
+    mono: $("pdf-color").value === "mono",
+  };
+  togglePdf(false);
+  status("PDF 만드는 중…");
+  try {
+    const path = await invoke("export_pdf", { req });
+    status(path ? `PDF 저장: ${path}` : "PDF 저장을 취소했습니다");
+  } catch (e) {
+    status(`PDF 를 저장하지 못했습니다: ${e}`);
+  }
+});
 
 window.addEventListener("keydown", (e) => {
-  if (e.isComposing || e.target instanceof HTMLInputElement) return; // 한글 조합 중·입력칸에서는 단축키 없음
+  if (e.isComposing || e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return; // 한글 조합 중·입력칸에서는 단축키 없음
   // 한글 입력기가 켜져 있어도 같은 자판 위치로 동작하게 글자(e.key)가 아니라 자판 위치(e.code)로 본다
   const mod = e.metaKey || e.ctrlKey;
-  if (mod && e.code === "KeyO") {
+  if (mod && e.code === "KeyP") {
+    e.preventDefault();
+    togglePdf(true);
+  } else if (mod && e.code === "KeyO") {
     e.preventDefault();
     pickAndOpen();
   } else if (!mod && e.code === "KeyF") {
@@ -162,6 +187,7 @@ window.addEventListener("keydown", (e) => {
   } else if (!mod && e.code === "KeyD") {
     setMeasure(viewer.tool !== measure);
   } else if (e.key === "Escape") {
+    togglePdf(false);
     if (viewer.tool === measure) setMeasure(false);
     else select.clear();
   }

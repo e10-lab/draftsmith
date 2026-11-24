@@ -133,3 +133,22 @@ D → 기둥 원 근처 누르기 → 다음 칸 기둥 근처 누르기: 스냅
   한 조각에 무늬가 2 천 번을 넘거나 무늬가 허용 오차보다 작으면 실선으로 (화면에서 어차피 실선처럼 보임).
 - 채움·해치 무늬·문자에는 선 종류를 걸지 않는다.
 - 측정용 도면에 CENTER 선 종류 레이어(A-GRID)와 칸마다 중심선을 넣었다 — DXF·DWG 왕복 시험 통과.
+
+## §10 PDF 출력 (2026-11-24)
+
+- `draftsmith_core::pdf` (krilla 0.8, MIT/Apache). 선·채움은 화면용 표시 데이터(`display::segments`)를 그대로
+  써서 선 종류·곡선 펼치기가 화면과 같다. 색마다 경로 하나로 묶어 파일이 작다 (작은 평면 8 KB).
+- 문자는 내장 Pretendard Regular(OTF, `crates/draftsmith-core/fonts/`, OFL)를 **부분 삽입** — 쓴 글자만 들어가
+  한글이어도 작다. 가로 맞춤용 글자 폭은 ttf-parser 로 글꼴 advance 를 더한다. 글꼴 크기·줄 간격·세로 맞춤은
+  화면과 같은 규칙 (글자 높이 × 1.35, 5/3).
+- 설정: 용지 A4–A0·방향, 축척(1:N, 도면 단위 mm 기준 — `$INSUNITS` 로 환산) 또는 용지에 맞춤, 범위(도면 전체·
+  지금 화면 — 범위 밖은 잘라냄), 컬러/흑백, 선 굵기 0.18 mm. 범위는 용지 가운데에.
+- 종이 색 규칙: 흰색 → 검정, 밝은 색은 어둡게 (화면 흰 배경과 같음). 흑백이면 선·글자는 검정, 채움은 밝기를
+  회색으로 (솔리드 해치가 새까맣게 덮지 않게).
+- 앱: 「PDF」(⌘P / Ctrl+P) 설정 칸 → 저장 대화상자. CLI: `dsmith pdf 도면 출력.pdf --paper A3 --scale 100 --mono`.
+- Rust MSRV 를 krilla 에 맞춰 1.92 로.
+
+### 함께 고친 것
+- 설정 칸이 닫히지 않던 것: 작성자 CSS 의 `display: grid` 가 `hidden` 을 덮었다 → `[hidden] { display: none !important }`.
+- 흰 배경 설정이 앱을 다시 열면 사라지던 것 (WebKitGTK localStorage): 앱 설정 폴더 `settings.txt` 에
+  `이름=값` 으로 저장하는 `get_setting`/`set_setting` 명령으로 바꿨다 (최근 파일과 같은 곳).

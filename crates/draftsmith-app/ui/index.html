@@ -13,6 +13,19 @@
     <select id="recent" title="최근에 연 도면"><option value="">최근 파일</option></select>
     <span class="sep"></span>
     <button id="fit" title="도면 전체 보기 (F, 두 번 누르기)">전체 보기</button>
+    <span class="pop-wrap">
+      <button id="pdf" title="PDF 로 저장 (⌘P / Ctrl+P)">PDF</button>
+      <div id="pdf-pop" class="pop" hidden>
+        <h4>PDF 저장</h4>
+        <label>용지 <select id="pdf-paper"><option>A4</option><option selected>A3</option><option>A2</option><option>A1</option><option>A0</option></select></label>
+        <label>방향 <select id="pdf-orient"><option value="land" selected>가로</option><option value="port">세로</option></select></label>
+        <label>축척 <select id="pdf-scale"><option value="" selected>용지에 맞춤</option><option value="50">1:50</option><option value="100">1:100</option><option value="200">1:200</option><option value="300">1:300</option><option value="500">1:500</option><option value="1000">1:1000</option></select></label>
+        <label>범위 <select id="pdf-area"><option value="all" selected>도면 전체</option><option value="view">지금 화면</option></select></label>
+        <label>색 <select id="pdf-color"><option value="color" selected>컬러</option><option value="mono">흑백</option></select></label>
+        <p class="muted small">축척은 도면 단위가 mm 일 때 기준입니다.</p>
+        <div class="pop-btns"><button id="pdf-cancel">닫기</button><button id="pdf-save" class="primary">저장…</button></div>
+      </div>
+    </span>
     <button id="paper" class="toggle" title="흰 배경 (B) — 흰 선은 검게">흰 배경</button>
     <button id="measure" class="toggle" title="거리 재기 (D) — 끝점·중간점·중심에 붙습니다. Esc 로 끝">측정</button>
     <span class="sep"></span>

@@ -4,13 +4,14 @@
 //! - `dsmith sample 개수 출력.dxf` : M0 측정용 격자 평면 도면 만들기
 //! - `dsmith bench 도면.dxf|dwg` : 읽기·표시 데이터 만들기 시간 (M0 ①·②)
 //! - `dsmith display 도면 출력.bin` : 표시 데이터를 파일로 (화면 시험용)
+//! - `dsmith pdf 도면 출력.pdf [--paper A3] [--portrait] [--scale 100] [--mono]` : PDF 출력
 
 use std::path::PathBuf;
 use std::time::Instant;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use draftsmith_core::{display, import, sample};
+use draftsmith_core::{display, import, pdf, sample};
 
 #[derive(Parser)]
 #[command(name = "dsmith", version = env!("DRAFTSMITH_VERSION"), about = "DraftSmith 명령행")]
@@ -33,6 +34,23 @@ enum Cmd {
     Bench { file: PathBuf },
     /// 표시 데이터(바이너리)를 파일로 쓰기 — 화면 시험·디버깅용
     Display { file: PathBuf, out: PathBuf },
+    /// PDF 로 출력
+    Pdf {
+        file: PathBuf,
+        out: PathBuf,
+        /// 용지 (A4, A3, A2, A1, A0)
+        #[arg(long, default_value = "A3")]
+        paper: String,
+        /// 세로 방향 (기본은 가로)
+        #[arg(long)]
+        portrait: bool,
+        /// 축척 분모 (예: 100 → 1:100). 없으면 용지에 맞춤
+        #[arg(long)]
+        scale: Option<f64>,
+        /// 흑백
+        #[arg(long)]
+        mono: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -90,6 +108,27 @@ fn main() -> Result<()> {
             println!("읽기        {:8.1} ms", ms(t0, t1));
             println!("선분 펼치기 {:8.1} ms", ms(t1, t2));
             println!("바이너리    {:8.1} ms", ms(t2, t3));
+        }
+        Cmd::Pdf {
+            file,
+            out,
+            paper,
+            portrait,
+            scale,
+            mono,
+        } => {
+            let d = import::read_file(&file)?;
+            let (w, h) =
+                pdf::paper_size(&paper).ok_or_else(|| anyhow::anyhow!("모르는 용지: {paper}"))?;
+            let paper_mm = if portrait { (w, h) } else { (h, w) };
+            let o = pdf::PdfOptions {
+                paper_mm,
+                scale,
+                mono,
+                ..Default::default()
+            };
+            std::fs::write(&out, pdf::export(&d, &o).map_err(anyhow::Error::msg)?)?;
+            println!("{} 에 썼습니다", out.display());
         }
         Cmd::Display { file, out } => {
             let d = import::read_file(&file)?;

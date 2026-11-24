@@ -143,6 +143,14 @@ export class Viewer {
     ];
   }
 
+  /** 지금 보이는 범위 [x0, y0, x1, y1] (도면 좌표) */
+  viewBox() {
+    const r = this.cv.getBoundingClientRect();
+    const [ax, ay] = this.toModel(0, r.height), [bx, by] = this.toModel(r.width, 0);
+    const [ox, oy] = this.origin;
+    return [ax + ox, ay + oy, bx + ox, by + oy];
+  }
+
   /** 도구 층만 다시 그린다 */
   drawOverlay() {
     const dpr = window.devicePixelRatio || 1;

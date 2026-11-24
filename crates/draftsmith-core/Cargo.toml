@@ -15,6 +15,10 @@ thiserror = "2"
 earcut = "0.4"
 # 스냅 점 공간 색인 (R*-tree) — MIT OR Apache-2.0
 rstar = "0.14"
+# PDF 출력 (글꼴 부분 삽입) — MIT OR Apache-2.0
+krilla = "0.8"
+# 글자 폭 (PDF 문자 맞춤) — MIT OR Apache-2.0
+ttf-parser = "0.25"
 
 [lints]
 workspace = true

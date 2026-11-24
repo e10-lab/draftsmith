@@ -74,3 +74,18 @@ select {
 .props { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; margin: 0; font-size: 12px; }
 .props dt { color: var(--muted); }
 .props dd { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: pre-wrap; word-break: break-all; user-select: text; font-variant-numeric: tabular-nums; }
+
+.pop-wrap { position: relative; }
+.pop {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 10; width: 240px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.18); padding: 12px; display: grid; gap: 8px;
+}
+.pop h4 { margin: 0 0 2px; font-size: 13px; }
+.pop label { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.pop label select { min-width: 130px; }
+.pop p { margin: 0; }
+.pop-btns { display: flex; justify-content: flex-end; gap: 6px; margin-top: 4px; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+/* display 를 준 요소도 hidden 이면 숨긴다 (작성자 CSS 가 hidden 기본 스타일을 덮지 않게) */
+[hidden] { display: none !important; }
