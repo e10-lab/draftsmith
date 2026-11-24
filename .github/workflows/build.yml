@@ -1,0 +1,84 @@
+# 시험 + macOS·Windows 앱 빌드. 빌드한 앱은 실행 결과 화면의 「Artifacts」 에서 내려받는다.
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: 시험 (코어·CLI)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy -p draftsmith-core -p draftsmith-cli --all-targets -- -D warnings
+      - run: cargo test
+
+  macos:
+    name: macOS 앱 (유니버설)
+    needs: test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 판 표시(커밋·태그)용
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: 빌드 (Apple Silicon + Intel)
+        run: |
+          cargo build --release -p draftsmith-app -p draftsmith-cli --target aarch64-apple-darwin
+          cargo build --release -p draftsmith-app -p draftsmith-cli --target x86_64-apple-darwin
+          mkdir -p target/universal
+          for b in draftsmith-app dsmith; do
+            lipo -create -output target/universal/$b \
+              target/aarch64-apple-darwin/release/$b target/x86_64-apple-darwin/release/$b
+          done
+      - name: 앱 묶음
+        run: |
+          DRAFTSMITH_BIN=target/universal/draftsmith-app sh tools/make_macos_app.sh
+          mkdir -p out
+          ditto -c -k --keepParent target/DraftSmith.app out/DraftSmith-macos.zip
+          cp target/universal/dsmith out/dsmith
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DraftSmith-macos
+          path: out/
+
+  windows:
+    name: Windows 앱 (x64)
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: 빌드
+        run: cargo build --release -p draftsmith-app -p draftsmith-cli
+      - name: 모으기
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item target/release/draftsmith-app.exe out/DraftSmith.exe
+          Copy-Item target/release/dsmith.exe out/dsmith.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DraftSmith-windows
+          path: out/

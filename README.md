@@ -39,6 +39,17 @@ build/version.rs         화면·CLI 에 보이는 판 (릴리스가 아니면 �
 tools/                   앱 묶음 만들기 등
 ```
 
+## 내려받아 실행 (빌드 없이)
+
+`main` 에 올릴 때마다 GitHub Actions 가 macOS·Windows 앱을 만든다.
+저장소의 **Actions → build → 맨 위 실행 → Artifacts** 에서 내려받는다 (GitHub 로그인 필요).
+
+- **macOS** (`DraftSmith-macos`): 압축을 풀면 `DraftSmith-macos.zip` → 다시 풀어 `DraftSmith.app`.
+  아직 Apple 공증 전이라 처음 한 번은 막힌다. 터미널에서 `xattr -cr DraftSmith.app` 을 한 번 실행하거나,
+  「시스템 설정 → 개인정보 보호 및 보안」 에서 「그래도 열기」 를 누른다.
+- **Windows** (`DraftSmith-windows`): `DraftSmith.exe` 를 실행한다. 서명 전이라 SmartScreen 이 경고하면
+  「추가 정보 → 실행」. Windows 10·11 에 기본으로 있는 WebView2 를 쓴다.
+
 ## 빌드·실행
 
 ```sh

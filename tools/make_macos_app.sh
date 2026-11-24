@@ -3,14 +3,18 @@
 # tauri-cli 없이 실행 파일만 감싼다 (화면 파일은 실행 파일 안에 들어 있다).
 set -e
 cd "$(dirname "$0")/.."
-cargo build -p draftsmith-app --release
+# CI 처럼 실행 파일을 미리 만들어 둔 경우(유니버설 등): DRAFTSMITH_BIN=경로
+BIN="${DRAFTSMITH_BIN:-target/release/draftsmith-app}"
+if [ -z "${DRAFTSMITH_BIN:-}" ]; then
+  cargo build -p draftsmith-app --release
+fi
 # 판은 Cargo.toml 한 곳에만 적는다 (구현 노트 §2)
 VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 APP=target/DraftSmith.app
 ICONS=crates/draftsmith-app/icons
 rm -rf "${APP:?}"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp target/release/draftsmith-app "$APP/Contents/MacOS/draftsmith-app"
+cp "$BIN" "$APP/Contents/MacOS/draftsmith-app"
 # 아이콘: icon.png 에서 .icns 를 만든다 (macOS 의 sips·iconutil)
 if [ ! -f "$ICONS/icon.icns" ] || [ "$ICONS/icon.png" -nt "$ICONS/icon.icns" ]; then
   SET=$(mktemp -d)/icon.iconset

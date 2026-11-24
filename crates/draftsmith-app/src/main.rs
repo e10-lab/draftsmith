@@ -1,3 +1,6 @@
+// Windows 릴리스 빌드에서 콘솔 창이 함께 뜨지 않게
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 //! DraftSmith 데스크톱 앱 (Tauri).
 //!
 //! 화면은 `ui/` 의 HTML·JavaScript 이고, 도면 읽기·표시 데이터는 이 Rust 명령들이
