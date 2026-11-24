@@ -37,6 +37,7 @@ const app = {
   doorWidth: 900,
   windowWidth: 1200,
   filletRadius: 0,
+  chamfer: [500, 500],
   hatchPattern: "사선",
   hatchSpacing: 200,
   colW: 600,
@@ -478,6 +479,8 @@ async function submit(text) {
     else repeatLast();
     return;
   }
+  // 손잡이를 옮기는 중이면 좌표로 놓기
+  if (!active && app.select.grip && app.select.gripInput(t)) return;
   if (active) {
     try {
       if (await active.input(text)) return;
@@ -637,6 +640,7 @@ window.addEventListener("keydown", (e) => {
     if (!$("ask").hidden) return;
     togglePdf(false);
     cmd.value = "";
+    if (app.select.cancelGrip()) return;
     if (active) endTool();
     else app.select.clear();
     return;

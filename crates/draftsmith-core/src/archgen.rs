@@ -764,12 +764,181 @@ pub enum ArchReq {
         width: f64,
         risers: u32,
     },
+    /// 그립 옮기기 (§33): 객체의 손잡이 k 를 to 로
+    Grip {
+        what: String,
+        id: u64,
+        k: usize,
+        to: [f64; 2],
+    },
     /// 지금 층을 복사해 새 층 (벽·개구부·실)
     CopyLevel { name: String },
 }
 
 fn p2(a: [f64; 2]) -> Vec2 {
     Vec2::new(a[0], a[1])
+}
+
+/// 건축 객체의 손잡이 점 (§33). 순서는 [`grip_arch`] 와 같다
+/// - 벽: a, b, 가운데(옮김) · 그리드: a, b · 기둥: 가운데 · 계단: a, b
+/// - 치수: a, b, 치수선 가운데(거리) · 실·대지: 경계 꼭짓점 · 문·창: 가운데(벽을 따라)
+pub fn arch_grips(m: &ArchModel, what: &str, id: u64) -> Vec<Vec2> {
+    match what {
+        "wall" => m
+            .wall(id)
+            .map(|w| vec![w.a, w.b, w.a.lerp(w.b, 0.5)])
+            .unwrap_or_default(),
+        "grid" => m
+            .grids
+            .iter()
+            .find(|g| g.id == id)
+            .map(|g| vec![g.a, g.b])
+            .unwrap_or_default(),
+        "column" => m
+            .columns
+            .iter()
+            .find(|c| c.id == id)
+            .map(|c| vec![c.at])
+            .unwrap_or_default(),
+        "stair" => m
+            .stairs
+            .iter()
+            .find(|x| x.id == id)
+            .map(|x| vec![x.a, x.b])
+            .unwrap_or_default(),
+        "dim" => m
+            .dims
+            .iter()
+            .find(|x| x.id == id)
+            .and_then(|x| x.geom(m))
+            .map(|k| vec![k.a, k.b, k.da.lerp(k.db, 0.5)])
+            .unwrap_or_default(),
+        "room" => m
+            .rooms
+            .iter()
+            .find(|r| r.id == id)
+            .map(|r| r.boundary.clone())
+            .unwrap_or_default(),
+        "site" => m.site.boundary.clone(),
+        "door" | "window" => m
+            .openings
+            .iter()
+            .find(|o| o.id == id)
+            .and_then(|o| m.wall(o.wall).map(|w| add(w.a, mul(w.dir(), o.offset))))
+            .into_iter()
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// 건축 객체 손잡이 옮기기
+fn grip_arch(m: &mut ArchModel, what: &str, id: u64, k: usize, to: Vec2) -> Result<(), String> {
+    let g = arch_grips(m, what, id);
+    let from = *g.get(k).ok_or("손잡이가 없습니다")?;
+    let d = sub(to, from);
+    match what {
+        "wall" => {
+            let w = m
+                .walls
+                .iter_mut()
+                .find(|w| w.id == id)
+                .ok_or("벽이 없습니다")?;
+            match k {
+                0 => w.a = to,
+                1 => w.b = to,
+                _ => {
+                    w.a = add(w.a, d);
+                    w.b = add(w.b, d);
+                }
+            }
+            if w.a.dist(w.b) < 1e-6 {
+                return Err("벽 길이가 0 이 됩니다".into());
+            }
+        }
+        "grid" => {
+            let x = m
+                .grids
+                .iter_mut()
+                .find(|x| x.id == id)
+                .ok_or("그리드가 없습니다")?;
+            if k == 0 { x.a = to } else { x.b = to }
+        }
+        "column" => {
+            let x = m
+                .columns
+                .iter_mut()
+                .find(|x| x.id == id)
+                .ok_or("기둥이 없습니다")?;
+            x.at = to;
+        }
+        "stair" => {
+            let x = m
+                .stairs
+                .iter_mut()
+                .find(|x| x.id == id)
+                .ok_or("계단이 없습니다")?;
+            if k == 0 { x.a = to } else { x.b = to }
+        }
+        "dim" => {
+            let mm = m.clone();
+            let x = m
+                .dims
+                .iter_mut()
+                .find(|x| x.id == id)
+                .ok_or("치수가 없습니다")?;
+            let geo = x.geom(&mm).ok_or("치수 모양이 없습니다")?;
+            match k {
+                // 끝점을 옮기면 그 자리 객체에 다시 묶는다. 회전 치수는 치수선 자리를 그대로 둔다
+                0 | 1 => {
+                    let tol = (x.text_height * 0.02).max(1.0);
+                    let anchor = mm.anchor_at(x.level, to, geo.u, tol);
+                    if k == 0 {
+                        x.a = to;
+                        x.ka = anchor;
+                        if x.rotation.is_some() {
+                            x.offset = dot(sub(geo.da, to), geo.n);
+                        }
+                    } else {
+                        x.b = to;
+                        x.kb = anchor;
+                    }
+                }
+                _ => x.offset += dot(d, geo.n),
+            }
+        }
+        "room" | "site" => {
+            let pts = if what == "room" {
+                &mut m
+                    .rooms
+                    .iter_mut()
+                    .find(|r| r.id == id)
+                    .ok_or("실이 없습니다")?
+                    .boundary
+            } else {
+                &mut m.site.boundary
+            };
+            if let Some(p) = pts.get_mut(k) {
+                *p = to;
+            }
+        }
+        "door" | "window" => {
+            let o = m
+                .openings
+                .iter()
+                .find(|o| o.id == id)
+                .cloned()
+                .ok_or("개구부가 없습니다")?;
+            let w = m.wall(o.wall).cloned().ok_or("벽이 없습니다")?;
+            let len = w.length();
+            let t = dot(sub(to, w.a), w.dir())
+                .clamp(o.width / 2.0, (len - o.width / 2.0).max(o.width / 2.0));
+            if let Some(x) = m.openings.iter_mut().find(|x| x.id == id) {
+                x.offset = t;
+            }
+        }
+        _ => return Err(format!("{what} 은 손잡이로 고칠 수 없습니다")),
+    }
+    Ok(())
 }
 
 /// 점에서 가장 가까운 벽과 그 벽 위 위치(a 에서 거리)
@@ -1289,6 +1458,7 @@ pub fn apply(ed: &mut Editor, req: ArchReq) -> Result<(), String> {
                 _ => {}
             }
         }
+        ArchReq::Grip { what, id, k, to } => grip_arch(&mut m, &what, id, k, p2(to))?,
         ArchReq::CopyLevel { name } => {
             let src = level;
             let (elev, height) = m

@@ -19,6 +19,7 @@ pub mod edit;
 pub mod export;
 pub mod fill;
 pub mod geom;
+pub mod grip;
 pub mod import;
 pub mod layout;
 pub mod model3d;

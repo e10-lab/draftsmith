@@ -28,12 +28,19 @@ export class SelectTool {
     this.arch = null;    // { what, id, at }
     this.info = null;    // { props, outline }
     this.box = null;
+    this.grips = [];     // [{ x, y, id, arch, k }] — 고른 것의 손잡이 (§33)
+    this.grip = null;    // 지금 옮기는 손잡이
+    this.cur = null;
+    this.gripSeq = 0;
   }
 
-  get snaps() { return false; }
+  get snaps() { return !!this.grip; }
+  base() { return this.grip ? [this.grip.x, this.grip.y] : null; }
   get count() { return this.ids.length + (this.arch ? 1 : 0); }
 
   clear() {
+    this.grip = null;
+    this.grips = [];
     this.ids = [];
     this.arch = null;
     this.info = null;
@@ -44,6 +51,71 @@ export class SelectTool {
     this.renderPanel();
     this.app.v.drawOverlay();
     this.app.onSelect?.();
+    this.loadGrips();
+  }
+
+  // ── 그립 (§33) ─────────────────────────────────────────────────────────────
+  async loadGrips() {
+    const seq = ++this.gripSeq;
+    const arch = this.arch ? [this.arch.what, this.arch.id] : null;
+    if ((!this.ids.length && !arch) || this.ids.length > 50) {
+      this.grips = [];
+      return;
+    }
+    let g = [];
+    try {
+      g = await this.app.invoke("grips", { ids: this.ids, arch });
+    } catch {
+      g = [];
+    }
+    if (seq !== this.gripSeq) return;
+    this.grips = g;
+    this.app.v.drawOverlay();
+  }
+
+  /** 화면 점 근처 손잡이 */
+  gripAt(m) {
+    const r = 7 / this.app.v.ppu;
+    let best = null, bd = r;
+    for (const g of this.grips) {
+      const d = Math.hypot(g.x - m[0], g.y - m[1]);
+      if (d <= bd) { bd = d; best = g; }
+    }
+    return best;
+  }
+
+  move(m) {
+    if (this.grip) this.cur = this.app.snap.point(this.base(), m);
+  }
+
+  cancelGrip() {
+    if (!this.grip) return false;
+    this.grip = null;
+    this.cur = null;
+    this.app.prompt("명령:");
+    this.app.v.drawOverlay();
+    return true;
+  }
+
+  /** 명령줄에 친 좌표로 손잡이 놓기 (@ 상대는 손잡이 기준) */
+  gripInput(text) {
+    const p = this.app.snap.parse(text, this.base());
+    if (!p) return false;
+    this.placeGrip(p);
+    return true;
+  }
+
+  async placeGrip(p) {
+    const g = this.grip;
+    this.grip = null;
+    this.cur = null;
+    this.app.prompt("명령:");
+    const req = g.id != null
+      ? { kind: "grip", id: g.id, k: g.k, to: p }
+      : { kind: "arch", op: { kind: "grip", what: g.arch[0], id: g.arch[1], k: g.k, to: p } };
+    const st = await this.app.apply(req);
+    if (st && this.arch) this.arch.at = p;
+    await this.update();
   }
 
   /** 고르기 결과(pick_at) 하나를 그대로 보여 준다 (간격 띄우기 대상 표시 등) */
@@ -55,6 +127,16 @@ export class SelectTool {
   }
 
   async click(m, e) {
+    // 손잡이를 옮기는 중이면 놓고, 손잡이를 누르면 잡는다
+    if (this.grip) return this.placeGrip(this.app.snap.point(this.base(), m));
+    const g = !e?.shiftKey && this.gripAt(m);
+    if (g) {
+      this.grip = g;
+      this.cur = [g.x, g.y];
+      this.app.prompt("손잡이: 옮길 곳을 누르세요 (@dx,dy 도 됨, Esc 취소)");
+      this.app.v.drawOverlay();
+      return;
+    }
     let r = null;
     try {
       r = await this.app.invoke("pick_at", { x: m[0], y: m[1], r: PICK_PX / this.app.v.ppu });
@@ -224,6 +306,26 @@ export class SelectTool {
   }
 
   paint(ctx, toScreen) {
+    if (this.grip && this.cur) {
+      const [ax, ay] = toScreen(this.grip.x, this.grip.y), [bx, by] = toScreen(...this.cur);
+      ctx.strokeStyle = HILITE;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([6, 4]);
+      ctx.beginPath();
+      ctx.moveTo(ax, ay);
+      ctx.lineTo(bx, by);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    for (const g of this.grips) {
+      const [x, y] = toScreen(g.x, g.y);
+      const on = this.grip && g.k === this.grip.k && g.id === this.grip.id && String(g.arch) === String(this.grip.arch);
+      ctx.fillStyle = on ? "#ff5a4a" : HILITE;
+      ctx.strokeStyle = "#fff";
+      ctx.lineWidth = 1;
+      ctx.fillRect(x - 4, y - 4, 8, 8);
+      ctx.strokeRect(x - 4, y - 4, 8, 8);
+    }
     if (this.info) {
       ctx.strokeStyle = HILITE;
       ctx.lineWidth = 3;

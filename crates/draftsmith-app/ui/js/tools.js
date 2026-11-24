@@ -813,7 +813,7 @@ class FilletTool extends Tool {
   get snaps() { return false; }
   start() {
     this.first = null;
-    this.say(`모깎기 (반지름 ${fmt(this.app.filletRadius)} — 숫자로 바꿈, 0 이면 모서리): 첫 선`);
+    this.say(`모깎기 (반지름 ${fmt(this.app.filletRadius)} — 숫자로 바꿈, 0 이면 모서리): 첫 선 (폴리선은 모서리 양쪽 변)`);
   }
   input(t) {
     const r = Number(t.trim());
@@ -840,6 +840,42 @@ class FilletTool extends Tool {
     this.app.select.clear();
     await this.app.apply({ kind: "fillet", a: f.id, pa: f.pick, b: r.index, pb: m, r: this.app.filletRadius });
     this.say(`모깎기 (반지름 ${fmt(this.app.filletRadius)}): 다음 첫 선 (Enter 로 끝)`);
+  }
+}
+
+/** 모따기: 두 선 또는 폴리선 모서리 양쪽 변. 「거리」 또는 「거리1/거리2」 */
+class ChamferTool extends FilletTool {
+  start() {
+    this.first = null;
+    const [a, b] = this.app.chamfer;
+    this.say(`모따기 (${fmt(a)} / ${fmt(b)} — 「500」 또는 「500/300」 으로 바꿈): 첫 선 (폴리선은 모서리 양쪽 변)`);
+  }
+  input(t) {
+    const m = t.trim().match(/^([\d.]+)(?:\/([\d.]+))?$/);
+    if (m) {
+      this.app.chamfer = [Number(m[1]), Number(m[2] ?? m[1])];
+      this.start();
+      return true;
+    }
+    const p = this.app.snap.parse(t, null);
+    if (!p) return false;
+    this.click(p);
+    return true;
+  }
+  async click(m) {
+    const r = await this.app.invoke("pick_at", { x: m[0], y: m[1], r: 6 / this.app.v.ppu });
+    if (!r?.editable) return this.app.report("선을 누르세요");
+    if (!this.first) {
+      this.first = { id: r.index, pick: m };
+      this.app.select.showPick(r);
+      return this.say("모따기: 둘째 선");
+    }
+    const f = this.first;
+    this.first = null;
+    this.app.select.clear();
+    const [d1, d2] = this.app.chamfer;
+    await this.app.apply({ kind: "chamfer", a: f.id, pa: f.pick, b: r.index, pb: m, d1, d2 });
+    this.start();
   }
 }
 
@@ -1038,6 +1074,7 @@ export const TOOLS = {
   trim: TrimTool,
   extend: ExtendTool,
   fillet: FilletTool,
+  chamfer: ChamferTool,
   hatch: HatchTool,
   column: ColumnTool,
   stair: StairTool,

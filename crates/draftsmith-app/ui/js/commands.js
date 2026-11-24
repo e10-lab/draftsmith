@@ -21,6 +21,7 @@ export const COMMANDS = [
   ["trim", "자르기", ["TR", "TRIM", "자르기"], "수정"],
   ["extend", "연장", ["EX", "EXTEND", "연장"], "수정"],
   ["fillet", "모깎기", ["F", "FILLET", "모깎기"], "수정"],
+  ["chamfer", "모따기", ["CHA", "CHAMFER", "모따기"], "수정"],
   ["hatch", "해치", ["H", "BH", "HATCH", "해치"], "그리기"],
   ["block", "블록 만들기", ["B", "BLOCK", "블록"], "수정"],
   ["insert", "블록 넣기", ["I", "INSERT", "넣기", "블록넣기"], "그리기"],

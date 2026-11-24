@@ -532,6 +532,21 @@ enum EditReq {
         pb: [f64; 2],
         r: f64,
     },
+    /// 모따기 (§33)
+    Chamfer {
+        a: usize,
+        pa: [f64; 2],
+        b: usize,
+        pb: [f64; 2],
+        d1: f64,
+        d2: f64,
+    },
+    /// 그립 옮기기: 모형 객체 id 의 손잡이 k 를 to 로 (§33)
+    Grip {
+        id: usize,
+        k: usize,
+        to: [f64; 2],
+    },
     /// 해치: 점을 둘러싼 경계에 무늬
     Hatch {
         at: [f64; 2],
@@ -588,6 +603,8 @@ fn edit(req: EditReq, state: State<'_, AppState>) -> Result<DocState, String> {
         EditReq::Trim { .. }
             | EditReq::Extend { .. }
             | EditReq::Fillet { .. }
+            | EditReq::Chamfer { .. }
+            | EditReq::Grip { .. }
             | EditReq::Hatch { .. }
     ) {
         if open.sheet.is_some() {
@@ -614,15 +631,58 @@ fn edit(req: EditReq, state: State<'_, AppState>) -> Result<DocState, String> {
                 )])
             }
             EditReq::Fillet { a, pa, b, pb, r } => {
-                if a == b {
-                    return Err("서로 다른 두 선을 고르세요".into());
-                }
                 let (sa, sb) = (&v.entities[model(*a)?].shape, &v.entities[model(*b)?].shape);
-                let (na, nb, arc) = modify::fillet(sa, pt(*pa), sb, pt(*pb), *r)?;
-                reshape = Some(vec![
-                    (*a, std::iter::once(na).chain(arc).collect()),
-                    (*b, vec![nb]),
-                ]);
+                if a == b {
+                    // 한 폴리선의 두 변: 그 사이 꼭짓점
+                    let s = modify::corner_polyline(
+                        sa,
+                        pt(*pa).lerp(pt(*pb), 0.5),
+                        modify::Corner::Fillet(*r),
+                    )
+                    .map_err(|e| {
+                        format!("{e} — 선 두 개를 고르거나 폴리선 모서리 양쪽 변을 누르세요")
+                    })?;
+                    reshape = Some(vec![(*a, vec![s])]);
+                } else {
+                    let (na, nb, arc) = modify::fillet(sa, pt(*pa), sb, pt(*pb), *r)?;
+                    reshape = Some(vec![
+                        (*a, std::iter::once(na).chain(arc).collect()),
+                        (*b, vec![nb]),
+                    ]);
+                }
+            }
+            EditReq::Chamfer {
+                a,
+                pa,
+                b,
+                pb,
+                d1,
+                d2,
+            } => {
+                let (sa, sb) = (&v.entities[model(*a)?].shape, &v.entities[model(*b)?].shape);
+                if a == b {
+                    let s = modify::corner_polyline(
+                        sa,
+                        pt(*pa).lerp(pt(*pb), 0.5),
+                        modify::Corner::Chamfer(*d1, *d2),
+                    )?;
+                    reshape = Some(vec![(*a, vec![s])]);
+                } else {
+                    let (na, nb, cut) = modify::chamfer(sa, pt(*pa), sb, pt(*pb), *d1, *d2)?;
+                    reshape = Some(vec![
+                        (*a, std::iter::once(na).chain(cut).collect()),
+                        (*b, vec![nb]),
+                    ]);
+                }
+            }
+            EditReq::Grip { id, k, to } => {
+                let s = &v.entities[model(*id)?].shape;
+                let n = draftsmith_core::grip::move_grip(s, *k, pt(*to))
+                    .ok_or("이 손잡이로는 고칠 수 없습니다")?;
+                if draftsmith_core::grip::degenerate(&n) {
+                    return Err("길이·반지름이 0 이 됩니다".into());
+                }
+                reshape = Some(vec![(*id, vec![n])]);
             }
             EditReq::Hatch {
                 at,
@@ -692,7 +752,11 @@ fn edit(req: EditReq, state: State<'_, AppState>) -> Result<DocState, String> {
                     ed.explode(i);
                 }
             }
-            EditReq::Trim { .. } | EditReq::Extend { .. } | EditReq::Fillet { .. } => {
+            EditReq::Trim { .. }
+            | EditReq::Extend { .. }
+            | EditReq::Fillet { .. }
+            | EditReq::Chamfer { .. }
+            | EditReq::Grip { .. } => {
                 added = ed.reshape(reshape.take().unwrap_or_default()).collect();
             }
             EditReq::Hatch { .. } => {
@@ -833,6 +897,64 @@ fn pick_box(
         .collect();
     out.sort_unstable();
     out.dedup();
+    Ok(out)
+}
+
+/// 손잡이 하나 (화면이 들고 있다가 옮길 곳과 함께 돌려준다)
+#[derive(Serialize)]
+struct GripOut {
+    x: f64,
+    y: f64,
+    /// 모형 객체 번호 (건축 객체면 null)
+    id: Option<usize>,
+    /// 건축 객체 (종류, 번호)
+    arch: Option<(String, u64)>,
+    k: usize,
+}
+
+/// 고른 객체들의 손잡이 (§33). 객체가 많으면 처음 50 개만
+#[tauri::command]
+fn grips(
+    ids: Vec<usize>,
+    arch: Option<(String, u64)>,
+    state: State<'_, AppState>,
+) -> Result<Vec<GripOut>, String> {
+    let open = state.lock().map_err(err)?;
+    if open.sheet.is_some() {
+        return Ok(Vec::new());
+    }
+    let ed = open.ed.as_ref().ok_or("열린 도면이 없습니다")?;
+    let mut out = Vec::new();
+    for &i in ids.iter().take(50) {
+        if let Some(e) = ed.d.entities.get(i) {
+            for (k, p) in draftsmith_core::grip::grips(&e.shape)
+                .into_iter()
+                .enumerate()
+            {
+                out.push(GripOut {
+                    x: p.x,
+                    y: p.y,
+                    id: Some(i),
+                    arch: None,
+                    k,
+                });
+            }
+        }
+    }
+    if let Some((what, id)) = arch {
+        for (k, p) in archgen::arch_grips(&ed.d.arch, &what, id)
+            .into_iter()
+            .enumerate()
+        {
+            out.push(GripOut {
+                x: p.x,
+                y: p.y,
+                id: None,
+                arch: Some((what.clone(), id)),
+                k,
+            });
+        }
+    }
     Ok(out)
 }
 
@@ -1187,6 +1309,7 @@ fn main() {
             snap,
             pick_at,
             pick_box,
+            grips,
             selection_info,
             export_pdf,
             export_sheets_pdf,

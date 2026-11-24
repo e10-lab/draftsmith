@@ -558,6 +558,110 @@ fn ring_area(r: &[Vec2]) -> f64 {
         / 2.0
 }
 
+/// 모따기: 두 선(고른 점 쪽을 남김)을 교점에서 d1·d2 떨어진 곳에서 잘라 선으로 잇는다 (§33)
+pub fn chamfer(
+    a: &Shape,
+    pa: Vec2,
+    b: &Shape,
+    pb: Vec2,
+    d1: f64,
+    d2: f64,
+) -> Result<(Shape, Shape, Option<Shape>), String> {
+    let (Shape::Line { a: a0, b: a1 }, Shape::Line { a: b0, b: b1 }) = (a, b) else {
+        return Err("모따기는 선 두 개, 또는 폴리선 모서리에 됩니다".into());
+    };
+    let x = raw_hits(&Piece::Seg(*a0, *a1), &Piece::Seg(*b0, *b1))
+        .pop()
+        .ok_or("평행한 선은 모따기 할 수 없습니다")?;
+    let side = |p0: Vec2, p1: Vec2, pick: Vec2| -> (Vec2, Vec2) {
+        let d = norm(sub(p1, p0));
+        let u = if dot(sub(pick, x), d) >= 0.0 {
+            d
+        } else {
+            mul(d, -1.0)
+        };
+        let far = if dot(sub(p0, x), u) >= dot(sub(p1, x), u) {
+            p0
+        } else {
+            p1
+        };
+        (u, far)
+    };
+    let (ua, fa) = side(*a0, *a1, pa);
+    let (ub, fb) = side(*b0, *b1, pb);
+    if d1 <= 1e-9 && d2 <= 1e-9 {
+        return Ok((
+            Shape::Line { a: fa, b: x },
+            Shape::Line { a: fb, b: x },
+            None,
+        ));
+    }
+    if d1 > x.dist(fa) + 1e-9 || d2 > x.dist(fb) + 1e-9 {
+        return Err("모따기 거리가 선보다 깁니다".into());
+    }
+    let (ta, tb) = (add(x, mul(ua, d1)), add(x, mul(ub, d2)));
+    Ok((
+        Shape::Line { a: fa, b: ta },
+        Shape::Line { a: fb, b: tb },
+        Some(Shape::Line { a: ta, b: tb }),
+    ))
+}
+
+/// 폴리선 모서리 처리
+#[derive(Debug, Clone, Copy)]
+pub enum Corner {
+    /// 반지름
+    Fillet(f64),
+    /// 두 거리 (앞 변, 뒤 변)
+    Chamfer(f64, f64),
+}
+
+/// 폴리선의 고른 점에서 가장 가까운 꼭짓점(앞뒤 변이 직선인 것)을 모깎기·모따기한 폴리선
+pub fn corner_polyline(s: &Shape, pick: Vec2, c: Corner) -> Result<Shape, String> {
+    let Shape::Polyline { points, closed } = s else {
+        return Err("폴리선이 아닙니다".into());
+    };
+    let n = points.len();
+    let ok = |i: usize| {
+        let has_prev = *closed || i > 0;
+        let has_next = *closed || i + 1 < n;
+        has_prev && has_next && points[(i + n - 1) % n].1.abs() < 1e-12 && points[i].1.abs() < 1e-12
+    };
+    let i = (0..n)
+        .filter(|&i| ok(i))
+        .min_by(|&p, &q| points[p].0.dist(pick).total_cmp(&points[q].0.dist(pick)))
+        .ok_or("모서리를 만들 꼭짓점이 없습니다 (앞뒤 변이 직선이어야)")?;
+    let v = points[i].0;
+    let (p, q) = (points[(i + n - 1) % n].0, points[(i + 1) % n].0);
+    let (u1, u2) = (norm(sub(p, v)), norm(sub(q, v)));
+    let (d1, d2, bulge) = match c {
+        Corner::Chamfer(a, b) => (a, b, 0.0),
+        Corner::Fillet(r) => {
+            let phi = dot(u1, u2).clamp(-1.0, 1.0).acos();
+            if phi < 1e-6 || (PI - phi) < 1e-6 {
+                return Err("곧게 이어진 꼭짓점입니다".into());
+            }
+            let dt = r / (phi / 2.0).tan();
+            // 왼쪽으로 꺾이면 반시계 호 (불지 양수)
+            let turn = cross(sub(v, p), sub(q, v)).signum();
+            (dt, dt, turn * ((PI - phi) / 4.0).tan())
+        }
+    };
+    if d1 > v.dist(p) + 1e-9 || d2 > v.dist(q) + 1e-9 {
+        return Err("반지름·거리가 변보다 깁니다".into());
+    }
+    if d1 <= 1e-9 && d2 <= 1e-9 {
+        return Ok(s.clone());
+    }
+    let mut out = points.clone();
+    out[i] = (add(v, mul(u1, d1)), bulge);
+    out.insert(i + 1, (add(v, mul(u2, d2)), 0.0));
+    Ok(Shape::Polyline {
+        points: out,
+        closed: *closed,
+    })
+}
+
 /// 해치 경계 찾기: 점을 품은 가장 작은 닫힌 폴리선·원, 없으면 점에서 사방으로 쏜 반직선이 처음 닿는 선들로
 pub fn region_at(view: &Drawing, p: Vec2) -> Option<Vec<Vec2>> {
     let tol = |b: &crate::geom::Bbox| (b.width().max(b.height()) * 0.002).max(1e-6);
@@ -773,5 +877,54 @@ mod tests {
         assert!((ring_area(&r) - 50.0).abs() < 0.5, "{}", ring_area(&r));
         let h = hatch_shape(r, "사선", 1.0).unwrap();
         assert!(matches!(h, Shape::Segments { ref lines } if !lines.is_empty()));
+    }
+
+    #[test]
+    fn chamfer_and_polyline_corners() {
+        let (na, nb, c) = chamfer(
+            &l(0.0, 0.0, 10.0, 0.0),
+            Vec2::new(2.0, 0.0),
+            &l(10.0, 0.0, 10.0, 10.0),
+            Vec2::new(10.0, 8.0),
+            2.0,
+            3.0,
+        )
+        .unwrap();
+        assert_eq!(
+            (na, nb, c),
+            (
+                l(0.0, 0.0, 8.0, 0.0),
+                l(10.0, 10.0, 10.0, 3.0),
+                Some(l(8.0, 0.0, 10.0, 3.0))
+            )
+        );
+        // 사각형 (반시계) 모서리 (10,0) 을 반지름 2 로
+        let sq = Shape::Polyline {
+            points: [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
+                .iter()
+                .map(|&(x, y)| (Vec2::new(x, y), 0.0))
+                .collect(),
+            closed: true,
+        };
+        match corner_polyline(&sq, Vec2::new(9.0, 1.0), Corner::Fillet(2.0)).unwrap() {
+            Shape::Polyline { points, .. } => {
+                assert_eq!(points.len(), 5);
+                assert!(
+                    points[1].0.dist(Vec2::new(8.0, 0.0)) < 1e-9
+                        && points[2].0.dist(Vec2::new(10.0, 2.0)) < 1e-9
+                );
+                // 왼쪽(반시계)으로 꺾이는 90° → 불지 tan(22.5°)
+                assert!(
+                    (points[1].1 - (PI / 8.0).tan()).abs() < 1e-9,
+                    "{}",
+                    points[1].1
+                );
+            }
+            s => panic!("{s:?}"),
+        }
+        match corner_polyline(&sq, Vec2::new(0.0, 9.0), Corner::Chamfer(1.0, 1.0)).unwrap() {
+            Shape::Polyline { points, .. } => assert_eq!(points.len(), 5),
+            s => panic!("{s:?}"),
+        }
     }
 }
