@@ -27,6 +27,11 @@ pub enum Op {
         old: Box<crate::arch::ArchModel>,
         new: Box<crate::arch::ArchModel>,
     },
+    /// 배치(도면 시트) 목록 바꾸기 (이전, 이후) — M4
+    Layouts {
+        old: Vec<crate::layout::Layout>,
+        new: Vec<crate::layout::Layout>,
+    },
     /// 여러 작업을 하나로
     Batch(Vec<Op>),
 }
@@ -66,6 +71,7 @@ fn apply(d: &mut Drawing, op: &Op) {
         Op::Layers { new, .. } => d.layers = new.clone(),
         Op::CurrentLayer { new, .. } => d.current_layer = *new,
         Op::Arch { new, .. } => d.arch = (**new).clone(),
+        Op::Layouts { new, .. } => d.layouts = new.clone(),
         Op::Batch(ops) => ops.iter().for_each(|o| apply(d, o)),
     }
 }
@@ -89,6 +95,7 @@ fn revert(d: &mut Drawing, op: &Op) {
         Op::Layers { old, .. } => d.layers = old.clone(),
         Op::CurrentLayer { old, .. } => d.current_layer = *old,
         Op::Arch { old, .. } => d.arch = (**old).clone(),
+        Op::Layouts { old, .. } => d.layouts = old.clone(),
         Op::Batch(ops) => ops.iter().rev().for_each(|o| revert(d, o)),
     }
 }
@@ -114,6 +121,113 @@ impl Editor {
     pub fn run_remote(&mut self, op: &Op) {
         apply(&mut self.d, op);
         self.dirty = true;
+    }
+
+    /// 지금 상태까지 온 작업들 (되돌린 것은 빠짐) — 변경 기록 내보내기용 (M5)
+    pub fn history(&self) -> &[Op] {
+        &self.undo
+    }
+
+    /// 다른 사람의 작업들을 합친다 (M5, 구현 노트 §23). 객체 더하기는 지금 끝에 붙이고, 번호가 맞지 않는
+    /// 지우기·바꾸기는 건너뛴다. 합친 것은 되돌리기 한 단계. (합친 수, 건너뛴 수)
+    pub fn merge(&mut self, ops: &[Op]) -> (usize, usize) {
+        let mut done = Vec::new();
+        let mut skipped = 0;
+        for op in ops {
+            match self.fit_op(op) {
+                Some(o) => {
+                    apply(&mut self.d, &o);
+                    done.push(o);
+                }
+                None => skipped += 1,
+            }
+        }
+        let n = done.len();
+        if n > 0 {
+            // 이미 적용했으니 기록만 (되돌리기 한 단계)
+            let op = Op::Batch(done);
+            self.journal.push(op.clone());
+            self.undo.push(op);
+            self.redo.clear();
+            self.dirty = true;
+        }
+        (n, skipped)
+    }
+
+    /// 지금 도면에 맞게 고친 작업 (맞출 수 없으면 None)
+    fn fit_op(&self, op: &Op) -> Option<Op> {
+        let n = self.d.entities.len();
+        Some(match op {
+            Op::Add { items, .. } => Op::Add {
+                start: n,
+                items: items.clone(),
+            },
+            Op::Remove { items } => {
+                // 같은 자리에 같은 객체가 있어야 지운다
+                if items
+                    .iter()
+                    .any(|(i, e)| self.d.entities.get(*i) != Some(e))
+                {
+                    return None;
+                }
+                op.clone()
+            }
+            Op::Replace { items } => {
+                if items
+                    .iter()
+                    .any(|(i, old, _)| self.d.entities.get(*i) != Some(old))
+                {
+                    return None;
+                }
+                op.clone()
+            }
+            Op::Layers { new, .. } => Op::Layers {
+                old: self.d.layers.clone(),
+                new: new.clone(),
+            },
+            Op::CurrentLayer { new, .. } => Op::CurrentLayer {
+                old: self.d.current_layer,
+                new: *new,
+            },
+            Op::Arch { new, .. } => Op::Arch {
+                old: Box::new(self.d.arch.clone()),
+                new: new.clone(),
+            },
+            Op::Layouts { new, .. } => Op::Layouts {
+                old: self.d.layouts.clone(),
+                new: new.clone(),
+            },
+            Op::Batch(ops) => {
+                // 묶음은 앞 작업을 적용한 도면 기준이라 사본에서 차례로 맞춘다
+                let mut tmp = Editor::new(self.d.clone());
+                let mut out = Vec::new();
+                for o in ops {
+                    let f = tmp.fit_op(o)?;
+                    apply(&mut tmp.d, &f);
+                    out.push(f);
+                }
+                Op::Batch(out)
+            }
+        })
+    }
+
+    /// 배치(도면 시트) 더하기
+    pub fn add_layout(&mut self, l: crate::layout::Layout) {
+        let old = self.d.layouts.clone();
+        let mut new = old.clone();
+        new.push(l);
+        self.run(Op::Layouts { old, new });
+    }
+
+    /// 배치 지우기
+    pub fn remove_layout(&mut self, i: usize) {
+        if i >= self.d.layouts.len() {
+            return;
+        }
+        let old = self.d.layouts.clone();
+        let mut new = old.clone();
+        new.remove(i);
+        self.run(Op::Layouts { old, new });
     }
 
     pub fn can_undo(&self) -> bool {
@@ -523,5 +637,73 @@ mod tests {
         assert_eq!(e.d.current_layer, 0);
         e.undo();
         assert_eq!(e.d.layers.len(), 1);
+    }
+}
+
+/// 변경 기록 파일 (`.dsjournal`, JSON) — M5
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Journal {
+    pub format: String,
+    pub version: u32,
+    pub ops: Vec<Op>,
+}
+
+/// 변경 기록 파일 확장자
+pub const JOURNAL_EXT: &str = "dsjournal";
+
+impl Journal {
+    pub fn new(ops: Vec<Op>) -> Journal {
+        Journal {
+            format: "draftsmith-journal".into(),
+            version: 1,
+            ops,
+        }
+    }
+
+    pub fn to_bytes(&self) -> Result<Vec<u8>, String> {
+        serde_json::to_vec(self).map_err(|e| e.to_string())
+    }
+
+    pub fn from_bytes(b: &[u8]) -> Result<Journal, String> {
+        let j: Journal =
+            serde_json::from_slice(b).map_err(|e| format!("변경 기록을 읽지 못했습니다: {e}"))?;
+        if j.format != "draftsmith-journal" {
+            return Err("DraftSmith 변경 기록 파일이 아닙니다".into());
+        }
+        Ok(j)
+    }
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::*;
+    use crate::drawing::Shape;
+    use crate::geom::Vec2;
+
+    fn line(x: f64) -> Shape {
+        Shape::Line {
+            a: Vec2::new(x, 0.0),
+            b: Vec2::new(x, 1.0),
+        }
+    }
+
+    #[test]
+    fn merge_appends_and_skips_conflicts() {
+        let base = Drawing::default();
+        // 갑: 선 둘 그리고 첫 선 지움
+        let mut a = Editor::new(base.clone());
+        let _ = a.add_shapes(vec![line(0.0), line(1.0)]);
+        a.remove(&[0]);
+        let j =
+            Journal::from_bytes(&Journal::new(a.history().to_vec()).to_bytes().unwrap()).unwrap();
+        // 을: 따로 선 하나 그린 뒤 갑의 기록을 합침
+        let mut b = Editor::new(base);
+        let _ = b.add_shapes(vec![line(5.0)]);
+        let (done, skipped) = b.merge(&j.ops);
+        // 더하기는 붙고, 지우기는 자리의 객체가 달라 건너뜀
+        assert_eq!((done, skipped), (1, 1));
+        assert_eq!(b.d.entities.len(), 3);
+        assert!(b.undo());
+        assert_eq!(b.d.entities.len(), 1);
     }
 }

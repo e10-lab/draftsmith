@@ -9,10 +9,38 @@
 <body>
   <header class="bar">
     <strong class="brand">DraftSmith</strong>
-    <button id="open" title="도면 열기 (⌘O / Ctrl+O) — 파일을 창에 끌어 놓아도 됩니다">열기</button>
-    <select id="recent" title="최근에 연 도면"><option value="">최근 파일</option></select>
+    <span class="group">
+      <button data-cmd="new" title="새 도면 (⌘N / Ctrl+N)">새로</button>
+      <button data-cmd="open" title="열기 (⌘O / Ctrl+O) — DraftSmith·DWG·DXF, 창에 끌어 놓아도 됩니다">열기</button>
+      <button data-cmd="save" title="저장 (⌘S / Ctrl+S) — .dsmith, ⇧⌘S 다른 이름으로">저장</button>
+      <select id="recent" title="최근에 연 도면"><option value="">최근 파일</option></select>
+      <select id="export" title="DWG·DXF 로 내보내기">
+        <option value="">내보내기</option><option value="dwg">DWG…</option><option value="dxf">DXF…</option>
+      </select>
+    </span>
     <span class="sep"></span>
-    <button id="fit" title="도면 전체 보기 (F, 두 번 누르기)">전체 보기</button>
+    <span class="group">
+      <button id="undo" data-cmd="undo" title="되돌리기 (⌘Z / Ctrl+Z)" disabled>↶</button>
+      <button id="redo" data-cmd="redo" title="다시 하기 (⇧⌘Z / Ctrl+Y)" disabled>↷</button>
+    </span>
+    <span class="sep"></span>
+    <span class="group tools">
+      <button data-cmd="line" title="선 (L)">선</button>
+      <button data-cmd="pline" title="폴리선 (PL)">폴리선</button>
+      <button data-cmd="rect" title="사각형 (REC)">사각형</button>
+      <button data-cmd="circle" title="원 (C)">원</button>
+      <button data-cmd="text" title="글자 (T)">글자</button>
+      <button data-cmd="dim" title="치수 (DIM)">치수</button>
+    </span>
+    <span class="sep"></span>
+    <span class="group tools">
+      <button data-cmd="wall" title="벽 (WA)">벽</button>
+      <button data-cmd="door" title="문 (DO)">문</button>
+      <button data-cmd="window" title="창 (WI)">창</button>
+      <button data-cmd="room" title="실 — 면적 자동 (RM)">실</button>
+      <button data-cmd="grid" title="그리드 (GR)">그리드</button>
+    </span>
+    <span class="sep"></span>
     <span class="pop-wrap">
       <button id="pdf" title="PDF 로 저장 (⌘P / Ctrl+P)">PDF</button>
       <div id="pdf-pop" class="pop" hidden>
@@ -23,23 +51,29 @@
         <label>범위 <select id="pdf-area"><option value="all" selected>도면 전체</option><option value="view">지금 화면</option></select></label>
         <label>색 <select id="pdf-color"><option value="color" selected>컬러</option><option value="mono">흑백</option></select></label>
         <label>출력 스타일 <select id="pdf-ctb"><option value="" selected>없음</option><option value="pick">CTB 파일 고르기…</option></select></label>
+        <label>대상 <select id="pdf-what"><option value="one" selected>지금 보는 것</option><option value="sheets">모든 배치 (도면 세트)</option></select></label>
         <p class="muted small">축척은 도면 단위가 mm 일 때 기준입니다.</p>
         <div class="pop-btns"><button id="pdf-cancel">닫기</button><button id="pdf-save" class="primary">저장…</button></div>
       </div>
     </span>
-    <button id="lwt" class="toggle" title="선 굵기 보기 (W)">선 굵기</button>
-    <button id="paper" class="toggle" title="흰 배경 (B) — 흰 선은 검게">흰 배경</button>
-    <button id="measure" class="toggle" title="거리 재기 (D) — 끝점·중간점·중심에 붙습니다. Esc 로 끝">측정</button>
-    <span class="sep"></span>
-    <span id="status" class="status">DWG·DXF 도면을 여세요</span>
+    <button data-cmd="tables" title="면적표·창호일람표·마감표·법규 검토 (TB)">표</button>
+    <button data-cmd="view3d" title="3D 보기 (3D)">3D</button>
     <span class="grow"></span>
-    <span id="version" class="muted small"></span>
+    <button id="lwt" class="toggle" data-cmd="lwt" title="선 굵기 보기 (LWT)">선 굵기</button>
+    <button id="paper" class="toggle" data-cmd="paper" title="흰 배경 (BG) — 흰 선은 검게">흰 배경</button>
+    <button data-cmd="palette" title="명령 찾기 (⌘K / Ctrl+K) — 이름·단축·초성">⌘K</button>
   </header>
   <main class="body">
     <aside class="side">
-      <h4>레이어</h4>
+      <div class="side-head"><h4>레이어</h4><button id="layer-add" class="mini" title="레이어 더하기 (LA)">＋</button></div>
+      <p class="muted small">현재: <span id="cur-layer"></span> · 이름을 두 번 눌러 바꿈</p>
       <ul id="layers" class="layers"></ul>
       <div id="skipped" class="muted small"></div>
+      <div class="side-head"><h4>층</h4>
+        <span><button id="level-add" class="mini" title="층 더하기 (LV)">＋</button><button id="level-copy" class="mini" title="지금 층 복사 (CL)">⧉</button></span>
+      </div>
+      <ul id="levels" class="levels"></ul>
+      <p id="arch-sum" class="muted small"></p>
       <section id="props" class="props-panel" hidden></section>
     </aside>
     <section class="stage">
@@ -47,9 +81,38 @@
       <canvas id="text"></canvas>
       <canvas id="overlay"></canvas>
       <div id="cursor" class="cursor muted small"></div>
-      <nav id="spaces" class="spaces" hidden></nav>
+      <nav id="spaces" class="spaces"></nav>
+      <section id="tables" class="drawer" hidden>
+        <div class="tb-head"><nav class="tb-tabs"></nav><span class="grow"></span><button class="tb-csv">CSV 저장…</button><button class="tb-close">닫기</button></div>
+        <div class="tb-body"></div>
+      </section>
     </section>
   </main>
+  <footer class="cmdbar">
+    <span id="prompt" class="prompt">명령:</span>
+    <input id="cmd" autocomplete="off" spellcheck="false" placeholder="명령 (L 선, M 이동, WA 벽 …) · ⌘K 로 찾기">
+    <span id="status" class="status muted">DWG·DXF 도면을 열거나 새 도면에 그리세요</span>
+    <span class="grow"></span>
+    <button id="snap" class="toggle mini on" data-cmd="snap" title="객체 스냅 (F3)">스냅</button>
+    <button id="ortho" class="toggle mini" data-cmd="ortho" title="직교 (F8, Shift 누른 동안)">직교</button>
+    <span id="version" class="muted small"></span>
+  </footer>
+  <div id="palette" class="modal" hidden>
+    <div class="palette"><input placeholder="명령 찾기 — 이름·단축·초성 (ㄱㄸ)"><ul></ul></div>
+  </div>
+  <div id="view3d" class="modal" hidden>
+    <div class="v3">
+      <div class="v3-head"><strong>3D 보기</strong><span class="v3-info muted small"></span><span class="grow"></span><button class="v3-close">닫기 (Esc)</button></div>
+      <canvas></canvas>
+    </div>
+  </div>
+  <div id="ask" class="modal" hidden>
+    <form class="ask">
+      <h4></h4>
+      <div class="ask-fields"></div>
+      <div class="pop-btns"><button type="button" class="ask-cancel">취소</button><button class="primary">확인</button></div>
+    </form>
+  </div>
   <script type="module" src="js/main.js"></script>
 </body>
 </html>

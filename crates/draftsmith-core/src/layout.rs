@@ -66,6 +66,9 @@ pub struct Layout {
     /// 종이 공간 객체 (블록은 펼침, 레이어 번호는 도면과 같음)
     pub paper: Vec<Entity>,
     pub viewports: Vec<ViewportView>,
+    /// 건축 객체를 보일 층 (DraftSmith 시트 — 구현 노트 §21). None 이면 지금 층
+    #[serde(default)]
+    pub level: Option<u64>,
 }
 
 fn inside(b: &Bbox, p: Vec2) -> bool {
@@ -293,6 +296,7 @@ mod tests {
                 target: Vec2::default(),
                 frozen: Vec::new(),
             }],
+            level: None,
         });
         let c = compose(&d, 0).unwrap();
         assert_eq!(c.entities.len(), 1);

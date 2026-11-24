@@ -97,3 +97,69 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
   background: rgba(127,127,127,.22); border: 1px solid transparent; color: var(--muted);
 }
 .spaces button.on { background: var(--panel); color: var(--text); border-color: var(--line); }
+
+/* ── M2 이후: 도구 막대·명령줄·옆 칸·서랍·팝업 ───────────────────────────── */
+.bar { flex-wrap: wrap; row-gap: 4px; }
+.group { display: inline-flex; gap: 3px; align-items: center; }
+.tools button { padding: 3px 8px; }
+button.tool-on { background: var(--accent); border-color: var(--accent); color: #fff; }
+button:disabled { opacity: .4; cursor: default; }
+button.mini { padding: 0 6px; font-size: 12px; line-height: 18px; }
+button.danger { color: #d9433b; border-color: #d9433b55; margin-top: 8px; }
+input { font: inherit; color: var(--text); background: transparent; border: 1px solid var(--line); border-radius: var(--radius); padding: 2px 6px; }
+input:focus, select:focus { outline: none; border-color: var(--accent); }
+
+.side-head { display: flex; align-items: center; justify-content: space-between; margin-top: 6px; }
+.side-head h4 { margin: 0; }
+.side p { margin: 2px 0 6px; }
+.layers li.current .name { font-weight: 600; color: var(--accent); }
+.layers input[type=checkbox] { margin: 0; }
+.layers input.sw { width: 14px; height: 14px; padding: 0; border: none; background: none; cursor: pointer; }
+.layers input.sw::-webkit-color-swatch-wrapper { padding: 0; }
+.layers input.sw::-webkit-color-swatch { border: 1px solid var(--line); border-radius: 3px; }
+.levels { list-style: none; margin: 4px 0; padding: 0; }
+.levels li { padding: 2px 6px; border-radius: 4px; cursor: pointer; }
+.levels li:hover { background: rgba(127,127,127,.12); }
+.levels li.current { background: var(--accent); color: #fff; }
+.props dd input, .props dd select { width: 100%; padding: 1px 4px; font-size: 12px; }
+.props-edit { display: grid; gap: 4px; margin-top: 8px; }
+.props-edit select { max-width: none; }
+
+.cmdbar {
+  display: flex; align-items: center; gap: var(--gap);
+  padding: 4px 12px; border-top: 1px solid var(--line); background: var(--panel);
+}
+.prompt { white-space: nowrap; font-weight: 600; max-width: 46%; overflow: hidden; text-overflow: ellipsis; }
+#cmd { width: 220px; font-variant-numeric: tabular-nums; }
+.cmdbar .status { flex: 0 1 auto; min-width: 0; }
+
+.spaces button.add { color: var(--muted); }
+
+.drawer {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 42%; display: flex; flex-direction: column;
+  background: var(--panel); border-top: 1px solid var(--line); box-shadow: 0 -6px 18px rgba(0,0,0,.18);
+}
+.tb-head { display: flex; gap: 6px; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+.tb-tabs { display: flex; gap: 3px; }
+.tb-tabs button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.tb-body { flex: 1; overflow: auto; padding: 8px 12px; user-select: text; }
+.tb-body table { border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+.tb-body th, .tb-body td { border: 1px solid var(--line); padding: 3px 8px; text-align: left; white-space: nowrap; }
+.tb-body th { background: rgba(127,127,127,.1); font-weight: 600; }
+.tb-body td.num { text-align: right; }
+
+.modal { position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,.35); display: flex; align-items: flex-start; justify-content: center; }
+.palette { margin-top: 12vh; width: 460px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 16px 40px rgba(0,0,0,.3); overflow: hidden; }
+.palette input { width: 100%; border: none; border-bottom: 1px solid var(--line); border-radius: 0; padding: 10px 14px; font-size: 15px; }
+.palette ul { list-style: none; margin: 0; padding: 4px; max-height: 50vh; overflow: auto; }
+.palette li { display: flex; justify-content: space-between; padding: 6px 10px; border-radius: 6px; cursor: pointer; }
+.palette li.on { background: var(--accent); color: #fff; }
+.palette li.on .muted { color: #e6eeff; }
+.v3 { margin: 4vh 4vw; flex: 1; height: 92vh; display: flex; flex-direction: column; background: var(--panel); border-radius: 10px; overflow: hidden; box-shadow: 0 16px 40px rgba(0,0,0,.3); }
+.v3-head { display: flex; gap: 10px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+.v3 canvas { flex: 1; width: 100%; min-height: 0; cursor: grab; }
+.ask { margin-top: 16vh; width: 340px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; display: grid; gap: 8px; box-shadow: 0 16px 40px rgba(0,0,0,.3); }
+.ask h4 { margin: 0; }
+.ask-fields { display: grid; gap: 6px; }
+.ask-fields label { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.ask-fields input, .ask-fields select { width: 180px; }

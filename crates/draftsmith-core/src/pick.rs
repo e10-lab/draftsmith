@@ -150,6 +150,46 @@ pub fn distance(shape: &Shape, p: Vec2, tol: f64) -> f64 {
 }
 
 impl PickIndex {
+    /// 상자 고르기: `crossing` 이 거짓이면 상자 안에 다 든 객체(창), 참이면 상자에 걸친 객체도(걸침)
+    pub fn in_box(&self, d: &Drawing, rect: &crate::geom::Bbox, crossing: bool) -> Vec<usize> {
+        let env = AABB::from_corners([rect.min.x, rect.min.y], [rect.max.x, rect.max.y]);
+        let tol = (rect.width().max(rect.height()) / 2000.0).max(1e-9);
+        let mut out: Vec<usize> = self
+            .tree
+            .locate_in_envelope_intersecting(env)
+            .filter_map(|it| {
+                let i = it.data as usize;
+                let e = &d.entities[i];
+                let b = match &e.shape {
+                    Shape::Text(t) => {
+                        let mut bb = crate::geom::Bbox::EMPTY;
+                        text_box(t).iter().for_each(|p| bb.add(*p));
+                        bb
+                    }
+                    s => s.bbox(),
+                };
+                let inside = b.min.x >= rect.min.x
+                    && b.max.x <= rect.max.x
+                    && b.min.y >= rect.min.y
+                    && b.max.y <= rect.max.y;
+                if inside {
+                    return Some(i);
+                }
+                if !crossing {
+                    return None;
+                }
+                // 걸침: 외곽 선분이 상자에 닿거나, 채움·문자 안에 상자가 들었으면
+                let hit = outline(&e.shape, tol, 200_000)
+                    .into_iter()
+                    .any(|(a, b)| crate::layout::clip_segment(a, b, rect).is_some())
+                    || distance(&e.shape, rect.center(), tol) == 0.0;
+                hit.then_some(i)
+            })
+            .collect();
+        out.sort_unstable();
+        out
+    }
+
     /// 켜진 레이어 객체만 넣는다
     pub fn build(d: &Drawing) -> PickIndex {
         let items: Vec<Item> = d

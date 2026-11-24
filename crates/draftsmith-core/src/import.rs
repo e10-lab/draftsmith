@@ -907,6 +907,7 @@ fn read_layouts(c: &mut Converter) {
             order: l.tab_order,
             paper,
             viewports,
+            level: None,
         });
     }
     layouts.sort_by_key(|l| l.order);

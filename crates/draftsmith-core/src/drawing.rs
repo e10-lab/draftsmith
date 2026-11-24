@@ -387,6 +387,14 @@ impl Drawing {
         }
     }
 
+    /// 색 번호(ACI 1–255)의 RGB
+    pub fn aci_rgb(i: u8) -> [u8; 3] {
+        acadrust::types::Color::from_index(i as i16)
+            .rgb()
+            .map(|(r, g, b)| [r, g, b])
+            .unwrap_or([255, 255, 255])
+    }
+
     /// 객체의 표시 색 (객체 색이 없으면 레이어 색)
     pub fn color_of(&self, e: &Entity) -> [u8; 3] {
         e.color

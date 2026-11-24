@@ -129,6 +129,30 @@ fn text_width(face: &ttf_parser::Face, s: &str) -> f64 {
 
 /// 도면을 PDF 한 쪽으로
 pub fn export(d: &Drawing, o: &PdfOptions) -> Result<Vec<u8>, String> {
+    export_pages(std::slice::from_ref(d), o)
+}
+
+/// 도면 여러 장을 PDF 여러 쪽으로 (도면 세트 — 구현 노트 §23)
+pub fn export_pages(pages: &[Drawing], o: &PdfOptions) -> Result<Vec<u8>, String> {
+    let font_data = FONT.to_vec();
+    let face = ttf_parser::Face::parse(FONT, 0).map_err(|e| e.to_string())?;
+    let font = Font::new(font_data.into(), 0).ok_or("글꼴을 읽지 못했습니다")?;
+    let mut doc = Document::new();
+    for d in pages {
+        draw_page(&mut doc, d, o, &face, &font)?;
+    }
+    doc.finish()
+        .map_err(|e| format!("PDF 를 만들지 못했습니다: {e:?}"))
+}
+
+/// 한 쪽 그리기
+fn draw_page(
+    doc: &mut Document,
+    d: &Drawing,
+    o: &PdfOptions,
+    face: &ttf_parser::Face,
+    font: &Font,
+) -> Result<(), String> {
     let area = o.area.unwrap_or_else(|| d.bbox());
     if area.is_empty() {
         return Err("출력할 것이 없습니다".into());
@@ -155,11 +179,6 @@ pub fn export(d: &Drawing, o: &PdfOptions) -> Result<Vec<u8>, String> {
         )
     };
 
-    let font_data = FONT.to_vec();
-    let face = ttf_parser::Face::parse(FONT, 0).map_err(|e| e.to_string())?;
-    let font = Font::new(font_data.into(), 0).ok_or("글꼴을 읽지 못했습니다")?;
-
-    let mut doc = Document::new();
     let settings =
         PageSettings::from_wh(page_w as f32, page_h as f32).ok_or("용지 크기가 잘못되었습니다")?;
     let mut page = doc.start_page_with(settings);
@@ -293,7 +312,7 @@ pub fn export(d: &Drawing, o: &PdfOptions) -> Result<Vec<u8>, String> {
             VAlign::Top => h,
         };
         for (i, line) in lines.iter().enumerate() {
-            let w = text_width(&face, line) * size;
+            let w = text_width(face, line) * size;
             let x = -w * t.halign;
             let y = dy + i as f64 * gap;
             surface.draw_text(
@@ -312,8 +331,7 @@ pub fn export(d: &Drawing, o: &PdfOptions) -> Result<Vec<u8>, String> {
     }
     surface.finish();
     page.finish();
-    doc.finish()
-        .map_err(|e| format!("PDF 를 만들지 못했습니다: {e:?}"))
+    Ok(())
 }
 
 /// 점이 범위(여유 `pad`)에 드나

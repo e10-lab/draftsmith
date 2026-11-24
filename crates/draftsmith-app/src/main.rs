@@ -3,21 +3,23 @@
 
 //! DraftSmith 데스크톱 앱 (Tauri).
 //!
-//! 화면은 `ui/` 의 HTML·JavaScript 이고, 도면 읽기·표시 데이터는 이 Rust 명령들이
+//! 화면은 `ui/` 의 HTML·JavaScript 이고, 도면 읽기·편집·표시 데이터는 이 Rust 명령들이
 //! `draftsmith_core` 로 처리한다. BEATS 와 같은 구조다.
 //!
-//! BEATS 와 다른 점: 도면은 클 수 있어서 열린 도면을 앱(Rust)이 들고 있고,
-//! 화면에는 표시 데이터만 바이너리로 넘긴다 (JSON 변환 없음 — 구현 노트 §4).
+//! 열린 도면은 앱(Rust)이 편집 엔진(`Editor`)으로 들고, 화면에는 표시 데이터만 바이너리로 넘긴다
+//! (JSON 변환 없음 — 구현 노트 §4·§18). 편집은 모두 `edit` 명령 하나로 들어온다.
 
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Instant;
 
-use draftsmith_core::layout;
+use draftsmith_core::edit::{Editor, JOURNAL_EXT, Journal, Op};
 use draftsmith_core::pdf::{self, PdfOptions};
 use draftsmith_core::pick::{self, PickIndex};
 use draftsmith_core::snap::SnapIndex;
-use draftsmith_core::{Bbox, Drawing, Vec2, display, import};
+use draftsmith_core::{
+    Affine, Bbox, Drawing, Shape, Vec2, archgen, display, docfile, export, import, sheet,
+};
 use serde::{Deserialize, Serialize};
 use tauri::ipc::Response;
 use tauri::{AppHandle, Manager, State};
@@ -25,34 +27,52 @@ use tauri::{AppHandle, Manager, State};
 /// 열린 도면
 #[derive(Default)]
 struct Open {
-    /// 모형 공간 도면 (배치 정보 포함)
-    drawing: Option<Drawing>,
-    /// 지금 보는 배치 (번호, 종이 좌표로 합친 도면). None 이면 모형
-    sheet: Option<(usize, Drawing)>,
+    /// 편집 중인 모형 도면 (배치·건축 객체 포함)
+    ed: Option<Editor>,
+    /// 지금 보는 배치 번호. None 이면 모형
+    sheet: Option<usize>,
+    /// 화면에 보이는 도면 (모형 + 건축 객체가 만든 선, 또는 배치를 합친 종이 도면). None 이면 모형 그대로
+    view: Option<Drawing>,
+    /// 원본 경로 (DWG·DXF·dsmith)
     path: Option<PathBuf>,
+    /// 저장 경로 (.dsmith). DWG·DXF 를 열었으면 처음 저장 때 묻는다
+    save_path: Option<PathBuf>,
     /// 스냅 점 색인 (켜진 레이어만)
     snaps: Option<SnapIndex>,
     /// 객체 고르기 색인 (켜진 레이어만)
     picks: Option<PickIndex>,
+    /// 변경 기록으로 이미 내보낸 작업 수 (M5)
+    journal_mark: usize,
 }
 
 impl Open {
-    /// 지금 화면에 보이는 도면 (배치를 고르면 합친 종이 도면)
+    /// 지금 화면에 보이는 도면
     fn shown(&self) -> Option<&Drawing> {
-        self.sheet
-            .as_ref()
-            .map(|(_, d)| d)
-            .or(self.drawing.as_ref())
+        self.view.as_ref().or(self.ed.as_ref().map(|e| &e.d))
     }
 
-    /// 지금 보이는 도면으로 스냅·고르기 색인을 다시 만든다
-    fn reindex(&mut self) {
+    /// 편집한 뒤: 보이는 도면을 다시 만들고 스냅·고르기 색인도 다시
+    fn refresh(&mut self) {
+        self.view = match (&self.ed, self.sheet) {
+            (None, _) => None,
+            (Some(e), Some(i)) => sheet::compose(&e.d, i),
+            (Some(e), None) => archgen::with_arch(&e.d),
+        };
         let (snaps, picks) = match self.shown() {
             Some(d) => (Some(SnapIndex::build(d)), Some(PickIndex::build(d))),
             None => (None, None),
         };
         self.snaps = snaps;
         self.picks = picks;
+    }
+
+    fn editor(&mut self) -> Result<&mut Editor, String> {
+        if self.sheet.is_some() {
+            return Err("배치에서는 고칠 수 없습니다 — 「모형」 탭에서 고치세요".into());
+        }
+        self.ed
+            .as_mut()
+            .ok_or_else(|| "열린 도면이 없습니다".into())
     }
 }
 
@@ -169,7 +189,10 @@ fn startup_file() -> Option<String> {
 fn pick_drawing() -> Option<String> {
     rfd::FileDialog::new()
         .set_title("도면 열기")
-        .add_filter("도면 (DWG, DXF)", &["dwg", "dxf", "DWG", "DXF"])
+        .add_filter(
+            "도면 (DraftSmith, DWG, DXF)",
+            &["dsmith", "dwg", "dxf", "DSMITH", "DWG", "DXF"],
+        )
         .pick_file()
         .map(|p| p.display().to_string())
 }
@@ -182,35 +205,76 @@ struct LayerInfo {
     count: usize,
 }
 
+/// 화면이 그리는 도면 상태 (열기·편집 뒤마다)
 #[derive(Serialize)]
-struct Summary {
-    path: String,
+struct DocState {
+    /// 창 제목에 보일 이름
+    title: String,
+    path: Option<String>,
     code_page: String,
     entities: usize,
     inserts: usize,
     layers: Vec<LayerInfo>,
+    /// 모형 도면 레이어 수 (그 뒤는 건축 객체가 더한 레이어 — 고칠 수 없음)
+    base_layers: usize,
+    current_layer: u32,
     skipped: Vec<(String, usize)>,
-    read_ms: f64,
     /// 배치 이름 (탭 순서)
     layouts: Vec<String>,
+    /// 지금 보는 배치 (None = 모형)
+    sheet: Option<usize>,
     /// 복구 모드로 읽었으면 처음 오류
     recovered: Option<String>,
+    can_undo: bool,
+    can_redo: bool,
+    dirty: bool,
+    /// 건축 객체 요약 (층·벽·문·창·실 수 등)
+    arch: archgen::ArchSummary,
+    /// 열기에 걸린 시간 (열 때만)
+    read_ms: f64,
+    /// 편집으로 새로 생긴 객체 번호 (고르기 표시용)
+    added: Vec<usize>,
 }
 
-fn summary(d: &Drawing, path: String, read_ms: f64) -> Summary {
+fn state_of(open: &Open, read_ms: f64, added: Vec<usize>) -> Result<DocState, String> {
+    let e = open.ed.as_ref().ok_or("열린 도면이 없습니다")?;
+    let d = &e.d;
     let mut counts = vec![0usize; d.layers.len()];
-    for e in &d.entities {
-        if let Some(c) = counts.get_mut(e.layer as usize) {
+    for x in &d.entities {
+        if let Some(c) = counts.get_mut(x.layer as usize) {
             *c += 1;
         }
     }
-    Summary {
-        path,
+    // 건축 객체가 만든 선이 든 레이어도 보이게
+    if let Some(v) = &open.view
+        && open.sheet.is_none()
+    {
+        for x in v.entities.iter().skip(d.entities.len()) {
+            if let Some(c) = counts.get_mut(x.layer as usize) {
+                *c += 1;
+            }
+        }
+    }
+    let layers_src = open
+        .view
+        .as_ref()
+        .filter(|_| open.sheet.is_none())
+        .map(|v| &v.layers)
+        .unwrap_or(&d.layers);
+    counts.resize(layers_src.len(), 0);
+    let title = open
+        .path
+        .as_ref()
+        .and_then(|p| p.file_name())
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "새 도면".into());
+    Ok(DocState {
+        title,
+        path: open.path.as_ref().map(|p| p.display().to_string()),
         code_page: d.code_page.clone(),
         entities: d.entities.len(),
         inserts: d.inserts,
-        layers: d
-            .layers
+        layers: layers_src
             .iter()
             .zip(counts)
             .map(|(l, count)| LayerInfo {
@@ -220,43 +284,261 @@ fn summary(d: &Drawing, path: String, read_ms: f64) -> Summary {
                 count,
             })
             .collect(),
+        base_layers: d.layers.len(),
+        current_layer: d.current_layer,
         skipped: d.skipped.iter().map(|(k, n)| (k.clone(), *n)).collect(),
-        read_ms,
         layouts: d.layouts.iter().map(|l| l.name.clone()).collect(),
+        sheet: open.sheet,
         recovered: d.recovered.clone(),
-    }
+        can_undo: e.can_undo(),
+        can_redo: e.can_redo(),
+        dirty: e.dirty,
+        arch: archgen::summary(&d.arch),
+        read_ms,
+        added,
+    })
 }
 
-/// 도면을 읽어 앱에 들고, 요약을 돌려준다
+/// 새 도면 (기본 레이어)
+#[tauri::command]
+fn new_drawing(state: State<'_, AppState>) -> Result<DocState, String> {
+    let mut open = state.lock().map_err(err)?;
+    *open = Open {
+        ed: Some(Editor::new(archgen::new_drawing())),
+        ..Default::default()
+    };
+    open.refresh();
+    state_of(&open, 0.0, Vec::new())
+}
+
+/// 도면을 읽어 앱에 들고, 상태를 돌려준다
 #[tauri::command]
 async fn open_drawing(
     path: String,
     app: AppHandle,
     state: State<'_, AppState>,
-) -> Result<Summary, String> {
+) -> Result<DocState, String> {
     let t = Instant::now();
     let p = PathBuf::from(&path);
-    // 읽기·스냅 색인은 시간이 걸릴 수 있어 작업 스레드에서
-    let (d, snaps, picks) = tauri::async_runtime::spawn_blocking(move || {
-        import::read_file(&p).map(|d| {
-            let s = SnapIndex::build(&d);
-            let k = PickIndex::build(&d);
-            (d, s, k)
-        })
-    })
-    .await
-    .map_err(err)?
-    .map_err(err)?;
+    // 읽기는 시간이 걸릴 수 있어 작업 스레드에서
+    let d = tauri::async_runtime::spawn_blocking(move || import::read_file(&p))
+        .await
+        .map_err(err)?
+        .map_err(err)?;
     let read_ms = t.elapsed().as_secs_f64() * 1000.0;
-    let s = summary(&d, path.clone(), read_ms);
     remember(&app, &path);
     let mut open = state.lock().map_err(err)?;
-    open.drawing = Some(d);
-    open.sheet = None;
-    open.snaps = Some(snaps);
-    open.picks = Some(picks);
-    open.path = Some(PathBuf::from(path));
-    Ok(s)
+    let p = PathBuf::from(&path);
+    *open = Open {
+        ed: Some(Editor::new(d)),
+        save_path: docfile::is_dsmith(&p).then(|| p.clone()),
+        path: Some(p),
+        ..Default::default()
+    };
+    open.refresh();
+    state_of(&open, read_ms, Vec::new())
+}
+
+/// 지금 상태
+#[tauri::command]
+fn doc_state(state: State<'_, AppState>) -> Result<DocState, String> {
+    let open = state.lock().map_err(err)?;
+    state_of(&open, 0.0, Vec::new())
+}
+
+/// 저장 (.dsmith). `save_as` 거나 저장 경로가 없으면 대화상자. 취소하면 null
+#[tauri::command]
+fn save_drawing(
+    save_as: bool,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    let mut open = state.lock().map_err(err)?;
+    let target = match (&open.save_path, save_as) {
+        (Some(p), false) => p.clone(),
+        _ => {
+            let stem = open
+                .path
+                .as_ref()
+                .and_then(|p| p.file_stem())
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| "새 도면".into());
+            let mut dlg = rfd::FileDialog::new()
+                .set_title("저장")
+                .add_filter("DraftSmith 도면", &["dsmith"])
+                .set_file_name(format!("{stem}.dsmith"));
+            if let Some(dir) = open.path.as_ref().and_then(|p| p.parent()) {
+                dlg = dlg.set_directory(dir);
+            }
+            let Some(mut p) = dlg.save_file() else {
+                return Ok(None);
+            };
+            if !docfile::is_dsmith(&p) {
+                p.set_extension(docfile::EXT);
+            }
+            p
+        }
+    };
+    let ed = open.ed.as_mut().ok_or("열린 도면이 없습니다")?;
+    docfile::save(&ed.d, &target)?;
+    ed.dirty = false;
+    open.save_path = Some(target.clone());
+    open.path = Some(target.clone());
+    let s = target.display().to_string();
+    remember(&app, &s);
+    Ok(Some(s))
+}
+
+/// DXF·DWG 로 내보내기 (`format`: "dxf" | "dwg"). 취소하면 null
+#[tauri::command]
+fn export_cad(format: String, state: State<'_, AppState>) -> Result<Option<String>, String> {
+    let open = state.lock().map_err(err)?;
+    let d = open.ed.as_ref().ok_or("열린 도면이 없습니다")?;
+    // 건축 객체가 만든 선까지 넣어 내보낸다
+    let full = archgen::with_arch(&d.d).unwrap_or_else(|| d.d.clone());
+    let ext = if format.eq_ignore_ascii_case("dwg") {
+        "dwg"
+    } else {
+        "dxf"
+    };
+    let stem = open
+        .path
+        .as_ref()
+        .and_then(|p| p.file_stem())
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "도면".into());
+    let mut dlg = rfd::FileDialog::new()
+        .set_title(format!("{} 로 내보내기", ext.to_uppercase()))
+        .add_filter(ext.to_uppercase(), &[ext])
+        .set_file_name(format!("{stem}.{ext}"));
+    if let Some(dir) = open.path.as_ref().and_then(|p| p.parent()) {
+        dlg = dlg.set_directory(dir);
+    }
+    let Some(path) = dlg.save_file() else {
+        return Ok(None);
+    };
+    export::write(&full, &path)?;
+    Ok(Some(path.display().to_string()))
+}
+
+/// 편집 요청 (화면 → 앱). 객체 번호는 모형 도면 기준
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum EditReq {
+    Add {
+        shapes: Vec<Shape>,
+    },
+    Delete {
+        ids: Vec<usize>,
+    },
+    /// 아핀 변환 [a, b, c, d, e, f]: x' = a·x + c·y + e, y' = b·x + d·y + f
+    Transform {
+        ids: Vec<usize>,
+        m: [f64; 6],
+    },
+    Copy {
+        ids: Vec<usize>,
+        m: [f64; 6],
+    },
+    SetLayer {
+        ids: Vec<usize>,
+        layer: u32,
+    },
+    /// 색 번호 (None = 레이어 색)
+    SetColor {
+        ids: Vec<usize>,
+        aci: Option<u8>,
+    },
+    Offset {
+        id: usize,
+        dist: f64,
+        side: [f64; 2],
+    },
+    AddLayer {
+        name: String,
+        color: [u8; 3],
+    },
+    EditLayer {
+        index: u32,
+        name: String,
+        color: [u8; 3],
+    },
+    CurrentLayer {
+        layer: u32,
+    },
+    /// 건축 객체 편집 (M3)
+    Arch {
+        op: archgen::ArchReq,
+    },
+    /// 도면 시트 만들기 (M4)
+    AddSheet(sheet::SheetReq),
+    /// 도면 시트 지우기
+    DeleteSheet {
+        index: usize,
+    },
+    Undo,
+    Redo,
+}
+
+fn affine(m: [f64; 6]) -> Affine {
+    Affine {
+        a: m[0],
+        b: m[1],
+        c: m[2],
+        d: m[3],
+        e: m[4],
+        f: m[5],
+    }
+}
+
+/// 편집 하나를 실행하고 새 상태를 돌려준다
+#[tauri::command]
+fn edit(req: EditReq, state: State<'_, AppState>) -> Result<DocState, String> {
+    let mut open = state.lock().map_err(err)?;
+    let mut added = Vec::new();
+    {
+        let ed = open.editor()?;
+        match req {
+            EditReq::Add { shapes } => added = ed.add_shapes(shapes).collect(),
+            EditReq::Delete { ids } => ed.remove(&ids),
+            EditReq::Transform { ids, m } => ed.transform(&ids, &affine(m)),
+            EditReq::Copy { ids, m } => added = ed.copy(&ids, &affine(m)).collect(),
+            EditReq::SetLayer { ids, layer } => ed.set_layer(&ids, layer),
+            EditReq::SetColor { ids, aci } => ed.set_color(&ids, aci.map(Drawing::aci_rgb), aci),
+            EditReq::Offset { id, dist, side } => {
+                added = ed
+                    .offset(id, dist, Vec2::new(side[0], side[1]))
+                    .into_iter()
+                    .collect();
+            }
+            EditReq::AddLayer { name, color } => {
+                let i = ed.add_layer(&name, color);
+                ed.set_current_layer(i);
+            }
+            EditReq::EditLayer { index, name, color } => ed.edit_layer(index, &name, color),
+            EditReq::CurrentLayer { layer } => ed.set_current_layer(layer),
+            EditReq::Arch { op } => archgen::apply(ed, op)?,
+            EditReq::AddSheet(req) => {
+                let mut d = ed.d.clone();
+                let l = sheet::make(&mut d, &req)?;
+                // 표제란 레이어가 새로 생겼으면 레이어 표도 함께 (되돌리기 한 단계)
+                if d.layers.len() != ed.d.layers.len() {
+                    let (old, new) = (ed.d.layers.clone(), d.layers);
+                    ed.run(Op::Layers { old, new });
+                }
+                ed.add_layout(l);
+            }
+            EditReq::DeleteSheet { index } => ed.remove_layout(index),
+            EditReq::Undo => {
+                ed.undo();
+            }
+            EditReq::Redo => {
+                ed.redo();
+            }
+        }
+    }
+    open.refresh();
+    state_of(&open, 0.0, added)
 }
 
 #[derive(Serialize)]
@@ -282,7 +564,7 @@ fn snap(x: f64, y: f64, r: f64, state: State<'_, AppState>) -> Result<Option<Sna
         }))
 }
 
-/// 레이어 켜기·끄기
+/// 레이어 켜기·끄기 (되돌리기에 넣지 않는 보기 설정)
 #[tauri::command]
 fn set_layer_visible(
     index: usize,
@@ -290,44 +572,45 @@ fn set_layer_visible(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let mut open = state.lock().map_err(err)?;
-    let d = open.drawing.as_mut().ok_or("열린 도면이 없습니다")?;
-    let l = d
-        .layers
-        .get_mut(index)
-        .ok_or("레이어 번호가 잘못되었습니다")?;
-    l.visible = visible;
-    // 배치를 보고 있으면 다시 합치고, 꺼진 레이어에는 스냅하지 않게 색인을 다시 만든다
-    if let Some(i) = open.sheet.as_ref().map(|(i, _)| *i) {
-        let d = open.drawing.as_ref().ok_or("열린 도면이 없습니다")?;
-        open.sheet = layout::compose(d, i).map(|s| (i, s));
+    let ed = open.ed.as_mut().ok_or("열린 도면이 없습니다")?;
+    if let Some(l) = ed.d.layers.get_mut(index) {
+        l.visible = visible;
     }
-    open.reindex();
+    open.refresh();
     Ok(())
 }
 
 /// 볼 공간 고르기: null 이면 모형, 번호면 그 배치
 #[tauri::command]
-fn set_space(index: Option<usize>, state: State<'_, AppState>) -> Result<(), String> {
+fn set_space(index: Option<usize>, state: State<'_, AppState>) -> Result<DocState, String> {
     let mut open = state.lock().map_err(err)?;
-    let d = open.drawing.as_ref().ok_or("열린 도면이 없습니다")?;
-    open.sheet = match index {
-        None => None,
-        Some(i) => Some((
-            i,
-            layout::compose(d, i).ok_or("배치 번호가 잘못되었습니다")?,
-        )),
-    };
-    open.reindex();
-    Ok(())
+    let n = open.ed.as_ref().map(|e| e.d.layouts.len()).unwrap_or(0);
+    if index.is_some_and(|i| i >= n) {
+        return Err("배치 번호가 잘못되었습니다".into());
+    }
+    open.sheet = index;
+    open.refresh();
+    state_of(&open, 0.0, Vec::new())
 }
 
 #[derive(Serialize)]
 struct PickOut {
     index: usize,
+    /// 모형 객체인가 (건축 객체가 만든 선·배치 종이 객체는 거짓)
+    editable: bool,
+    /// 건축 객체면 (종류, 번호)
+    arch: Option<(String, u64)>,
     /// (이름, 값) — 속성 칸에 그대로
     props: Vec<(String, String)>,
     /// 강조 표시 선분 [x0, y0, x1, y1] (도면 좌표)
     outline: Vec<[f64; 4]>,
+}
+
+fn outline_of(d: &Drawing, i: usize, tol: f64) -> Vec<[f64; 4]> {
+    pick::outline(&d.entities[i].shape, tol, 20_000)
+        .into_iter()
+        .map(|(a, b)| [a.x, a.y, b.x, b.y])
+        .collect()
 }
 
 /// 도면 좌표 (x, y) 에서 반지름 r 안의 가장 가까운 객체와 그 속성. 없으면 null
@@ -337,14 +620,97 @@ fn pick_at(x: f64, y: f64, r: f64, state: State<'_, AppState>) -> Result<Option<
     let (Some(d), Some(idx)) = (open.shown(), open.picks.as_ref()) else {
         return Ok(None);
     };
-    Ok(idx.pick(d, Vec2::new(x, y), r).map(|i| PickOut {
-        index: i,
-        props: pick::properties(d, i),
-        outline: pick::outline(&d.entities[i].shape, r / 4.0, 20_000)
-            .into_iter()
-            .map(|(a, b)| [a.x, a.y, b.x, b.y])
-            .collect(),
+    let base = open.ed.as_ref().map(|e| e.d.entities.len()).unwrap_or(0);
+    Ok(idx.pick(d, Vec2::new(x, y), r).map(|i| {
+        let model = open.sheet.is_none() && i < base;
+        let arch = (open.sheet.is_none() && i >= base)
+            .then(|| {
+                open.ed
+                    .as_ref()
+                    .and_then(|e| archgen::owner(&e.d, i - base))
+            })
+            .flatten();
+        let mut props = pick::properties(d, i);
+        if let (Some((k, id)), Some(e)) = (&arch, open.ed.as_ref()) {
+            props = archgen::properties(&e.d.arch, k, *id);
+        }
+        PickOut {
+            index: i,
+            editable: model,
+            arch,
+            props,
+            outline: outline_of(d, i, r / 4.0),
+        }
     }))
+}
+
+/// 상자 고르기 (도면 좌표). 걸침이면 상자에 걸친 것도. 모형 객체 번호만
+#[tauri::command]
+fn pick_box(
+    rect: [f64; 4],
+    crossing: bool,
+    state: State<'_, AppState>,
+) -> Result<Vec<usize>, String> {
+    let open = state.lock().map_err(err)?;
+    if open.sheet.is_some() {
+        return Ok(Vec::new());
+    }
+    let (Some(d), Some(idx)) = (open.shown(), open.picks.as_ref()) else {
+        return Ok(Vec::new());
+    };
+    let base = open.ed.as_ref().map(|e| e.d.entities.len()).unwrap_or(0);
+    let mut b = Bbox::EMPTY;
+    b.add(Vec2::new(rect[0], rect[1]));
+    b.add(Vec2::new(rect[2], rect[3]));
+    Ok(idx
+        .in_box(d, &b, crossing)
+        .into_iter()
+        .filter(|&i| i < base)
+        .collect())
+}
+
+/// 여러 객체의 강조 표시 선분과 요약 속성
+#[derive(Serialize)]
+struct SelOut {
+    outline: Vec<[f64; 4]>,
+    props: Vec<(String, String)>,
+}
+
+#[tauri::command]
+fn selection_info(ids: Vec<usize>, tol: f64, state: State<'_, AppState>) -> Result<SelOut, String> {
+    let open = state.lock().map_err(err)?;
+    let d = open.shown().ok_or("열린 도면이 없습니다")?;
+    let ids: Vec<usize> = ids.into_iter().filter(|&i| i < d.entities.len()).collect();
+    let mut outline = Vec::new();
+    for &i in &ids {
+        if outline.len() > 60_000 {
+            break;
+        }
+        outline.extend(outline_of(d, i, tol));
+    }
+    let props = if ids.len() == 1 {
+        pick::properties(d, ids[0])
+    } else {
+        let mut layers: Vec<String> = ids
+            .iter()
+            .filter_map(|&i| d.layers.get(d.entities[i].layer as usize))
+            .map(|l| l.name.clone())
+            .collect();
+        layers.sort();
+        layers.dedup();
+        vec![
+            ("고른 객체".into(), format!("{} 개", ids.len())),
+            (
+                "레이어".into(),
+                if layers.len() == 1 {
+                    layers[0].clone()
+                } else {
+                    format!("{} 개 레이어", layers.len())
+                },
+            ),
+        ]
+    };
+    Ok(SelOut { outline, props })
 }
 
 /// PDF 출력 설정 (화면에서)
@@ -373,9 +739,7 @@ fn pick_ctb() -> Option<String> {
         .map(|p| p.display().to_string())
 }
 
-/// PDF 저장: 저장 대화상자 → 파일 쓰기. 취소하면 null, 저장하면 경로
-#[tauri::command]
-fn export_pdf(req: PdfRequest, state: State<'_, AppState>) -> Result<Option<String>, String> {
+fn pdf_options(req: &PdfRequest) -> Result<PdfOptions, String> {
     let (w, h) = pdf::paper_size(&req.paper).ok_or("모르는 용지입니다")?;
     let area = req.area.map(|[x0, y0, x1, y1]| {
         let mut b = Bbox::EMPTY;
@@ -390,14 +754,20 @@ fn export_pdf(req: PdfRequest, state: State<'_, AppState>) -> Result<Option<Stri
         ),
         _ => None,
     };
-    let o = PdfOptions {
+    Ok(PdfOptions {
         pens,
         paper_mm: if req.landscape { (h, w) } else { (w, h) },
         scale: req.scale,
         area,
         mono: req.mono,
         ..Default::default()
-    };
+    })
+}
+
+/// PDF 저장: 저장 대화상자 → 파일 쓰기. 취소하면 null, 저장하면 경로
+#[tauri::command]
+fn export_pdf(req: PdfRequest, state: State<'_, AppState>) -> Result<Option<String>, String> {
+    let o = pdf_options(&req)?;
     let (bytes, stem, dir) = {
         let open = state.lock().map_err(err)?;
         let d = open.shown().ok_or("열린 도면이 없습니다")?;
@@ -428,6 +798,59 @@ fn export_pdf(req: PdfRequest, state: State<'_, AppState>) -> Result<Option<Stri
     Ok(Some(path.display().to_string()))
 }
 
+/// 모든 배치를 PDF 여러 쪽으로 (도면 세트). 취소하면 null
+#[tauri::command]
+fn export_sheets_pdf(
+    req: PdfRequest,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    let o = pdf_options(&req)?;
+    let (bytes, stem, dir) = {
+        let open = state.lock().map_err(err)?;
+        let ed = open.ed.as_ref().ok_or("열린 도면이 없습니다")?;
+        let sheets: Vec<Drawing> = (0..ed.d.layouts.len())
+            .filter_map(|i| sheet::compose(&ed.d, i))
+            .collect();
+        if sheets.is_empty() {
+            return Err("배치(도면 시트)가 없습니다".into());
+        }
+        let stem = open
+            .path
+            .as_ref()
+            .and_then(|p| p.file_stem())
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "도면".into());
+        let dir = open
+            .path
+            .as_ref()
+            .and_then(|p| p.parent())
+            .map(|p| p.to_path_buf());
+        (
+            pdf::export_pages(
+                &sheets,
+                &PdfOptions {
+                    scale: Some(1.0),
+                    ..o
+                },
+            )?,
+            stem,
+            dir,
+        )
+    };
+    let mut dlg = rfd::FileDialog::new()
+        .set_title("도면 세트 PDF 저장")
+        .add_filter("PDF", &["pdf"])
+        .set_file_name(format!("{stem}-도면세트.pdf"));
+    if let Some(dir) = dir {
+        dlg = dlg.set_directory(dir);
+    }
+    let Some(path) = dlg.save_file() else {
+        return Ok(None);
+    };
+    std::fs::write(&path, bytes).map_err(err)?;
+    Ok(Some(path.display().to_string()))
+}
+
 /// 표시 데이터 (바이너리, 형식은 `draftsmith_core::display`)
 #[tauri::command]
 fn display_data(state: State<'_, AppState>) -> Result<Response, String> {
@@ -444,25 +867,172 @@ fn text_data(state: State<'_, AppState>) -> Result<Response, String> {
     Ok(Response::new(display::texts(d)))
 }
 
+/// 표 (면적표·창호일람표·실별 마감표·법규 검토) — 건축 객체에서 만든다
+#[tauri::command]
+fn arch_tables(state: State<'_, AppState>) -> Result<archgen::Tables, String> {
+    let open = state.lock().map_err(err)?;
+    let ed = open.ed.as_ref().ok_or("열린 도면이 없습니다")?;
+    Ok(archgen::tables(&ed.d))
+}
+
+/// 표를 CSV 로 저장 (엑셀에서 열림). 취소하면 null
+#[tauri::command]
+fn export_table_csv(name: String, state: State<'_, AppState>) -> Result<Option<String>, String> {
+    let csv = {
+        let open = state.lock().map_err(err)?;
+        let ed = open.ed.as_ref().ok_or("열린 도면이 없습니다")?;
+        archgen::table_csv(&archgen::tables(&ed.d), &name).ok_or("모르는 표입니다")?
+    };
+    let Some(path) = rfd::FileDialog::new()
+        .set_title("표 저장 (CSV)")
+        .add_filter("CSV", &["csv"])
+        .set_file_name(format!("{name}.csv"))
+        .save_file()
+    else {
+        return Ok(None);
+    };
+    // 엑셀이 한글을 바로 읽게 UTF-8 BOM
+    let mut bytes = vec![0xEF, 0xBB, 0xBF];
+    bytes.extend_from_slice(csv.as_bytes());
+    std::fs::write(&path, bytes).map_err(err)?;
+    Ok(Some(path.display().to_string()))
+}
+
+/// 3D 보기용 삼각형 (층·벽 높이로 돌출) — M6
+#[tauri::command]
+fn model_3d(state: State<'_, AppState>) -> Result<Response, String> {
+    let open = state.lock().map_err(err)?;
+    let ed = open.ed.as_ref().ok_or("열린 도면이 없습니다")?;
+    Ok(Response::new(
+        draftsmith_core::model3d::mesh(&ed.d.arch).to_bytes(),
+    ))
+}
+
+/// 변경 기록 내보내기 (M5): 지난번 내보낸 뒤의 작업만 `.dsjournal` 로. 취소하면 null
+#[tauri::command]
+fn save_journal(state: State<'_, AppState>) -> Result<Option<String>, String> {
+    let mut open = state.lock().map_err(err)?;
+    let ed = open.ed.as_ref().ok_or("열린 도면이 없습니다")?;
+    let hist = ed.history();
+    let from = open.journal_mark.min(hist.len());
+    if from == hist.len() {
+        return Err("내보낼 새 변경이 없습니다".into());
+    }
+    let bytes = Journal::new(hist[from..].to_vec()).to_bytes()?;
+    let n = hist.len();
+    let stem = open
+        .path
+        .as_ref()
+        .and_then(|p| p.file_stem())
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "도면".into());
+    let Some(path) = rfd::FileDialog::new()
+        .set_title("변경 기록 저장")
+        .add_filter("DraftSmith 변경 기록", &[JOURNAL_EXT])
+        .set_file_name(format!("{stem}-변경.{JOURNAL_EXT}"))
+        .save_file()
+    else {
+        return Ok(None);
+    };
+    std::fs::write(&path, bytes).map_err(err)?;
+    open.journal_mark = n;
+    Ok(Some(path.display().to_string()))
+}
+
+#[derive(Serialize)]
+struct MergeOut {
+    applied: usize,
+    skipped: usize,
+    state: DocState,
+}
+
+/// 변경 기록 합치기 (M5). 취소하면 null
+#[tauri::command]
+fn merge_journal(state: State<'_, AppState>) -> Result<Option<MergeOut>, String> {
+    let Some(path) = rfd::FileDialog::new()
+        .set_title("변경 기록 합치기")
+        .add_filter("DraftSmith 변경 기록", &[JOURNAL_EXT])
+        .pick_file()
+    else {
+        return Ok(None);
+    };
+    let j = Journal::from_bytes(&std::fs::read(&path).map_err(err)?)?;
+    let mut open = state.lock().map_err(err)?;
+    let (applied, skipped) = open.editor()?.merge(&j.ops);
+    // 합친 작업은 다시 내보내지 않는다
+    open.journal_mark = open.ed.as_ref().map(|e| e.history().len()).unwrap_or(0);
+    open.refresh();
+    Ok(Some(MergeOut {
+        applied,
+        skipped,
+        state: state_of(&open, 0.0, Vec::new())?,
+    }))
+}
+
+/// 저장하지 않은 변경이 있으면 버려도 되는지 묻는다. 변경이 없으면 묻지 않고 참
+fn ask_discard(open: &Open) -> bool {
+    if !open.ed.as_ref().is_some_and(|e| e.dirty) {
+        return true;
+    }
+    rfd::MessageDialog::new()
+        .set_title("저장하지 않은 변경")
+        .set_description("저장하지 않은 변경이 있습니다. 버리고 계속할까요?")
+        .set_buttons(rfd::MessageButtons::YesNo)
+        .set_level(rfd::MessageLevel::Warning)
+        .show()
+        == rfd::MessageDialogResult::Yes
+}
+
+/// 새 도면·열기 전에: 버려도 되면 참
+#[tauri::command]
+fn confirm_discard(state: State<'_, AppState>) -> Result<bool, String> {
+    let open = state.lock().map_err(err)?;
+    Ok(ask_discard(&open))
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(AppState::default())
+        // 창을 닫을 때 저장하지 않은 변경이 있으면 묻는다
+        .on_window_event(|w, e| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = e {
+                let state = w.state::<AppState>();
+                let keep = state.lock().map(|o| !ask_discard(&o)).unwrap_or(false);
+                if keep {
+                    api.prevent_close();
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             app_version,
+            confirm_discard,
             startup_file,
             pick_drawing,
             recent_files,
             get_setting,
             set_setting,
+            new_drawing,
             open_drawing,
+            doc_state,
+            save_drawing,
+            export_cad,
+            edit,
             snap,
             pick_at,
+            pick_box,
+            selection_info,
             export_pdf,
+            export_sheets_pdf,
             pick_ctb,
             set_layer_visible,
             set_space,
             display_data,
-            text_data
+            text_data,
+            arch_tables,
+            export_table_csv,
+            model_3d,
+            save_journal,
+            merge_journal
         ])
         .run(tauri::generate_context!())
         .expect("앱을 시작하지 못했습니다");

@@ -233,7 +233,10 @@ export class Viewer {
     const magic = String.fromCharCode(...new Uint8Array(buf, 0, 4));
     if (magic !== "DSD3") throw new Error("표시 데이터 형식이 다릅니다");
     const n = dv.getUint32(4, true), m = dv.getUint32(8, true);
+    const old = this.origin;
     this.origin = [dv.getFloat64(12, true), dv.getFloat64(20, true)];
+    // 편집으로 기준점이 바뀌어도 보던 자리 그대로
+    this.center = [this.center[0] + old[0] - this.origin[0], this.center[1] + old[1] - this.origin[1]];
     this.bbox = [0, 1, 2, 3].map((i) => dv.getFloat32(28 + i * 4, true));
     let p = 44;
     const segs = new Float32Array(buf, p, n * 4); p += n * 16;
@@ -281,7 +284,12 @@ export class Viewer {
   }
 
   fit() {
-    const [x0, y0, x1, y1] = this.bbox;
+    let [x0, y0, x1, y1] = this.bbox;
+    // 빈 도면: 30 m × 20 m (mm) 를 보여 준다
+    if (!(x1 - x0 > 1e-6 || y1 - y0 > 1e-6)) {
+      const [cx, cy] = [-this.origin[0], -this.origin[1]];
+      [x0, y0, x1, y1] = [cx, cy, cx + 30000, cy + 20000];
+    }
     const w = Math.max(x1 - x0, 1e-9), h = Math.max(y1 - y0, 1e-9);
     const r = this.cv.getBoundingClientRect();
     this.center = [(x0 + x1) / 2, (y0 + y1) / 2];
@@ -383,40 +391,77 @@ export class Viewer {
 
   bindInput() {
     const cv = this.cv;
-    // 끌기 = 화면 이동 (왼쪽·가운데 버튼), 제자리 누르기 = 도구 클릭
+    // 왼쪽 누르기: 도구 클릭. 왼쪽 끌기: 도구가 상자(drag)를 받으면 상자, 아니면 화면 이동.
+    // 가운데 버튼·Space+끌기는 늘 화면 이동 (구현 노트 §25)
     let down = null;
+    this.spaceDown = false;
+    window.addEventListener("keydown", (e) => {
+      // 명령줄이 비어 있으면 Space 는 화면 이동 준비 (끌지 않고 떼면 명령줄이 Enter 로 받는다)
+      const cmdEmpty = e.target?.id === "cmd" && !e.target.value;
+      if (e.code === "Space" && (cmdEmpty || !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement))) {
+        if (!this.spaceDown) this.spacePanned = false;
+        this.spaceDown = true;
+      }
+    });
+    window.addEventListener("keyup", (e) => {
+      if (e.code === "Space") this.spaceDown = false;
+    });
     const model = (e) => {
       const r = cv.getBoundingClientRect();
       const [mx, my] = this.toModel(e.clientX - r.left, e.clientY - r.top);
       return [mx + this.origin[0], my + this.origin[1]];
     };
     cv.addEventListener("pointerdown", (e) => {
-      down = { x: e.clientX, y: e.clientY, c: [...this.center], moved: false, button: e.button };
+      const pan = e.button === 1 || (e.button === 0 && this.spaceDown);
+      const box = !pan && e.button === 0 && !!this.tool?.drag;
+      down = { x: e.clientX, y: e.clientY, c: [...this.center], moved: false, button: e.button, pan, box, start: model(e), shift: e.shiftKey };
       cv.setPointerCapture(e.pointerId);
+      if (e.button === 1) e.preventDefault();
     });
     cv.addEventListener("pointermove", (e) => {
       const m = model(e);
+      this.cursorModel = m;
       this.onCursor?.(m[0], m[1]);
       if (down) {
         const dx = e.clientX - down.x, dy = e.clientY - down.y;
         if (!down.moved && Math.hypot(dx, dy) < 4) return;
         down.moved = true;
-        this.center = [down.c[0] - dx / this.ppu, down.c[1] + dy / this.ppu];
-        this.draw();
+        if (down.box) {
+          this.tool.drag(down.start, m, e.clientX < down.x);
+          return;
+        }
+        if (down.pan) this.spacePanned = true;
+        if (down.pan || down.button === 0) {
+          this.center = [down.c[0] - dx / this.ppu, down.c[1] + dy / this.ppu];
+          this.draw();
+        }
         return;
       }
-      this.tool?.move?.(m);
+      this.tool?.move?.(m, e);
     });
     cv.addEventListener("pointerup", (e) => {
-      const click = down && !down.moved && down.button === 0;
+      const d = down;
       down = null;
-      if (click) this.tool?.click?.(model(e));
+      if (!d) return;
+      if (d.box && d.moved) {
+        this.tool.dragEnd?.(d.start, model(e), e.clientX < d.x, d.shift || e.shiftKey);
+        return;
+      }
+      if (!d.moved && d.button === 0 && !d.pan) this.tool?.click?.(model(e), e);
+      if (!d.moved && d.button === 2) this.tool?.rightClick?.(model(e), e);
     });
-    // 휠·트랙패드: 커서 위치를 중심으로 확대·축소 (트랙패드 두 손가락 오므리기는 ctrlKey 로 온다)
+    cv.addEventListener("contextmenu", (e) => e.preventDefault());
+    // 휠: 마우스 휠은 확대·축소, 트랙패드 두 손가락은 화면 이동, 오므리기(ctrlKey)는 확대·축소
     cv.addEventListener("wheel", (e) => {
       e.preventDefault();
       const r = cv.getBoundingClientRect();
       const px = e.clientX - r.left, py = e.clientY - r.top;
+      const trackpad = !e.ctrlKey && e.deltaMode === 0 && (e.deltaX !== 0 || (Math.abs(e.deltaY) < 40 && !Number.isInteger(e.deltaY)));
+      if (trackpad) {
+        this.center = [this.center[0] + e.deltaX / this.ppu, this.center[1] - e.deltaY / this.ppu];
+        this.draw();
+        return;
+      }
       const before = this.toModel(px, py);
       const k = Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0015));
       this.ppu *= k;
@@ -424,6 +469,8 @@ export class Viewer {
       this.center = [this.center[0] + before[0] - after[0], this.center[1] + before[1] - after[1]];
       this.draw();
     }, { passive: false });
-    cv.addEventListener("dblclick", () => this.fit());
+    cv.addEventListener("dblclick", (e) => {
+      if (!this.tool?.dblclick?.(model(e))) this.fit();
+    });
   }
 }
