@@ -1,0 +1,19 @@
+# DraftSmith 작업 지침
+
+## 대화
+- **사용자에게 하는 답은 항상 한글로 쓴다.** 진행 알림, 중간 보고, 최종 보고, 질문 모두 해당한다.
+  코드·명령어·파일 이름·라이브러리 이름처럼 원래 영어인 것만 그대로 둔다.
+- 사용자 의견이 필요한 결정도 묻지 않는다. 권장안으로 진행하고, 무엇을 골랐는지 보고에 적는다.
+- 실행할 수 있는 상태를 먼저 만들고, 사용자가 기능을 시험하며 고쳐 나간다.
+
+## 문서
+- 코드 주석, 문서(`README.md`, `docs/`), 커밋 메시지는 한글로 쓴다 (BEATS 와 같은 문체).
+- 결정과 근거는 `docs/implementation-notes.md` 에 번호(§)를 붙여 남기고, 코드 주석은 그 번호를 가리킨다.
+- 계획과 진행 현황은 `docs/ROADMAP.md` 에 둔다.
+
+## 개발
+- 구조는 BEATS 와 같다: `draftsmith-core`(화면 코드 없음) · `draftsmith-cli`(`dsmith`) · `draftsmith-app`(Tauri 2, `ui/` 는 순수 JS 모듈, npm 없음).
+- 대상 OS 는 macOS·Windows. 브라우저·Linux 는 대상이 아니다 (Linux 는 개발 환경에서 시험용으로만 쓴다).
+- 커밋 전에 `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test` 를 통과시킨다.
+- 측정용 큰 도면(`examples/bench-*`)은 저장소에 넣지 않는다. `dsmith sample` 로 다시 만든다.
+- `main` 에 올리면 CI 가 macOS·Windows 앱을 만든다. 빌드가 도는 중에 다시 올리면 앞 빌드가 취소되므로, 앱 빌드 결과가 필요할 때는 끝난 뒤 올린다.
