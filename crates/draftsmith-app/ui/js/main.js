@@ -175,6 +175,16 @@ function setPaper(on, save = true) {
 $("paper").addEventListener("click", () => setPaper(!viewer.paper));
 invoke("get_setting", { key: "paper" }).then((v) => setPaper(v === "1", false), () => {});
 
+/** 선 굵기 보기 켜기·끄기 (앱 설정 폴더에 기억) */
+function setLineweights(on, save = true) {
+  viewer.lineweights = on;
+  $("lwt").classList.toggle("on", on);
+  if (save) invoke("set_setting", { key: "lwt", value: on ? "1" : "0" }).catch(() => {});
+  viewer.draw();
+}
+$("lwt").addEventListener("click", () => setLineweights(!viewer.lineweights));
+invoke("get_setting", { key: "lwt" }).then((v) => setLineweights(v === "1", false), () => {});
+
 // PDF 저장
 function togglePdf(show = $("pdf-pop").hidden) {
   if (show && !opened) return;
@@ -213,6 +223,8 @@ window.addEventListener("keydown", (e) => {
     pickAndOpen();
   } else if (!mod && e.code === "KeyF") {
     viewer.fit();
+  } else if (!mod && e.code === "KeyW") {
+    setLineweights(!viewer.lineweights);
   } else if (!mod && e.code === "KeyB") {
     setPaper(!viewer.paper);
   } else if (!mod && e.code === "KeyD") {

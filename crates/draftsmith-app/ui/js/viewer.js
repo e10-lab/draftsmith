@@ -12,6 +12,33 @@ void main() {
   vcol = col;
 }`;
 
+// 굵은 선: 선분 하나를 화면 점 굵기의 사각형(삼각형 2 개)으로 — 인스턴스마다 선분 하나 (구현 노트 §15)
+const VS_WIDE = `#version 300 es
+in vec2 a;             // 선분 시작 (origin 기준 도면 좌표)
+in vec2 b;             // 선분 끝
+in vec4 col;
+in float wmm;          // 굵기 1/100 mm (0 = 기본)
+uniform vec2 center;
+uniform vec2 scale;    // 도면 단위 → 클립 좌표
+uniform vec2 px;       // 클립 좌표 2 = 화면 점 몇 개 (가로, 세로)
+out vec4 vcol;
+void main() {
+  // 모서리 번호 0..5 → (선분 위치 t, 옆 방향 s)
+  int k = gl_VertexID;
+  float t = (k == 1 || k == 2 || k == 4) ? 1.0 : 0.0;
+  float s = (k == 2 || k == 4 || k == 5) ? 1.0 : -1.0;
+  vec2 ca = (a - center) * scale, cb = (b - center) * scale;
+  vec2 d = (cb - ca) * px;                       // 화면 점 단위 방향
+  float len = length(d);
+  vec2 dir = len > 0.0 ? d / len : vec2(1.0, 0.0);
+  vec2 nrm = vec2(-dir.y, dir.x);
+  // 굵기(mm) × 4 화면 점, 최소 1 점. 끝을 반 굵기만큼 늘려 꺾인 곳 틈을 메운다
+  float w = max(1.0, (wmm > 0.0 ? wmm : 25.0) * 0.04);
+  vec2 off = (nrm * s * w * 0.5 + dir * (t * 2.0 - 1.0) * w * 0.5) / px;
+  gl_Position = vec4(mix(ca, cb, t) + off, 0.0, 1.0);
+  vcol = col;
+}`;
+
 const FS = `#version 300 es
 precision mediump float;
 in vec4 vcol;
@@ -118,6 +145,22 @@ export class Viewer {
     this.uCenter = gl.getUniformLocation(p, "center");
     this.uScale = gl.getUniformLocation(p, "scale");
     this.uPaper = gl.getUniformLocation(p, "paper");
+    // 굵은 선 프로그램
+    const q = gl.createProgram();
+    gl.attachShader(q, shader(gl, gl.VERTEX_SHADER, VS_WIDE));
+    gl.attachShader(q, shader(gl, gl.FRAGMENT_SHADER, FS));
+    gl.linkProgram(q);
+    if (!gl.getProgramParameter(q, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(q));
+    this.wide = q;
+    this.wCenter = gl.getUniformLocation(q, "center");
+    this.wScale = gl.getUniformLocation(q, "scale");
+    this.wPx = gl.getUniformLocation(q, "px");
+    this.wPaper = gl.getUniformLocation(q, "paper");
+    this.wideVao = gl.createVertexArray();
+    this.wideBufs = [gl.createBuffer(), gl.createBuffer(), gl.createBuffer()];
+    this.wideCount = 0;
+    /** 선 굵기 보기 */
+    this.lineweights = false;
     /** 흰 배경 모드 */
     this.paper = false;
     this.lines = this.mesh();
@@ -188,7 +231,7 @@ export class Viewer {
     const t = performance.now();
     const dv = new DataView(buf);
     const magic = String.fromCharCode(...new Uint8Array(buf, 0, 4));
-    if (magic !== "DSD2") throw new Error("표시 데이터 형식이 다릅니다");
+    if (magic !== "DSD3") throw new Error("표시 데이터 형식이 다릅니다");
     const n = dv.getUint32(4, true), m = dv.getUint32(8, true);
     this.origin = [dv.getFloat64(12, true), dv.getFloat64(20, true)];
     this.bbox = [0, 1, 2, 3].map((i) => dv.getFloat32(28 + i * 4, true));
@@ -196,14 +239,45 @@ export class Viewer {
     const segs = new Float32Array(buf, p, n * 4); p += n * 16;
     const segCol = new Uint8Array(buf, p, n * 4); p += n * 4;
     const tris = new Float32Array(buf, p, m * 6); p += m * 24;
-    const triCol = new Uint8Array(buf, p, m * 4);
+    const triCol = new Uint8Array(buf, p, m * 4); p += m * 4;
+    const segW = new Uint8Array(buf, p, n);
     this.upload(this.lines, segs, perVertex(segCol, n, 2));
+    this.uploadWide(segs, segCol, segW, n);
     this.upload(this.tris, tris, perVertex(triCol, m, 3));
     this.texts = parseTexts(textBuf);
     if (!keepView) this.fit();
     else this.draw();
     this.gl.finish();
     return performance.now() - t;
+  }
+
+  /** 굵은 선용 인스턴스 버퍼: 선분(a, b)·색·굵기 */
+  uploadWide(segs, segCol, segW, n) {
+    const gl = this.gl, q = this.wide;
+    gl.bindVertexArray(this.wideVao);
+    const [bPos, bCol, bW] = this.wideBufs;
+    gl.bindBuffer(gl.ARRAY_BUFFER, bPos);
+    gl.bufferData(gl.ARRAY_BUFFER, segs, gl.STATIC_DRAW);
+    for (const [name, off] of [["a", 0], ["b", 8]]) {
+      const loc = gl.getAttribLocation(q, name);
+      gl.enableVertexAttribArray(loc);
+      gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 16, off);
+      gl.vertexAttribDivisor(loc, 1);
+    }
+    gl.bindBuffer(gl.ARRAY_BUFFER, bCol);
+    gl.bufferData(gl.ARRAY_BUFFER, segCol, gl.STATIC_DRAW);
+    const lc = gl.getAttribLocation(q, "col");
+    gl.enableVertexAttribArray(lc);
+    gl.vertexAttribPointer(lc, 4, gl.UNSIGNED_BYTE, true, 0, 0);
+    gl.vertexAttribDivisor(lc, 1);
+    gl.bindBuffer(gl.ARRAY_BUFFER, bW);
+    gl.bufferData(gl.ARRAY_BUFFER, segW, gl.STATIC_DRAW);
+    const lw = gl.getAttribLocation(q, "wmm");
+    gl.enableVertexAttribArray(lw);
+    gl.vertexAttribPointer(lw, 1, gl.UNSIGNED_BYTE, false, 0, 0);
+    gl.vertexAttribDivisor(lw, 1);
+    gl.bindVertexArray(null);
+    this.wideCount = n;
   }
 
   fit() {
@@ -250,10 +324,22 @@ export class Viewer {
     gl.uniform2f(this.uScale, (2 * this.ppu) / r.width, (2 * this.ppu) / r.height);
     gl.uniform1f(this.uPaper, this.paper ? 1 : 0);
     // 채움 먼저, 그 위에 선
-    for (const [m, mode] of [[this.tris, gl.TRIANGLES], [this.lines, gl.LINES]]) {
-      if (!m.count) continue;
-      gl.bindVertexArray(m.vao);
-      gl.drawArrays(mode, 0, m.count);
+    if (this.tris.count) {
+      gl.bindVertexArray(this.tris.vao);
+      gl.drawArrays(gl.TRIANGLES, 0, this.tris.count);
+    }
+    if (this.lineweights && this.wideCount) {
+      // 선 굵기 보기: 선분마다 화면 점 굵기의 사각형
+      gl.useProgram(this.wide);
+      gl.uniform2f(this.wCenter, this.center[0], this.center[1]);
+      gl.uniform2f(this.wScale, (2 * this.ppu) / r.width, (2 * this.ppu) / r.height);
+      gl.uniform2f(this.wPx, w / 2, h / 2);
+      gl.uniform1f(this.wPaper, this.paper ? 1 : 0);
+      gl.bindVertexArray(this.wideVao);
+      gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, this.wideCount);
+    } else if (this.lines.count) {
+      gl.bindVertexArray(this.lines.vao);
+      gl.drawArrays(gl.LINES, 0, this.lines.count);
     }
     gl.bindVertexArray(null);
     this.renderTexts(r.width, r.height, dpr);

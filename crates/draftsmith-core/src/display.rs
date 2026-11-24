@@ -7,9 +7,9 @@
 //! 좌표는 도면 중심(`origin`)을 뺀 f32 로 넣는다. 도면 좌표가 TM 좌표처럼 커도 GPU 의
 //! f32 정밀도에서 떨리지 않게 하기 위해서다 (원점 재설정).
 //!
-//! ## 선·채움 형식 `DSD2` (리틀 엔디언)
+//! ## 선·채움 형식 `DSD3` (리틀 엔디언)
 //! ```text
-//! 0   [u8; 4]  "DSD2"
+//! 0   [u8; 4]  "DSD3"
 //! 4   u32      선분 개수 n
 //! 8   u32      삼각형 개수 m
 //! 12  f64 × 2  origin x, y            (도면 좌표)
@@ -18,6 +18,7 @@
 //! ..  u8 × 4n  선분 색 r, g, b, a
 //! ..  f32 × 6m 삼각형 x0, y0, x1, y1, x2, y2
 //! ..  u8 × 4m  삼각형 색
+//! ..  u8 × n   선분 굵기 (1/100 mm, 0 = 기본, 211 이 최대) — 화면 선 굵기 보기용 (구현 노트 §15)
 //! ```
 //!
 //! ## 문자 형식 `DST1`
@@ -38,7 +39,7 @@ use crate::drawing::{Drawing, Shape, VAlign};
 use crate::fill;
 use crate::geom::{Bbox, Vec2};
 
-pub const MAGIC: &[u8; 4] = b"DSD2";
+pub const MAGIC: &[u8; 4] = b"DSD3";
 pub const HEADER_LEN: usize = 44;
 pub const TEXT_MAGIC: &[u8; 4] = b"DST1";
 
@@ -107,7 +108,7 @@ impl Segments {
     /// 형식에 맞춘 바이너리
     pub fn to_bytes(&self) -> Vec<u8> {
         let (n, m) = (self.len(), self.tri_count());
-        let mut out = Vec::with_capacity(HEADER_LEN + n * 20 + m * 28);
+        let mut out = Vec::with_capacity(HEADER_LEN + n * 21 + m * 28);
         out.extend_from_slice(MAGIC);
         out.extend_from_slice(&(n as u32).to_le_bytes());
         out.extend_from_slice(&(m as u32).to_le_bytes());
@@ -130,6 +131,7 @@ impl Segments {
             out.extend_from_slice(&v.to_le_bytes());
         }
         out.extend_from_slice(&self.tri_colors);
+        out.extend(self.weights.iter().map(|&w| w.min(255) as u8));
         out
     }
 }
@@ -415,7 +417,7 @@ mod tests {
         let n = u32::from_le_bytes(b[4..8].try_into().unwrap()) as usize;
         let m = u32::from_le_bytes(b[8..12].try_into().unwrap()) as usize;
         assert_eq!((n, m), (s.len(), 1));
-        assert_eq!(b.len(), HEADER_LEN + n * 20 + m * 28);
+        assert_eq!(b.len(), HEADER_LEN + n * 21 + m * 28);
         let t = texts(&d);
         assert_eq!(&t[..4], TEXT_MAGIC);
         assert_eq!(u32::from_le_bytes(t[4..8].try_into().unwrap()), 1);
