@@ -140,7 +140,8 @@ pub fn segments(d: &Drawing) -> Segments {
         bbox,
         ..Default::default()
     };
-    let mut pts = Vec::new();
+    // 선 종류 무늬를 적용할 조각들 (조각마다 무늬를 처음부터 — AutoCAD 기본과 같음)
+    let mut pieces: Vec<Vec<Vec2>> = Vec::new();
 
     for e in &d.entities {
         if d.layers.get(e.layer as usize).is_some_and(|l| !l.visible) {
@@ -148,17 +149,40 @@ pub fn segments(d: &Drawing) -> Segments {
         }
         let [r, g, b] = d.color_of(e);
         let col = [r, g, b, 255];
+        let dash = e.linetype.and_then(|l| {
+            d.linetypes
+                .get(l.pattern as usize)
+                .map(|p| (p.dashes.as_slice(), l.scale))
+        });
+        pieces.clear();
         match &e.shape {
-            Shape::Line { a, b } => s.push(*a, *b, col),
+            Shape::Line { a, b } => pieces.push(vec![*a, *b]),
             Shape::Polyline { points, closed } => {
-                pts = curve::polyline_points(points, *closed, tol);
-                s.strip(&pts, *closed, col);
+                if dash.is_some() {
+                    // 꼭짓점마다 무늬를 새로 시작
+                    let n = points.len();
+                    let last = if *closed { n } else { n.saturating_sub(1) };
+                    for i in 0..last {
+                        let (p, g) = points[i];
+                        let q = points[(i + 1) % n].0;
+                        let mut piece = Vec::new();
+                        curve::bulge_points(p, q, g, tol, &mut piece);
+                        piece.push(q);
+                        pieces.push(piece);
+                    }
+                } else {
+                    let mut pts = curve::polyline_points(points, *closed, tol);
+                    if *closed && pts.len() > 2 {
+                        pts.push(pts[0]);
+                    }
+                    pieces.push(pts);
+                }
             }
             Shape::Circle { center, radius } => {
-                pts.clear();
+                let mut pts = Vec::new();
                 let (u, v) = (Vec2::new(*radius, 0.0), Vec2::new(0.0, *radius));
                 curve::ellipse_points(*center, u, v, 0.0, TAU, tol, &mut pts);
-                s.strip(&pts, false, col);
+                pieces.push(pts);
             }
             Shape::Arc {
                 center,
@@ -166,11 +190,11 @@ pub fn segments(d: &Drawing) -> Segments {
                 start,
                 end,
             } => {
-                pts.clear();
+                let mut pts = Vec::new();
                 let (u, v) = (Vec2::new(*radius, 0.0), Vec2::new(0.0, *radius));
                 let sweep = curve::ccw_sweep(*start, *end);
                 curve::ellipse_points(*center, u, v, *start, sweep, tol, &mut pts);
-                s.strip(&pts, false, col);
+                pieces.push(pts);
             }
             Shape::Ellipse {
                 center,
@@ -179,10 +203,10 @@ pub fn segments(d: &Drawing) -> Segments {
                 start,
                 end,
             } => {
-                pts.clear();
+                let mut pts = Vec::new();
                 let sweep = curve::ccw_sweep(*start, *end);
                 curve::ellipse_points(*center, *u, *v, *start, sweep, tol, &mut pts);
-                s.strip(&pts, false, col);
+                pieces.push(pts);
             }
             Shape::Fill { loops } => {
                 let t = fill::triangulate(loops);
@@ -197,8 +221,62 @@ pub fn segments(d: &Drawing) -> Segments {
             }
             Shape::Text(_) => {}
         }
+        for piece in &pieces {
+            match dash {
+                Some((dashes, scale)) => dash_chain(&mut s, piece, dashes, scale, tol, col),
+                None => s.strip(piece, false, col),
+            }
+        }
     }
     s
+}
+
+/// 한 조각에 들어갈 수 있는 무늬 반복 수. 넘으면 (화면에서 어차피 실선처럼 보이므로) 실선으로 그린다.
+pub const MAX_DASH_REPEATS: f64 = 2_000.0;
+
+/// 꺾은선을 따라 대시 무늬를 그린다. 무늬는 꺾은선 처음에서 시작하고, 꺾인 곳을 지나는 대시는 꺾인 채로 이어진다.
+fn dash_chain(s: &mut Segments, pts: &[Vec2], dashes: &[f64], scale: f64, tol: f64, col: [u8; 4]) {
+    let period: f64 = dashes.iter().map(|x| x.abs()).sum::<f64>() * scale;
+    let len: f64 = pts.windows(2).map(|w| w[0].dist(w[1])).sum();
+    if pts.len() < 2 || period <= tol * 2.0 || len / period > MAX_DASH_REPEATS {
+        s.strip(pts, false, col);
+        return;
+    }
+    let dot = (tol * 0.5).max(period * 1e-3);
+    // 무늬 상태: 지금 요소 번호, 남은 길이, 선인지
+    let mut di = 0usize;
+    let mut remain = dashes[0].abs() * scale;
+    let mut on = dashes[0] >= 0.0;
+    for w in pts.windows(2) {
+        let (p, q) = (w[0], w[1]);
+        let l = p.dist(q);
+        if l <= 0.0 {
+            continue;
+        }
+        let at = |t: f64| p.lerp(q, t / l);
+        let mut t = 0.0;
+        while t < l {
+            if remain <= 0.0 {
+                // 점(길이 0): 진행 방향으로 아주 짧게 찍고 다음 요소로
+                if on {
+                    s.push(at(t), at((t + dot).min(l)), col);
+                }
+            } else {
+                let step = remain.min(l - t);
+                if on {
+                    s.push(at(t), at(t + step), col);
+                }
+                t += step;
+                remain -= step;
+                if remain > 1e-12 {
+                    continue; // 이 선분이 끝났다 — 다음 선분에서 이어서
+                }
+            }
+            di = (di + 1) % dashes.len();
+            remain = dashes[di].abs() * scale;
+            on = dashes[di] >= 0.0;
+        }
+    }
 }
 
 /// 문자 표시 데이터 (`DST1`). 꺼진 레이어는 뺀다. origin 은 [`segments`] 와 같다.
@@ -251,6 +329,7 @@ mod tests {
         let layer = d.layer_index("0");
         d.entities.push(Entity {
             layer,
+            linetype: None,
             color: None,
             shape,
         });
@@ -297,6 +376,7 @@ mod tests {
         });
         d.entities.push(Entity {
             layer: 0,
+            linetype: None,
             color: Some([1, 2, 3]),
             shape: Shape::Fill {
                 loops: vec![vec![
@@ -308,6 +388,7 @@ mod tests {
         });
         d.entities.push(Entity {
             layer: 0,
+            linetype: None,
             color: None,
             shape: Shape::Text(TextShape {
                 at: Vec2::new(0.0, 0.0),
@@ -330,5 +411,33 @@ mod tests {
         assert_eq!(&t[..4], TEXT_MAGIC);
         assert_eq!(u32::from_le_bytes(t[4..8].try_into().unwrap()), 1);
         assert_eq!(&t[t.len() - 6..], "거실".as_bytes());
+    }
+
+    #[test]
+    fn dashed_line_and_continuous_fallback() {
+        use crate::drawing::{LinePattern, LineStyle};
+        let mut d = one(Shape::Line {
+            a: Vec2::new(0.0, 0.0),
+            b: Vec2::new(100.0, 0.0),
+        });
+        // 대시 10, 빈칸 5 → 15 마다 하나: 0–10, 15–25, … 90–100 → 7 개
+        d.linetypes.push(LinePattern {
+            name: "DASHED".into(),
+            dashes: vec![10.0, -5.0],
+        });
+        d.entities[0].linetype = Some(LineStyle {
+            pattern: 0,
+            scale: 1.0,
+        });
+        let s = segments(&d);
+        assert_eq!(s.len(), 7, "{:?}", s.coords);
+        let drawn: f64 = s.coords.chunks(4).map(|c| (c[2] - c[0]) as f64).sum();
+        assert!((drawn - 70.0).abs() < 1e-3, "{drawn}");
+        // 무늬가 너무 잘면 실선
+        d.entities[0].linetype = Some(LineStyle {
+            pattern: 0,
+            scale: 1e-6,
+        });
+        assert_eq!(segments(&d).len(), 1);
     }
 }

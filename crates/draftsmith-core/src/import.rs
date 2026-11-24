@@ -12,7 +12,7 @@ use acadrust::{CadDocument, DwgReader, DxfReader, EntityType};
 use thiserror::Error;
 
 use crate::curve;
-use crate::drawing::{Drawing, Entity, Shape, TextShape, VAlign};
+use crate::drawing::{Drawing, Entity, LinePattern, LineStyle, Shape, TextShape, VAlign};
 use crate::fill::{self, PatternLine};
 use crate::geom::{Affine, Bbox, Vec2};
 use crate::text::{plain_mtext, plain_text};
@@ -77,6 +77,8 @@ struct Inherit {
     layer: u32,
     /// 블록 참조의 색 — 블록 안 ByBlock 객체가 이 색으로 그려진다 (`None` 이면 그 레이어 색)
     color: Option<[u8; 3]>,
+    /// 블록 참조의 선 종류 — 블록 안 ByBlock 선 종류 객체가 이것으로 (배율에 블록 축척은 아직 안 곱함)
+    linetype: Option<LineStyle>,
 }
 
 struct Converter<'a> {
@@ -85,6 +87,14 @@ struct Converter<'a> {
     layer_ids: HashMap<String, u32>,
     /// 지금 펼치고 있는 블록 이름들 (자기 자신을 부르는 정의 막기)
     stack: Vec<String>,
+    /// 선 종류 이름(소문자) → [`Drawing::linetypes`] 번호 (실선은 없음)
+    lt_ids: HashMap<String, u16>,
+    /// 레이어 번호 → 레이어 선 종류
+    layer_lt: Vec<Option<u16>>,
+    /// 전역 선 종류 배율 (LTSCALE)
+    ltscale: f64,
+    /// 지금 넣는 객체의 선 종류 (`style` 이 정하고 `push` 가 쓴다)
+    cur_lt: Option<LineStyle>,
 }
 
 impl<'a> Converter<'a> {
@@ -101,25 +111,58 @@ impl<'a> Converter<'a> {
         *self.d.skipped.entry(kind.to_string()).or_insert(0) += 1;
     }
 
-    /// 객체의 레이어·색. 블록 안이면 「0」 레이어와 ByBlock 색을 블록 참조에게서 받는다.
+    /// 객체의 레이어·색·선 종류. 블록 안이면 「0」 레이어와 ByBlock 색·선 종류를 블록 참조에게서 받는다.
+    /// 선 종류는 `cur_lt` 에 넣는다 (블록 축척은 `push` 에서 곱함).
     fn style(
         &mut self,
-        layer: &str,
-        color: &Color,
+        common: &acadrust::entities::EntityCommon,
         inherit: Option<Inherit>,
     ) -> (u32, Option<[u8; 3]>) {
         let layer = match inherit {
-            Some(h) if layer == "0" => h.layer,
-            _ => self.layer(layer),
+            Some(h) if common.layer == "0" => h.layer,
+            _ => self.layer(&common.layer),
         };
-        let color = match (color, inherit) {
+        let color = match (&common.color, inherit) {
             (Color::ByBlock, Some(h)) => h.color,
             (c, _) => c.rgb().map(|(r, g, b)| [r, g, b]),
+        };
+        let own = if common.linetype_scale > 0.0 {
+            common.linetype_scale
+        } else {
+            1.0
+        };
+        let name = common.linetype.to_ascii_lowercase();
+        self.cur_lt = match name.as_str() {
+            "" | "bylayer" => self
+                .layer_lt
+                .get(layer as usize)
+                .copied()
+                .flatten()
+                .map(|pattern| LineStyle {
+                    pattern,
+                    scale: self.ltscale * own,
+                }),
+            "byblock" => inherit.and_then(|h| h.linetype).map(|l| LineStyle {
+                scale: l.scale * own,
+                ..l
+            }),
+            n => self.lt_ids.get(n).map(|&pattern| LineStyle {
+                pattern,
+                scale: self.ltscale * own,
+            }),
         };
         (layer, color)
     }
 
     fn push(&mut self, layer: u32, color: Option<[u8; 3]>, shape: Shape, t: &Affine) {
+        // 선 종류는 선·곡선에만. 블록 안이면 블록 축척만큼 무늬도 커진다
+        let linetype = match shape {
+            Shape::Fill { .. } | Shape::Segments { .. } | Shape::Text(_) => None,
+            _ => self.cur_lt.map(|l| LineStyle {
+                scale: l.scale * t.scale_x().max(t.det().abs().sqrt()),
+                ..l
+            }),
+        };
         let shape = if *t == Affine::IDENTITY {
             shape
         } else {
@@ -127,6 +170,7 @@ impl<'a> Converter<'a> {
         };
         self.d.entities.push(Entity {
             layer,
+            linetype,
             color,
             shape,
         });
@@ -142,7 +186,7 @@ impl<'a> Converter<'a> {
         if common.invisible {
             return;
         }
-        let (layer, color) = self.style(&common.layer, &common.color, inherit);
+        let (layer, color) = self.style(common, inherit);
         let shape = match e {
             EntityType::Line(x) => Shape::Line {
                 a: v2(&x.start),
@@ -262,7 +306,16 @@ impl<'a> Converter<'a> {
                     }
                     return;
                 }
-                self.block(&name, &[Affine::IDENTITY.then(t)], Inherit { layer, color });
+                let linetype = self.cur_lt;
+                self.block(
+                    &name,
+                    &[Affine::IDENTITY.then(t)],
+                    Inherit {
+                        layer,
+                        color,
+                        linetype,
+                    },
+                );
                 return;
             }
             EntityType::Insert(x) => return self.insert(x, layer, color, t),
@@ -362,20 +415,33 @@ impl<'a> Converter<'a> {
         if points.is_empty() {
             self.skip("배열 블록 한도 초과");
         }
-        let inherit = Some(Inherit { layer, color });
+        let linetype = self.cur_lt;
+        let inherit = Some(Inherit {
+            layer,
+            color,
+            linetype,
+        });
         let places: Vec<Affine> = points
             .iter()
             .map(|p| local.then(&Affine::translate(p.x, p.y)).then(&outer))
             .collect();
         self.d.inserts += places.len();
-        self.block(&x.block_name, &places, Inherit { layer, color });
+        self.block(
+            &x.block_name,
+            &places,
+            Inherit {
+                layer,
+                color,
+                linetype,
+            },
+        );
 
         // 속성값(ATTRIB)은 이미 세계 좌표 — 블록 참조의 바깥 변환만 건다
         for a in &x.attributes {
             if a.flags.invisible || a.common.invisible || a.value.is_empty() {
                 continue;
             }
-            let (al, ac) = self.style(&a.common.layer, &a.common.color, inherit);
+            let (al, ac) = self.style(&a.common, inherit);
             let s = Shape::Text(TextShape {
                 at: v2(&a.insertion_point),
                 height: a.height,
@@ -645,9 +711,36 @@ pub fn from_document(doc: &CadDocument) -> Drawing {
         },
         layer_ids: HashMap::new(),
         stack: Vec::new(),
+        lt_ids: HashMap::new(),
+        layer_lt: Vec::new(),
+        ltscale: if doc.header.linetype_scale > 0.0 {
+            doc.header.linetype_scale
+        } else {
+            1.0
+        },
+        cur_lt: None,
     };
+    // 선 종류 무늬 (대시가 있는 것만 — CONTINUOUS 등 실선은 넣지 않는다)
+    for lt in doc.line_types.iter() {
+        let dashes: Vec<f64> = lt.elements.iter().map(|e| e.length).collect();
+        let period: f64 = dashes.iter().map(|x| x.abs()).sum();
+        if dashes.len() < 2 || period <= 1e-12 || dashes.iter().all(|&x| x >= 0.0) {
+            continue;
+        }
+        c.lt_ids
+            .insert(lt.name.to_ascii_lowercase(), c.d.linetypes.len() as u16);
+        c.d.linetypes.push(LinePattern {
+            name: lt.name.clone(),
+            dashes,
+        });
+    }
     for l in doc.layers.iter() {
         let i = c.layer(&l.name) as usize;
+        let lt = c.lt_ids.get(&l.line_type.to_ascii_lowercase()).copied();
+        if c.layer_lt.len() <= i {
+            c.layer_lt.resize(i + 1, None);
+        }
+        c.layer_lt[i] = lt;
         let layer = &mut c.d.layers[i];
         if let Some((r, g, b)) = l.color.rgb() {
             layer.color = [r, g, b];

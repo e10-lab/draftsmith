@@ -9,7 +9,7 @@ use acadrust::entities::{
     Arc, BoundaryEdge, BoundaryPath, Circle, Dimension, DimensionLinear, Hatch, HatchPattern,
     HatchPatternLine, Insert, Line, LwPolyline, MText, PolylineEdge, Solid, Text,
 };
-use acadrust::tables::{BlockRecord, Layer};
+use acadrust::tables::{BlockRecord, Layer, LineType, LineTypeElement};
 use acadrust::types::{Color, Vector2, Vector3};
 use acadrust::{CadDocument, DwgWriter, DxfWriter, EntityType};
 
@@ -44,9 +44,9 @@ fn define_door(doc: &mut CadDocument) {
 }
 
 /// 한 칸에 파일 객체 수
-pub const FILE_PER_CELL: usize = 12;
-/// 한 칸을 펼친 객체 수: 벽선 4, 폴리선 1, 기둥 3, 실 이름 1, 문 2, 해치 1, 치수 6
-pub const EXPANDED_PER_CELL: usize = 18;
+pub const FILE_PER_CELL: usize = 13;
+/// 한 칸을 펼친 객체 수: 벽선 4, 폴리선 1, 기둥 3, 실 이름 1, 문 2, 해치 1, 치수 6, 중심선 1
+pub const EXPANDED_PER_CELL: usize = 19;
 
 /// 치수 블록(*D) 하나: 보조선 2, 치수선 1, 화살표(SOLID) 2, 치수 문자 1 — 세계 좌표
 fn define_dimension_block(
@@ -124,6 +124,18 @@ fn square_hatch(x: f64, y: f64, w: f64, h: f64, pattern: bool) -> Hatch {
 /// (벽선 4, 안쪽 폴리선 1, 기둥 3, 실 이름 1, 문 블록 참조 1, 바닥 해치 1, 폭 치수 1).
 pub fn plan_grid(n: usize) -> CadDocument {
     let mut doc = CadDocument::new();
+    // 중심선(1점 쇄선): 긴 선 1200, 빈칸 300, 짧은 선 300, 빈칸 300 (mm 도면, LTSCALE 1)
+    let mut center = LineType::new("CENTER");
+    for e in [
+        LineTypeElement::dash(1200.0),
+        LineTypeElement::space(300.0),
+        LineTypeElement::dash(300.0),
+        LineTypeElement::space(300.0),
+    ] {
+        center.elements.push(e);
+    }
+    center.pattern_length = 2100.0;
+    let _ = doc.line_types.add(center);
     for (name, color) in [
         ("A-WALL", 7),
         ("A-COLS", 4),
@@ -131,8 +143,13 @@ pub fn plan_grid(n: usize) -> CadDocument {
         ("A-DOOR", 1),
         ("A-HATC", 8),
         ("A-DIMS", 3),
+        ("A-GRID", 1),
     ] {
-        let _ = doc.layers.add(Layer::with_color(name, Color::Index(color)));
+        let mut layer = Layer::with_color(name, Color::Index(color));
+        if name == "A-GRID" {
+            layer.line_type = "CENTER".into();
+        }
+        let _ = doc.layers.add(layer);
     }
     define_door(&mut doc);
     let cells = n.div_ceil(FILE_PER_CELL).max(1);
@@ -176,6 +193,9 @@ pub fn plan_grid(n: usize) -> CadDocument {
         let door =
             Insert::new(DOOR, Vector3::new(x + 3000.0, y + 200.0, 0.0)).with_scale(sx, 1.0, 1.0);
         add(&mut doc, EntityType::Insert(door), "A-DOOR");
+        // 중심선: 칸 가운데 세로 (A-GRID 레이어의 CENTER 선 종류)
+        let g = Line::from_coords(x + w / 2.0, y - 600.0, 0.0, x + w / 2.0, y + h + 600.0, 0.0);
+        add(&mut doc, EntityType::Line(g), "A-GRID");
         // 바닥 해치: 칸마다 번갈아 사선 무늬·솔리드
         let hatch = square_hatch(x + 4000.0, y + 2600.0, 1200.0, 1200.0, k % 2 == 0);
         add(&mut doc, EntityType::Hatch(Box::new(hatch)), "A-HATC");
@@ -264,6 +284,15 @@ mod tests {
         assert_eq!(n, cells * 2, "{ext}");
         // 치수 문자 = 칸 폭, 서식 코드 없이
         assert!(t.contains(&"6000"), "{ext}: {t:?}");
+        // 중심선 레이어 객체는 CENTER 무늬
+        let grid = d.layers.iter().position(|l| l.name == "A-GRID").unwrap() as u32;
+        let lt = d
+            .entities
+            .iter()
+            .find(|e| e.layer == grid)
+            .and_then(|e| e.linetype)
+            .expect("선 종류");
+        assert_eq!(d.linetypes[lt.pattern as usize].name, "CENTER", "{ext}");
         // 해치: 무늬(선분 묶음)와 솔리드(채움)가 모두 있다
         let kinds = d.counts();
         assert!(

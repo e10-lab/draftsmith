@@ -18,5 +18,5 @@ pub mod sample;
 pub mod snap;
 pub mod text;
 
-pub use drawing::{Drawing, Entity, Layer, Shape, TextShape, VAlign};
+pub use drawing::{Drawing, Entity, Layer, LinePattern, LineStyle, Shape, TextShape, VAlign};
 pub use geom::{Affine, Bbox, Vec2};

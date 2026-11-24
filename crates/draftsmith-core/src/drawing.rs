@@ -25,7 +25,26 @@ pub struct Entity {
     pub layer: u32,
     /// 객체 자체 색. `None` 이면 레이어 색
     pub color: Option<[u8; 3]>,
+    /// 선 종류 (점선·중심선 등). `None` 이면 실선
+    pub linetype: Option<LineStyle>,
     pub shape: Shape,
+}
+
+/// 객체에 적용한 선 종류
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LineStyle {
+    /// [`Drawing::linetypes`] 의 번호
+    pub pattern: u16,
+    /// 무늬 배율 (전역 LTSCALE × 객체 배율 × 블록 축척)
+    pub scale: f64,
+}
+
+/// 선 종류 무늬
+#[derive(Debug, Clone, PartialEq)]
+pub struct LinePattern {
+    pub name: String,
+    /// 대시 길이: 양수 = 선, 음수 = 빈칸, 0 = 점
+    pub dashes: Vec<f64>,
 }
 
 /// 문자 세로 맞춤
@@ -298,6 +317,8 @@ pub struct Drawing {
     pub inserts: usize,
     /// 도면 단위 (DXF `$INSUNITS`: 0 단위 없음, 1 인치, 2 피트, 4 mm, 5 cm, 6 m)
     pub units: i16,
+    /// 선 종류 무늬 (실선이 아닌 것만)
+    pub linetypes: Vec<LinePattern>,
 }
 
 impl Drawing {
