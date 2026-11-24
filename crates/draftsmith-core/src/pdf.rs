@@ -156,9 +156,7 @@ pub fn export(d: &Drawing, o: &PdfOptions) -> Result<Vec<u8>, String> {
     let mut by_color: std::collections::BTreeMap<[u8; 3], PathBuilder> = Default::default();
     for (i, q) in s.tri_colors.chunks_exact(4).enumerate() {
         let t = &s.tris[i * 6..i * 6 + 6];
-        let pb = by_color
-            .entry([q[0], q[1], q[2]])
-            .or_insert_with(PathBuilder::new);
+        let pb = by_color.entry([q[0], q[1], q[2]]).or_default();
         let p = |j: usize| to_page(t[j * 2] as f64 + o_x, t[j * 2 + 1] as f64 + o_y);
         let (a, b, cc) = (p(0), p(1), p(2));
         pb.move_to(a.0, a.1);
@@ -179,9 +177,7 @@ pub fn export(d: &Drawing, o: &PdfOptions) -> Result<Vec<u8>, String> {
     }
     for (i, q) in s.colors.chunks_exact(4).enumerate() {
         let t = &s.coords[i * 4..i * 4 + 4];
-        let pb = by_color
-            .entry([q[0], q[1], q[2]])
-            .or_insert_with(PathBuilder::new);
+        let pb = by_color.entry([q[0], q[1], q[2]]).or_default();
         let a = to_page(t[0] as f64 + o_x, t[1] as f64 + o_y);
         let b = to_page(t[2] as f64 + o_x, t[3] as f64 + o_y);
         pb.move_to(a.0, a.1);
