@@ -317,8 +317,15 @@ mod tests {
         let path = dir.join(format!("grid.{ext}"));
         write_plan_grid(100, &path).unwrap();
         // 문 블록은 블록으로 들어오므로 펼쳐서 비교한다 (§31)
-        let d = crate::block::flatten(&read_file(&path).unwrap());
-        let direct = crate::block::flatten(&from_document(&plan_grid(100)));
+        // 치수는 치수 객체로 들어오므로 펼쳐서 비교한다 (§32)
+        // (블록 참조 객체 자체는 빼고 — 펼친 것만)
+        let only = |mut d: crate::Drawing| {
+            d.entities
+                .retain(|e| !matches!(e.shape, Shape::Insert { .. }));
+            d
+        };
+        let d = only(crate::archgen::shown(&read_file(&path).unwrap()));
+        let direct = only(crate::archgen::shown(&from_document(&plan_grid(100))));
         let cells = 100usize.div_ceil(FILE_PER_CELL);
         assert_eq!(
             direct.entities.len(),
@@ -344,7 +351,7 @@ mod tests {
         let n = d.entities.iter().filter(|e| e.layer == door).count();
         assert_eq!(n, cells * 2, "{ext}");
         // 치수 문자 = 칸 폭, 서식 코드 없이
-        assert!(t.contains(&"6000"), "{ext}: {t:?}");
+        assert!(t.contains(&"6,000"), "{ext}: {t:?}");
         // 중심선 레이어 객체는 CENTER 무늬
         let grid = d.layers.iter().position(|l| l.name == "A-GRID").unwrap() as u32;
         let lt = d

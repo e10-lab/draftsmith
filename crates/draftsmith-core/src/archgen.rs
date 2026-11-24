@@ -119,6 +119,8 @@ impl Gen<'_> {
         let weight = match self.d.layers[layer as usize].name.as_str() {
             "A-WALL" => Some(50),
             "A-DOOR" | "A-GLAZ" => Some(25),
+            // 치수는 가늘게 (0.13 mm)
+            n if n.contains("DIM") => Some(13),
             _ => None,
         };
         self.out.push((
@@ -300,6 +302,11 @@ pub fn opening_marks(m: &ArchModel) -> Vec<(u64, String)> {
 }
 
 /// 건축 객체로 평면 선을 만들어 모형 객체 뒤에 붙인 도면. 건축 객체가 없으면 None
+/// 보이는 도면: 건축 객체·블록·치수를 펼친 것 (펼칠 것이 없으면 그대로)
+pub fn shown(d: &Drawing) -> Drawing {
+    with_arch(d).unwrap_or_else(|| d.clone())
+}
+
 pub fn with_arch(d: &Drawing) -> Option<Drawing> {
     with_arch_owned(d).map(|(v, _)| v)
 }
@@ -537,58 +544,46 @@ fn generate(d: &mut Drawing) -> Vec<(Entity, Owner)> {
             }
         }
     }
-    // 치수 (§28)
+    // 치수 (§28·§32)
     for dm in m.dims.iter().filter(|x| x.level == level) {
         let own = ("dim", dm.id);
-        // 묶인 객체를 따라간 지금 끝점
-        let (ea, eb) = dm.ends(&m);
-        let dm = &crate::arch::Dim {
-            a: ea,
-            b: eb,
-            ..dm.clone()
-        };
-        let len = dm.length();
-        if len < 1e-9 {
+        let Some(k) = dm.geom(&m) else {
             continue;
-        }
-        let u = mul(sub(dm.b, dm.a), 1.0 / len);
-        let n = Vec2::new(-u.y, u.x);
-        let off = dm.offset;
-        let sg = if off >= 0.0 { 1.0 } else { -1.0 };
+        };
+        let lay: &str = if dm.layer.is_empty() {
+            "A-ANNO-DIMS"
+        } else {
+            &dm.layer
+        };
         let h = dm.text_height.max(1e-6);
         let (gap, ext, tk) = (h * 0.4, h * 0.6, h * 0.5);
-        let pp = |p: Vec2, k: f64| add(p, mul(n, k));
-        let (da, db) = (pp(dm.a, off), pp(dm.b, off));
-        g.line(
-            "A-ANNO-DIMS",
-            pp(dm.a, sg * gap),
-            pp(dm.a, off + sg * ext),
-            own,
-        );
-        g.line(
-            "A-ANNO-DIMS",
-            pp(dm.b, sg * gap),
-            pp(dm.b, off + sg * ext),
-            own,
-        );
-        g.line("A-ANNO-DIMS", da, db, own);
-        let t = mul(add(u, n), tk * 0.5);
-        for p in [da, db] {
-            g.line("A-ANNO-DIMS", sub(p, t), add(p, t), own);
+        // 보조선: 재는 점에서 치수선 쪽으로 (조금 띄우고, 조금 넘게)
+        for (p, q) in [(k.a, k.da), (k.b, k.db)] {
+            let d = sub(q, p);
+            let l = d.x.hypot(d.y);
+            if l > gap {
+                let v = mul(d, 1.0 / l);
+                g.line(lay, add(p, mul(v, gap)), add(q, mul(v, ext)), own);
+            }
         }
-        let mut rot = u.y.atan2(u.x);
+        g.line(lay, k.da, k.db, own);
+        let t = mul(add(k.u, k.n), tk * 0.5);
+        for p in [k.da, k.db] {
+            g.line(lay, sub(p, t), add(p, t), own);
+        }
+        let mut rot = k.u.y.atan2(k.u.x);
         if rot > std::f64::consts::FRAC_PI_2 + 1e-9 || rot <= -std::f64::consts::FRAC_PI_2 + 1e-9 {
             rot += std::f64::consts::PI;
         }
         let up = Vec2::new(-rot.sin(), rot.cos());
-        let mid = add(mul(add(da, db), 0.5), mul(up, h * 0.3));
+        let mid = add(mul(add(k.da, k.db), 0.5), mul(up, h * 0.3));
         let value = if dm.text.trim().is_empty() {
-            comma(len)
+            comma(k.len)
         } else {
-            dm.text.replace("<>", &comma(len))
+            dm.text.replace("<>", &comma(k.len))
         };
         g.put(
-            "A-ANNO-DIMS",
+            lay,
             Shape::Text(TextShape {
                 at: mid,
                 height: h,
@@ -1101,6 +1096,8 @@ pub fn apply(ed: &mut Editor, req: ArchReq) -> Result<(), String> {
                 text: String::new(),
                 ka,
                 kb,
+                rotation: None,
+                layer: String::new(),
             });
         }
         ArchReq::Column { at, width, depth } => {
@@ -1272,11 +1269,10 @@ pub fn apply(ed: &mut Editor, req: ArchReq) -> Result<(), String> {
                 "dim" => {
                     // 치수 옮기기 = 치수선 옮기기 (끝점은 그대로 — 묶인 객체를 따른다)
                     let mm = m.clone();
-                    if let Some(x) = m.dims.iter_mut().find(|x| x.id == id) {
-                        let (a, b) = x.ends(&mm);
-                        let l = a.dist(b).max(1e-12);
-                        let n = Vec2::new(-(b.y - a.y) / l, (b.x - a.x) / l);
-                        x.offset += dot(d, n);
+                    if let Some(x) = m.dims.iter_mut().find(|x| x.id == id)
+                        && let Some(k) = x.geom(&mm)
+                    {
+                        x.offset += dot(d, k.n);
                     }
                 }
                 "column" => {
@@ -1490,9 +1486,17 @@ pub fn properties(m: &ArchModel, what: &str, id: u64) -> Vec<(String, String)> {
         }
         "dim" => {
             if let Some(x) = m.dims.iter().find(|x| x.id == id) {
-                let (a, b) = x.ends(m);
-                out.push(("종류".into(), "치수".into()));
-                out.push(("길이".into(), comma(a.dist(b))));
+                let len = x.geom(m).map(|k| k.len).unwrap_or(0.0);
+                out.push((
+                    "종류".into(),
+                    if x.rotation.is_some() {
+                        "치수 (회전)"
+                    } else {
+                        "치수"
+                    }
+                    .into(),
+                ));
+                out.push(("길이".into(), comma(len)));
                 let tie =
                     |k: &Option<crate::arch::Anchor>| match k.as_ref().map(|k| k.what.as_str()) {
                         Some("wall") => "벽",
@@ -2146,5 +2150,42 @@ mod tests {
         )
         .unwrap();
         assert_eq!(ed.d.arch.dims[0].offset, dm.offset - 500.0);
+    }
+
+    #[test]
+    fn rotated_dim_measures_projection() {
+        // 세로(π/2) 회전 치수: 두 점이 x 로 어긋나도 y 차이만 잰다
+        let mut m = crate::arch::ArchModel::default();
+        let level = m.ensure_level();
+        m.dims.push(crate::arch::Dim {
+            id: 99,
+            level,
+            a: Vec2::new(0.0, 0.0),
+            b: Vec2::new(800.0, 3000.0),
+            offset: -1000.0,
+            text_height: 250.0,
+            text: String::new(),
+            ka: None,
+            kb: None,
+            rotation: Some(std::f64::consts::FRAC_PI_2),
+            layer: String::new(),
+        });
+        let k = m.dims[0].geom(&m).unwrap();
+        assert!((k.len - 3000.0).abs() < 1e-9);
+        // 치수선은 x = 1000 (n = (−1, 0), offset −1000) 에서 세로
+        assert!(
+            (k.da.x - 1000.0).abs() < 1e-9 && (k.db.x - 1000.0).abs() < 1e-9,
+            "{k:?}"
+        );
+        let d = Drawing {
+            arch: m,
+            ..new_drawing()
+        };
+        let g = with_arch(&d).unwrap();
+        assert!(
+            g.entities
+                .iter()
+                .any(|e| matches!(&e.shape, Shape::Text(t) if t.value == "3,000"))
+        );
     }
 }

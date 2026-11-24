@@ -455,6 +455,87 @@ impl<'a> Converter<'a> {
         self.push(layer, color, shape, &place);
     }
 
+    /// 모형 공간의 선형(회전)·정렬 치수를 치수 객체(`arch::Dim`)로 살린다. 평면(+Z)일 때만. 살렸으면 참.
+    /// 글자 높이는 치수 블록(*D) 안 글자에서, 없으면 머리글의 DIMTXT × DIMSCALE
+    fn keep_dimension(&mut self, x: &acadrust::entities::Dimension) -> bool {
+        use acadrust::entities::Dimension as D;
+        let b = x.base();
+        if b.normal.x.abs() > 1e-9 || b.normal.y.abs() > 1e-9 || b.normal.z <= 0.0 {
+            return false;
+        }
+        let (p1, p2, dp, rotation) = match x {
+            D::Linear(l) => (
+                v2(&l.first_point),
+                v2(&l.second_point),
+                v2(&l.definition_point),
+                Some(l.rotation),
+            ),
+            D::Aligned(a) => (
+                v2(&a.first_point),
+                v2(&a.second_point),
+                v2(&a.definition_point),
+                None,
+            ),
+            _ => return false,
+        };
+        let u = match rotation {
+            Some(r) => Vec2::new(r.cos(), r.sin()),
+            None => {
+                let l = p1.dist(p2);
+                if l < 1e-12 {
+                    return false;
+                }
+                Vec2::new((p2.x - p1.x) / l, (p2.y - p1.y) / l)
+            }
+        };
+        if ((p2.x - p1.x) * u.x + (p2.y - p1.y) * u.y).abs() < 1e-12 {
+            return false;
+        }
+        let n = Vec2::new(-u.y, u.x);
+        let offset = (dp.x - p1.x) * n.x + (dp.y - p1.y) * n.y;
+        let doc = self.doc;
+        let from_block = doc.block_records.get(&b.block_name).and_then(|_| {
+            doc.entities_in_block(&b.block_name).find_map(|e| match e {
+                EntityType::Text(t) => Some(t.height),
+                EntityType::MText(t) => Some(t.height),
+                _ => None,
+            })
+        });
+        let header = doc.header.dim_text_height
+            * if doc.header.dim_scale > 0.0 {
+                doc.header.dim_scale
+            } else {
+                1.0
+            };
+        let text_height =
+            from_block
+                .filter(|h| *h > 0.0)
+                .unwrap_or(if header > 0.0 { header } else { 250.0 });
+        let text = match b.user_text.as_deref() {
+            Some(t) if !t.trim().is_empty() && t.trim() != "<>" => crate::text::plain_mtext(t),
+            _ => String::new(),
+        };
+        // 레이어 표에 있게
+        let _ = self.layer(&b.common.layer);
+        let m = &mut self.d.arch;
+        let level = m.ensure_level();
+        let id = m.new_id();
+        m.dims.push(crate::arch::Dim {
+            id,
+            level,
+            a: p1,
+            b: p2,
+            offset,
+            text_height,
+            text,
+            ka: None,
+            kb: None,
+            rotation,
+            layer: b.common.layer.clone(),
+        });
+        true
+    }
+
     /// 모형 공간의 블록 참조를 `Shape::Insert` 로 살린다: 배열이 아니고, 평면(+Z)이고, 보이는 속성값이 없을 때.
     /// 블록 정의는 처음 만날 때 기준점이 원점이 되게 펼쳐 `Drawing::blocks` 에 넣는다 (안의 블록은 펼친 채로).
     /// 살렸으면 참
@@ -901,6 +982,12 @@ pub fn from_document(doc: &CadDocument) -> Drawing {
         {
             continue;
         }
+        // 선형·정렬 치수는 치수 객체로 (§32)
+        if let EntityType::Dimension(x) = e
+            && c.keep_dimension(x)
+        {
+            continue;
+        }
         c.entity(e, &Affine::IDENTITY, None);
     }
     read_layouts(&mut c);
@@ -1209,7 +1296,7 @@ mod tests {
         dim.definition_point = Vector3::new(3000.0, 500.0, 0.0);
         doc.add_entity(EntityType::Dimension(Box::new(Dimension::Linear(dim))))
             .unwrap();
-        let d = crate::block::flatten(&from_document(&doc));
+        let d = crate::archgen::shown(&from_document(&doc));
         assert!(d.skipped.is_empty(), "{:?}", d.skipped);
         // 보조선 2 + 치수선 + 사선 2 + 문자
         assert_eq!(d.entities.len(), 6);
@@ -1219,7 +1306,7 @@ mod tests {
             "{a:?} {b:?}"
         );
         match &d.entities[5].shape {
-            Shape::Text(t) => assert_eq!(t.value, "3000"),
+            Shape::Text(t) => assert_eq!(t.value, "3,000"),
             s => panic!("{s:?}"),
         }
     }

@@ -7,8 +7,8 @@
 use std::path::Path;
 
 use acadrust::entities::{
-    Arc, BoundaryEdge, BoundaryPath, Circle, Dimension, DimensionAligned, Ellipse, Hatch, Insert,
-    Line, LwPolyline, LwVertex, MText, PolylineEdge, Text, TextHorizontalAlignment,
+    Arc, BoundaryEdge, BoundaryPath, Circle, Dimension, DimensionAligned, DimensionLinear, Ellipse,
+    Hatch, Insert, Line, LwPolyline, LwVertex, MText, PolylineEdge, Text, TextHorizontalAlignment,
     TextVerticalAlignment,
 };
 use acadrust::tables::{BlockRecord, Layer as CadLayer, LineType, LineTypeElement};
@@ -297,34 +297,41 @@ pub fn to_document(model: &Drawing) -> CadDocument {
         let Some(dm) = model.arch.dims.iter().find(|x| x.id == id) else {
             continue;
         };
-        let (a, b) = dm.ends(&model.arch);
-        let len = a.dist(b);
-        if len < 1e-9 {
+        let Some(k) = dm.geom(&model.arch) else {
             continue;
-        }
+        };
         let name = format!("*D{}", n + 1);
         let h = block_record(&mut doc, &name);
         for e in &parts {
             put(&mut doc, &d, e, Some(h));
         }
-        let nrm = Vec2::new(-(b.y - a.y) / len, (b.x - a.x) / len);
-        let on = |p: Vec2| Vec2::new(p.x + nrm.x * dm.offset, p.y + nrm.y * dm.offset);
-        let mut x = DimensionAligned::new(v3(a), v3(b));
-        x.definition_point = v3(on(b));
-        x.base.definition_point = v3(on(b));
-        let mid = on(a.lerp(b, 0.5));
-        x.base.text_middle_point = v3(mid);
-        x.base.actual_measurement = len;
-        x.base.block_name = name;
+        let mut base = match dm.rotation {
+            Some(r) => {
+                let mut x = DimensionLinear::new(v3(k.a), v3(k.b));
+                x.rotation = r;
+                x.definition_point = v3(k.db);
+                Dimension::Linear(x)
+            }
+            None => {
+                let mut x = DimensionAligned::new(v3(k.a), v3(k.b));
+                x.definition_point = v3(k.db);
+                Dimension::Aligned(x)
+            }
+        };
+        let bb = base.base_mut();
+        bb.definition_point = v3(k.db);
+        bb.text_middle_point = v3(k.da.lerp(k.db, 0.5));
+        bb.actual_measurement = k.len;
+        bb.block_name = name;
         if !dm.text.trim().is_empty() {
-            x.base.user_text = Some(dm.text.clone());
+            bb.user_text = Some(dm.text.clone());
         }
         let layer = parts
             .first()
             .and_then(|e| d.layers.get(e.layer as usize))
             .map(|l| l.name.clone())
             .unwrap_or_else(|| "0".into());
-        let mut ent = EntityType::Dimension(Box::new(Dimension::Aligned(x)));
+        let mut ent = EntityType::Dimension(Box::new(base));
         ent.common_mut().layer = layer;
         let _ = doc.add_entity(ent);
     }
@@ -429,6 +436,10 @@ mod tests {
             let p = dir.join(format!("out.{ext}"));
             write(&ed.d, &p).unwrap();
             let back = crate::import::read_file(&p).unwrap();
+            // 치수는 치수 객체로 돌아온다 (§32)
+            assert_eq!(back.arch.dims.len(), 1, "{ext}");
+            assert_eq!(back.arch.dims[0].rotation, None, "{ext}");
+            let back = crate::archgen::shown(&back);
             assert!(back.blocks.iter().any(|b| b.name == "의자"), "{ext}");
             assert_eq!(
                 back.entities

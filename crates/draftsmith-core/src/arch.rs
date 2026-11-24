@@ -199,6 +199,24 @@ pub struct Dim {
     pub ka: Option<Anchor>,
     #[serde(default)]
     pub kb: Option<Anchor>,
+    /// 회전 치수의 방향 (라디안 — 0 가로, π/2 세로). None 이면 정렬 치수 (두 점 방향)
+    #[serde(default)]
+    pub rotation: Option<f64>,
+    /// 레이어 이름 (비면 A-ANNO-DIMS)
+    #[serde(default)]
+    pub layer: String,
+}
+
+/// 치수의 지금 모양: 두 점, 치수 방향 u·왼쪽 n, 치수선 위 두 점, 값
+#[derive(Debug, Clone, Copy)]
+pub struct DimGeom {
+    pub a: Vec2,
+    pub b: Vec2,
+    pub u: Vec2,
+    pub n: Vec2,
+    pub da: Vec2,
+    pub db: Vec2,
+    pub len: f64,
 }
 
 /// 건축 객체에 묶은 점: 그 객체 좌표계(원점·방향)에서 (t 앞, s 왼쪽)
@@ -214,6 +232,40 @@ impl Dim {
     /// 저장된 두 점 길이 (묶인 점은 [`Dim::ends`] 로)
     pub fn length(&self) -> f64 {
         self.a.dist(self.b)
+    }
+
+    /// 지금 모양. 치수선은 a 에서 n 쪽으로 offset 떨어진 곳, u 방향 (정렬이면 a→b 방향)
+    pub fn geom(&self, m: &ArchModel) -> Option<DimGeom> {
+        let (a, b) = self.ends(m);
+        let u = match self.rotation {
+            Some(t) => Vec2::new(t.cos(), t.sin()),
+            None => {
+                let l = a.dist(b);
+                if l < 1e-9 {
+                    return None;
+                }
+                Vec2::new((b.x - a.x) / l, (b.y - a.y) / l)
+            }
+        };
+        let n = Vec2::new(-u.y, u.x);
+        let dot = |p: Vec2, q: Vec2| p.x * q.x + p.y * q.y;
+        let ab = Vec2::new(b.x - a.x, b.y - a.y);
+        let len = dot(ab, u).abs();
+        if len < 1e-9 {
+            return None;
+        }
+        let da = Vec2::new(a.x + n.x * self.offset, a.y + n.y * self.offset);
+        let kb = self.offset - dot(ab, n);
+        let db = Vec2::new(b.x + n.x * kb, b.y + n.y * kb);
+        Some(DimGeom {
+            a,
+            b,
+            u,
+            n,
+            da,
+            db,
+            len,
+        })
     }
 
     /// 지금 두 끝점: 묶인 객체가 있으면 그 객체를 따라, 없으면 저장된 점
