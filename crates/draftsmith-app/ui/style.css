@@ -99,9 +99,9 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .spaces button.on { background: var(--panel); color: var(--text); border-color: var(--line); }
 
 /* ── M2 이후: 도구 막대·명령줄·옆 칸·서랍·팝업 ───────────────────────────── */
-.bar { flex-wrap: wrap; row-gap: 4px; }
+.bar { flex-wrap: wrap; row-gap: 4px; column-gap: 6px; }
 .group { display: inline-flex; gap: 3px; align-items: center; }
-.tools button { padding: 3px 8px; }
+.tools button { padding: 3px 6px; }
 button.tool-on { background: var(--accent); border-color: var(--accent); color: #fff; }
 button:disabled { opacity: .4; cursor: default; }
 button.mini { padding: 0 6px; font-size: 12px; line-height: 18px; }
@@ -170,4 +170,5 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
 .bar button { padding: 3px 7px; }
 .bar select { max-width: 120px; }
 /* 내보내기·최근 파일 고르기는 폭 고정 (긴 항목 때문에 도구 막대가 두 줄이 되지 않게) */
-#export, #recent { width: 96px; }
+#export { width: 84px; }
+#recent { width: 92px; }

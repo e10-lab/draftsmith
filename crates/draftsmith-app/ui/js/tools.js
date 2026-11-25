@@ -649,6 +649,50 @@ class WallTool extends Tool {
   }
 }
 
+/** 곡선 벽: 시작점 → 지나는 점 → 끝점 (§54). 두께·종류는 벽 도구와 같다 */
+class ArcWallTool extends Tool {
+  start() { this.say(`곡선 벽 (${this.app.wallKind} ${fmt(this.app.wallThickness)}): 시작점 — 숫자를 치면 두께`); }
+  input(t) {
+    const s = t.trim();
+    if (WALL_KINDS[s]) { this.app.wallKind = s; this.start(); return true; }
+    if (!this.pts.length && /^[\d.]+$/.test(s) && Number(s) > 0) {
+      this.app.wallThickness = Number(s);
+      this.start();
+      return true;
+    }
+    return super.input(t);
+  }
+  async take(p) {
+    this.pts.push(p);
+    if (this.pts.length === 1) return this.say("곡선 벽: 지나는 점");
+    if (this.pts.length === 2) return this.say("곡선 벽: 끝점");
+    const [a, m, b] = this.pts;
+    this.pts = [];
+    await this.app.apply({
+      kind: "arch",
+      op: { kind: "arc_wall", a, m, b, thickness: this.app.wallThickness, wall: WALL_KINDS[this.app.wallKind] },
+    });
+    this.say("곡선 벽: 다음 시작점 (Enter 로 끝)");
+  }
+  enter() { this.app.done(); }
+  paint(ctx, ts) {
+    if (this.pts.length === 2 && this.cur) {
+      const k = arc3(this.pts[0], this.pts[1], this.cur);
+      if (!k) return;
+      const [x, y] = ts(k.o[0], k.o[1]);
+      ctx.strokeStyle = PREVIEW;
+      ctx.lineWidth = 1.5;
+      const h = this.app.wallThickness / 2;
+      for (const r of [k.r - h, k.r + h]) {
+        if (r <= 0) continue;
+        ctx.beginPath();
+        ctx.arc(x, y, r * this.app.v.ppu, -k.s, -k.e, true);
+        ctx.stroke();
+      }
+    } else if (this.pts.length === 1 && this.cur) strokePath(ctx, ts, [this.pts[0], this.cur], false, true);
+  }
+}
+
 class OpeningTool extends Tool {
   get door() { return this.kind === "Door"; }
   get width() { return this.door ? this.app.doorWidth : this.app.windowWidth; }
@@ -1243,6 +1287,7 @@ export const TOOLS = {
   erase: EraseTool,
   offset: OffsetTool,
   wall: WallTool,
+  arcwall: ArcWallTool,
   door: DoorTool,
   window: WindowTool,
   room: RoomTool,

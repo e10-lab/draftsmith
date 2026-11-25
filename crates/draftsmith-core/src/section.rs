@@ -13,6 +13,9 @@ use crate::geom::Vec2;
 
 /// 단면도 모양들: (레이어 이름, 모양)
 pub fn draw(m: &ArchModel, s: &Section) -> Vec<(&'static str, Shape)> {
+    // 곡선 벽은 곧은 조각으로 (§54)
+    let straight = m.straightened().0;
+    let m = &straight;
     let mut out: Vec<(&'static str, Shape)> = Vec::new();
     let len = s.a.dist(s.b);
     if len < 1e-6 {

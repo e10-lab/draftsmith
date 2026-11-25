@@ -117,6 +117,9 @@ const STAIR: [u8; 4] = [205, 196, 182, 255];
 
 /// 건축 객체 → 3D 삼각형
 pub fn mesh(m: &ArchModel) -> Mesh {
+    // 곡선 벽은 곧은 조각으로 (§54)
+    let straight = m.straightened().0;
+    let m = &straight;
     let mut out = Mesh::default();
     for l in &m.levels {
         let z0 = l.elevation;

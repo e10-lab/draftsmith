@@ -422,7 +422,9 @@ fn generate_scaled(d: &mut Drawing, scale: f64) -> Vec<(Entity, Owner)> {
     }
     let mut g = Gen { d, out: blocks };
     let level = m.active_level;
-    let walls: Vec<&Wall> = m.walls.iter().filter(|w| w.level == level).collect();
+    // 벽·문·창은 곡선 벽을 곧은 조각으로 나눈 모델로 그리고, 조각의 주인은 원래 벽으로 (§54)
+    let (sm, seg_of) = m.straightened();
+    let walls: Vec<&Wall> = sm.walls.iter().filter(|w| w.level == level).collect();
     let marks = opening_marks(&m);
     let text_h = 250.0 * k;
 
@@ -500,7 +502,7 @@ fn generate_scaled(d: &mut Drawing, scale: f64) -> Vec<(Entity, Owner)> {
     }
     // 벽·개구부
     for w in &walls {
-        let own = ("wall", w.id);
+        let own = ("wall", *seg_of.get(&w.id).unwrap_or(&w.id));
         let len = w.length();
         if len < 1e-6 {
             continue;
@@ -511,7 +513,7 @@ fn generate_scaled(d: &mut Drawing, scale: f64) -> Vec<(Entity, Owner)> {
         let ea = wall_end(w, &walls, true);
         let eb = wall_end(w, &walls, false);
         // 개구부 구간 (벽 매개변수)
-        let mut gaps: Vec<(f64, f64, &Opening)> = m
+        let mut gaps: Vec<(f64, f64, &Opening)> = sm
             .openings
             .iter()
             .filter(|o| o.wall == w.id)
@@ -1069,6 +1071,14 @@ pub enum ArchReq {
         width: f64,
         depth: f64,
     },
+    /// 곡선 벽: 시작·지나는 점·끝 (§54)
+    ArcWall {
+        a: [f64; 2],
+        m: [f64; 2],
+        b: [f64; 2],
+        thickness: f64,
+        wall: WallKind,
+    },
     /// 보 (중심선 a→b, 폭·춤, §52)
     Beam {
         a: [f64; 2],
@@ -1117,9 +1127,16 @@ fn p2(a: [f64; 2]) -> Vec2 {
 /// - 치수: a, b, 치수선 가운데(거리) · 실·대지: 경계 꼭짓점 · 문·창: 가운데(벽을 따라)
 pub fn arch_grips(m: &ArchModel, what: &str, id: u64) -> Vec<Vec2> {
     match what {
+        // 곡선 벽: a, b, 호 가운데(굽히기), 현 가운데(옮김) — §54
         "wall" => m
             .wall(id)
-            .map(|w| vec![w.a, w.b, w.a.lerp(w.b, 0.5)])
+            .map(|w| {
+                if w.arc().is_some() {
+                    vec![w.a, w.b, w.point_at(w.length() / 2.0), w.a.lerp(w.b, 0.5)]
+                } else {
+                    vec![w.a, w.b, w.a.lerp(w.b, 0.5)]
+                }
+            })
             .unwrap_or_default(),
         "grid" => m
             .grids
@@ -1177,7 +1194,7 @@ pub fn arch_grips(m: &ArchModel, what: &str, id: u64) -> Vec<Vec2> {
             .openings
             .iter()
             .find(|o| o.id == id)
-            .and_then(|o| m.wall(o.wall).map(|w| add(w.a, mul(w.dir(), o.offset))))
+            .and_then(|o| m.wall(o.wall).map(|w| w.point_at(o.offset)))
             .into_iter()
             .collect(),
         _ => Vec::new(),
@@ -1196,9 +1213,12 @@ fn grip_arch(m: &mut ArchModel, what: &str, id: u64, k: usize, to: Vec2) -> Resu
                 .iter_mut()
                 .find(|w| w.id == id)
                 .ok_or("벽이 없습니다")?;
+            let curved = w.arc().is_some();
             match k {
                 0 => w.a = to,
                 1 => w.b = to,
+                // 곡선 벽 호 가운데: 그 점을 지나게 굽힌다
+                2 if curved => w.bulge = Wall::bulge_through(w.a, to, w.b),
                 _ => {
                     w.a = add(w.a, d);
                     w.b = add(w.b, d);
@@ -1206,6 +1226,13 @@ fn grip_arch(m: &mut ArchModel, what: &str, id: u64, k: usize, to: Vec2) -> Resu
             }
             if w.a.dist(w.b) < 1e-6 {
                 return Err("벽 길이가 0 이 됩니다".into());
+            }
+            // 문·창이 벽 끝을 넘지 않게
+            let len = w.length();
+            for o in m.openings.iter_mut().filter(|o| o.wall == id) {
+                o.offset = o
+                    .offset
+                    .clamp(o.width / 2.0, (len - o.width / 2.0).max(o.width / 2.0));
             }
         }
         "grid" => {
@@ -1332,7 +1359,9 @@ fn grip_arch(m: &mut ArchModel, what: &str, id: u64, k: usize, to: Vec2) -> Resu
                 .ok_or("개구부가 없습니다")?;
             let w = m.wall(o.wall).cloned().ok_or("벽이 없습니다")?;
             let len = w.length();
-            let t = dot(sub(to, w.a), w.dir())
+            let t = w
+                .param(to)
+                .0
                 .clamp(o.width / 2.0, (len - o.width / 2.0).max(o.width / 2.0));
             if let Some(x) = m.openings.iter_mut().find(|x| x.id == id) {
                 x.offset = t;
@@ -1349,10 +1378,9 @@ pub fn nearest_wall(m: &ArchModel, p: Vec2) -> Option<(u64, f64, f64)> {
         .iter()
         .filter(|w| w.level == m.active_level)
         .map(|w| {
-            let d = w.dir();
-            let t = dot(sub(p, w.a), d).clamp(0.0, w.length());
-            let q = add(w.a, mul(d, t));
-            (w.id, t, q.dist(p))
+            // 곡선 벽은 호 위로 (§54)
+            let (t, dist) = w.param(p);
+            (w.id, t, dist)
         })
         .min_by(|a, b| a.2.total_cmp(&b.2))
 }
@@ -1361,6 +1389,8 @@ pub fn nearest_wall(m: &ArchModel, p: Vec2) -> Option<(u64, f64, f64)> {
 /// 쪼갠 평면 그래프를 만들고, 막다른 가지(늘린 끝)를 걷어 낸 뒤, 점 오른쪽으로 쏜 반직선이 처음 닿는 변에서 시작해
 /// 점을 왼쪽에 두고 면을 한 바퀴 돈다. 사선 벽·오목한(ㄱ자) 실도 꼭짓점이 정확히 면의 교점이 된다.
 pub fn find_room(m: &ArchModel, p: Vec2) -> Option<Vec<Vec2>> {
+    let straight = m.straightened().0;
+    let m = &straight;
     let mut faces: Vec<(Vec2, Vec2)> = Vec::new();
     for w in m.walls.iter().filter(|w| w.level == m.active_level) {
         if w.length() < 1e-9 {
@@ -1525,6 +1555,12 @@ fn set_field(m: &mut ArchModel, what: &str, id: u64, k: &str, v: &str) -> Result
                 .ok_or("벽이 없습니다")?;
             match k {
                 "두께" => w.thickness = num()?.max(1.0),
+                "곡선 높이" => {
+                    let c = w.a.dist(w.b).max(1e-9);
+                    let s = if v.trim().is_empty() { 0.0 } else { num()? };
+                    // 반원(높이 = 현/2)까지
+                    w.bulge = (2.0 * s / c).clamp(-1.0, 1.0);
+                }
                 "높이" => {
                     w.height = if v.trim().is_empty() {
                         None
@@ -1697,8 +1733,32 @@ pub fn apply(ed: &mut Editor, req: ArchReq) -> Result<(), String> {
                     thickness: thickness.max(10.0),
                     height: None,
                     kind: wall,
+                    bulge: 0.0,
                 });
             }
+        }
+        ArchReq::ArcWall {
+            a,
+            m: through,
+            b,
+            thickness,
+            wall,
+        } => {
+            let (a, b) = (p2(a), p2(b));
+            if a.dist(b) < 1.0 {
+                return Err("벽이 너무 짧습니다".into());
+            }
+            let id = m.new_id();
+            m.walls.push(Wall {
+                id,
+                level,
+                a,
+                b,
+                thickness: thickness.max(10.0),
+                height: None,
+                kind: wall,
+                bulge: Wall::bulge_through(a, p2(through), b).clamp(-1.0, 1.0),
+            });
         }
         ArchReq::Opening {
             at,
@@ -2255,6 +2315,12 @@ pub fn properties(m: &ArchModel, what: &str, id: u64) -> Vec<(String, String)> {
                 out.push(("두께:고침".into(), f(w.thickness)));
                 out.push(("높이:고침".into(), w.height.map(f).unwrap_or_default()));
                 out.push(("길이".into(), f(w.length())));
+                // 곡선 높이: 현 가운데에서 호까지 (부호는 굽는 쪽, 0 이면 곧은 벽) — §54
+                let c = w.a.dist(w.b);
+                out.push(("곡선 높이:고침".into(), f(w.bulge * c / 2.0)));
+                if let Some((_, r, _, _)) = w.arc() {
+                    out.push(("반지름".into(), f(r)));
+                }
                 out.push((
                     "문·창".into(),
                     m.openings
@@ -2957,6 +3023,119 @@ mod tests {
             },
         )
         .unwrap();
+    }
+
+    /// 곡선 벽 (§54): 호 길이·점·위치, 두 반원 벽으로 둘러싼 둥근 실, 문, 손잡이로 굽히기, 평면·3D·IFC
+    #[test]
+    fn curved_walls() {
+        let mut ed = Editor::new(new_drawing());
+        let arc = |ed: &mut Editor, a: [f64; 2], m: [f64; 2], b: [f64; 2]| {
+            apply(
+                ed,
+                ArchReq::ArcWall {
+                    a,
+                    m,
+                    b,
+                    thickness: 200.0,
+                    wall: WallKind::Exterior,
+                },
+            )
+            .unwrap();
+        };
+        // 반지름 3000 원을 위·아래 반원 두 벽으로
+        arc(&mut ed, [3000.0, 0.0], [0.0, 3000.0], [-3000.0, 0.0]);
+        arc(&mut ed, [-3000.0, 0.0], [0.0, -3000.0], [3000.0, 0.0]);
+        let w = ed.d.arch.walls[0].clone();
+        assert!((w.bulge - 1.0).abs() < 1e-9, "{}", w.bulge);
+        let pi = std::f64::consts::PI;
+        assert!((w.length() - 3000.0 * pi).abs() < 1e-6);
+        assert!(w.point_at(w.length() / 2.0).dist(Vec2::new(0.0, 3000.0)) < 1e-6);
+        let (s, d) = w.param(Vec2::new(0.0, 3100.0));
+        assert!((s - w.length() / 2.0).abs() < 1e-6 && (d - 100.0).abs() < 1e-6);
+        // 둥근 실: 안쪽 반지름 2900 원 넓이에 가깝게 (5° 조각 → 다각형이라 조금 작다)
+        let r = find_room(&ed.d.arch, Vec2::new(100.0, 100.0)).unwrap();
+        let area = Room {
+            id: 0,
+            level: 0,
+            name: String::new(),
+            boundary: r,
+            finish_floor: String::new(),
+            finish_wall: String::new(),
+            finish_ceiling: String::new(),
+        }
+        .area();
+        let want = pi * 2900.0 * 2900.0;
+        assert!(area < want && area > want * 0.99, "{area} / {want}");
+        // 문: 위쪽 벽 꼭대기에 — 그 구간은 현 한 조각
+        apply(
+            &mut ed,
+            ArchReq::Opening {
+                at: [0.0, 3000.0],
+                opening: OpeningKind::Door,
+                width: 900.0,
+                height: 2100.0,
+                sill: 0.0,
+            },
+        )
+        .unwrap();
+        let o = ed.d.arch.openings[0].clone();
+        assert_eq!(o.wall, w.id);
+        assert!((o.offset - w.length() / 2.0).abs() < 1e-6);
+        let (sm, map) = ed.d.arch.straightened();
+        let so = sm.openings.iter().find(|x| x.id == o.id).unwrap();
+        assert_eq!(map[&so.wall], w.id);
+        let seg = sm.walls.iter().find(|x| x.id == so.wall).unwrap();
+        assert!(
+            seg.a.y > 2800.0 && seg.b.y > 2800.0 && (seg.a.dist(seg.b) - 900.0).abs() < 5.0,
+            "{seg:?}"
+        );
+        // 평면: 조각들도 주인은 원래 벽
+        let (_, owners) = with_arch_owned(&ed.d).unwrap();
+        assert!(
+            owners.iter().filter(|(k, _)| k == "wall").all(|(_, id)| ed
+                .d
+                .arch
+                .walls
+                .iter()
+                .any(|x| x.id == *id))
+        );
+        // 손잡이: 호 가운데를 끌면 굽힘이 바뀐다
+        let id = w.id;
+        apply(
+            &mut ed,
+            ArchReq::Grip {
+                what: "wall".into(),
+                id,
+                k: 2,
+                to: [0.0, 1500.0],
+            },
+        )
+        .unwrap();
+        let w2 = ed.d.arch.walls.iter().find(|x| x.id == id).unwrap();
+        assert!(w2.point_at(w2.length() / 2.0).dist(Vec2::new(0.0, 1500.0)) < 1e-6);
+        // 속성 「곡선 높이」 0 → 곧은 벽
+        apply(
+            &mut ed,
+            ArchReq::Set {
+                what: "wall".into(),
+                id,
+                fields: vec![("곡선 높이".into(), "0".into())],
+            },
+        )
+        .unwrap();
+        assert!(
+            ed.d.arch
+                .walls
+                .iter()
+                .find(|x| x.id == id)
+                .unwrap()
+                .arc()
+                .is_none()
+        );
+        // 3D·IFC 도 조각으로
+        assert!(!crate::model3d::mesh(&ed.d.arch).tris.is_empty());
+        let ifc = crate::ifc::write(&ed.d.arch, "곡선");
+        assert!(ifc.matches("IFCWALL(").count() > 2);
     }
 
     /// 보: 숨은선 외곽, 속성 고치기, 3D·단면 (§52)

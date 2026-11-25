@@ -142,6 +142,9 @@ impl W {
 
 /// 건축 객체 → IFC4 STEP 글
 pub fn write(m: &ArchModel, project: &str) -> String {
+    // 곡선 벽은 곧은 조각 벽들로 (§54)
+    let straight = m.straightened().0;
+    let m = &straight;
     let mut w = W { lines: Vec::new() };
     // 단위·좌표계
     let len = w.add("IFCSIUNIT(*,.LENGTHUNIT.,.MILLI.,.METRE.)".into());

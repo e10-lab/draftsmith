@@ -54,17 +54,195 @@ pub struct Wall {
     pub height: Option<f64>,
     #[serde(default)]
     pub kind: WallKind,
+    /// 곡선 벽 (§54): 중심선이 a→b 를 잇는 호. 폴리선과 같은 볼록 값 tan(중심각/4) — 양수면 반시계(a→b 오른쪽으로 볼록),
+    /// 0 이면 곧은 벽
+    #[serde(default)]
+    pub bulge: f64,
 }
 
+/// 곡선 벽을 나눌 때 조각 하나의 최대 중심각 (5°)
+const ARC_STEP: f64 = std::f64::consts::PI / 36.0;
+
 impl Wall {
+    /// 중심선 길이 (곡선 벽은 호 길이)
     pub fn length(&self) -> f64 {
-        self.a.dist(self.b)
+        match self.arc() {
+            Some((_, r, _, sw)) => r * sw.abs(),
+            None => self.a.dist(self.b),
+        }
     }
 
-    /// 단위 방향 (a→b)
+    /// 단위 방향 (a→b, 곡선 벽은 현의 방향)
     pub fn dir(&self) -> Vec2 {
-        let l = self.length().max(1e-12);
+        let l = self.a.dist(self.b).max(1e-12);
         Vec2::new((self.b.x - self.a.x) / l, (self.b.y - self.a.y) / l)
+    }
+
+    /// 곡선 벽이면 (중심, 반지름, a 의 각, 부호 있는 중심각)
+    pub fn arc(&self) -> Option<(Vec2, f64, f64, f64)> {
+        let c = self.a.dist(self.b);
+        if self.bulge.abs() < 1e-9 || c < 1e-9 {
+            return None;
+        }
+        let sw = 4.0 * self.bulge.atan();
+        let d = self.dir();
+        let n = Vec2::new(-d.y, d.x);
+        let k = c / 2.0 / (sw / 2.0).tan();
+        let mid = self.a.lerp(self.b, 0.5);
+        let o = Vec2::new(mid.x + n.x * k, mid.y + n.y * k);
+        let r = o.dist(self.a);
+        Some((o, r, (self.a.y - o.y).atan2(self.a.x - o.x), sw))
+    }
+
+    /// 중심선 위 a 에서 길이 s 인 점
+    pub fn point_at(&self, s: f64) -> Vec2 {
+        match self.arc() {
+            Some((o, r, a0, sw)) => {
+                let t = a0 + sw * (s / (r * sw.abs()).max(1e-12));
+                Vec2::new(o.x + r * t.cos(), o.y + r * t.sin())
+            }
+            None => {
+                let d = self.dir();
+                Vec2::new(self.a.x + d.x * s, self.a.y + d.y * s)
+            }
+        }
+    }
+
+    /// 점 p 를 중심선에 내린 위치 (a 에서 길이, 0..길이로 자름) 와 중심선까지 거리
+    pub fn param(&self, p: Vec2) -> (f64, f64) {
+        match self.arc() {
+            Some((o, r, a0, sw)) => {
+                let ang = (p.y - o.y).atan2(p.x - o.x);
+                let t = ((ang - a0) * sw.signum()).rem_euclid(std::f64::consts::TAU);
+                let span = sw.abs();
+                // 호 밖이면 가까운 끝으로
+                let t = if t <= span {
+                    t
+                } else if t - span < std::f64::consts::TAU - t {
+                    span
+                } else {
+                    0.0
+                };
+                let s = r * t;
+                (s, p.dist(self.point_at(s)))
+            }
+            None => {
+                let d = self.dir();
+                let s = ((p.x - self.a.x) * d.x + (p.y - self.a.y) * d.y).clamp(0.0, self.length());
+                (s, p.dist(self.point_at(s)))
+            }
+        }
+    }
+
+    /// 세 점(시작·지나는 점·끝)으로 볼록 값 (일직선이면 0)
+    pub fn bulge_through(a: Vec2, m: Vec2, b: Vec2) -> f64 {
+        let (u, v) = (
+            Vec2::new(a.x - m.x, a.y - m.y),
+            Vec2::new(b.x - m.x, b.y - m.y),
+        );
+        let lu = (u.x * u.x + u.y * u.y).sqrt();
+        let lv = (v.x * v.x + v.y * v.y).sqrt();
+        if lu < 1e-9 || lv < 1e-9 {
+            return 0.0;
+        }
+        let phi = ((u.x * v.x + u.y * v.y) / (lu * lv))
+            .clamp(-1.0, 1.0)
+            .acos();
+        let cross = (b.x - a.x) * (m.y - a.y) - (b.y - a.y) * (m.x - a.x);
+        let k = ((std::f64::consts::PI - phi) / 2.0).tan();
+        if cross < 0.0 { k } else { -k }
+    }
+}
+
+impl ArchModel {
+    /// 곡선 벽을 곧은 조각들로 나눈 모델 (§54) — 평면 생성·3D·단면·IFC·실 찾기가 곧은 벽 코드를 그대로 쓴다.
+    /// 문·창 자리는 한 조각(현)으로 떼어 그 위에 둔다. 돌려주는 표: 조각 벽 번호 → 원래 벽 번호.
+    /// 첫 조각은 원래 번호를 그대로 쓴다.
+    pub fn straightened(&self) -> (ArchModel, std::collections::HashMap<u64, u64>) {
+        let mut map = std::collections::HashMap::new();
+        if self.walls.iter().all(|w| w.arc().is_none()) {
+            for w in &self.walls {
+                map.insert(w.id, w.id);
+            }
+            return (self.clone(), map);
+        }
+        let mut out = self.clone();
+        out.walls.clear();
+        let mut next = self.next_id.max(1) + 1_000_000;
+        for w in &self.walls {
+            let Some((_, _, _, sw)) = w.arc() else {
+                map.insert(w.id, w.id);
+                out.walls.push(w.clone());
+                continue;
+            };
+            let len = w.length();
+            // 조각 경계: 문·창 구간은 통째로
+            let mut ops: Vec<(f64, f64, u64)> = self
+                .openings
+                .iter()
+                .filter(|o| o.wall == w.id)
+                .map(|o| {
+                    (
+                        (o.offset - o.width / 2.0).max(0.0),
+                        (o.offset + o.width / 2.0).min(len),
+                        o.id,
+                    )
+                })
+                .filter(|(s, e, _)| e > s)
+                .collect();
+            ops.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let mut pieces: Vec<(f64, f64, Option<u64>)> = Vec::new();
+            let fine = |s: f64, e: f64, pieces: &mut Vec<(f64, f64, Option<u64>)>| {
+                if e - s < 1e-6 {
+                    return;
+                }
+                let n = ((sw.abs() * (e - s) / len) / ARC_STEP).ceil().max(1.0) as usize;
+                for k in 0..n {
+                    pieces.push((
+                        s + (e - s) * k as f64 / n as f64,
+                        s + (e - s) * (k + 1) as f64 / n as f64,
+                        None,
+                    ));
+                }
+            };
+            let mut cur = 0.0;
+            for (s, e, id) in ops {
+                if s < cur - 1e-6 {
+                    continue;
+                }
+                fine(cur, s, &mut pieces);
+                pieces.push((s, e, Some(id)));
+                cur = e;
+            }
+            fine(cur, len, &mut pieces);
+            for (k, (s, e, op)) in pieces.into_iter().enumerate() {
+                let id = if k == 0 {
+                    w.id
+                } else {
+                    next += 1;
+                    next
+                };
+                map.insert(id, w.id);
+                let seg = Wall {
+                    id,
+                    a: w.point_at(s),
+                    b: w.point_at(e),
+                    bulge: 0.0,
+                    ..w.clone()
+                };
+                if let Some(oid) = op
+                    && let Some(o) = out.openings.iter_mut().find(|o| o.id == oid)
+                {
+                    let chord = seg.a.dist(seg.b);
+                    o.wall = id;
+                    o.offset = chord / 2.0;
+                    o.width = chord;
+                }
+                out.walls.push(seg);
+            }
+        }
+        out.next_id = next;
+        (out, map)
     }
 }
 

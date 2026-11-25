@@ -39,6 +39,7 @@ export const COMMANDS = [
   ["room", "실 (면적)", ["RM", "ROOM", "실", "면적"], "건축"],
   ["grid", "그리드", ["GR", "GRID", "그리드", "통심"], "건축"],
   ["gridset", "그리드 세트", ["GRS", "GRIDSET", "그리드세트"], "건축"],
+  ["arcwall", "곡선 벽", ["AW", "ARCWALL", "곡선벽", "곡선 벽"], "건축"],
   ["column", "기둥", ["COL", "COLUMN", "기둥"], "건축"],
   ["beam", "보", ["BM", "BEAM", "보"], "건축"],
   ["stair", "계단", ["ST", "STAIR", "계단"], "건축"],

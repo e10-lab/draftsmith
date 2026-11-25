@@ -946,6 +946,7 @@ pub fn read(text: &str) -> Result<Drawing, String> {
             thickness: thick.max(1.0),
             height: body.as_ref().map(|b| b.1).filter(|h| *h > 1.0),
             kind,
+            bulge: 0.0,
         });
         wall_of.insert(*i, id);
     }
@@ -1474,6 +1475,7 @@ mod tests {
             thickness: 200.0,
             height: None,
             kind: WallKind::Exterior,
+            bulge: 0.0,
         });
         let back = read(&crate::ifc::write(&d.arch, "계단")).unwrap();
         assert_eq!(back.arch.stairs.len(), 3);

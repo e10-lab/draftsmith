@@ -259,7 +259,8 @@ pub fn edit_viewport(d: &Drawing, i: usize, k: usize, e: &VpEdit) -> Result<Layo
 
 /// 그 층 건물(벽·실·기둥·계단·그리드) 범위 — 대지·단면도처럼 멀리 놓인 것은 빼고 (§44)
 pub fn building_bbox(d: &Drawing, level: Option<u64>) -> Option<crate::geom::Bbox> {
-    let m = &d.arch;
+    let straight = d.arch.straightened().0;
+    let m = &straight;
     let lv = level
         .filter(|l| m.levels.iter().any(|x| x.id == *l))
         .unwrap_or(m.active_level);
