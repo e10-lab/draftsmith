@@ -123,6 +123,12 @@ pub enum Shape {
     Segments {
         lines: Vec<(Vec2, Vec2)>,
     },
+    /// 폭 있는 폴리선 (§65): 꼭짓점·볼록 값은 폴리선과 같고, 꼭짓점마다 그 변의 (시작 폭, 끝 폭). 채운 띠로 그린다
+    Wide {
+        points: Vec<(Vec2, f64)>,
+        closed: bool,
+        widths: Vec<(f64, f64)>,
+    },
     /// 가리개 (WIPEOUT, §60): 이 고리 안에서 그리기 순서상 앞에 있는 선을 지운다. 보이는 도면 단계에서 풀린다
     Wipeout {
         ring: Vec<Vec2>,
@@ -176,6 +182,38 @@ impl Shape {
     /// 아핀 변환을 건 모양. 원은 변환이 등각(회전·균등 축척)이면 원으로, 아니면 타원이 된다.
     pub fn transformed(&self, t: &Affine) -> Shape {
         match self {
+            Shape::Wide {
+                points,
+                closed,
+                widths,
+            } => {
+                // 폴리선처럼 옮기고, 폭은 평균 배율로 (비균등 축척으로 호가 펼쳐지면 첫 폭)
+                let k = t.det().abs().sqrt();
+                match (Shape::Polyline {
+                    points: points.clone(),
+                    closed: *closed,
+                })
+                .transformed(t)
+                {
+                    Shape::Polyline {
+                        points: p,
+                        closed: c,
+                    } => {
+                        let w: Vec<(f64, f64)> = if p.len() == points.len() {
+                            widths.iter().map(|(a, b)| (a * k, b * k)).collect()
+                        } else {
+                            let f = widths.first().copied().unwrap_or((0.0, 0.0));
+                            vec![(f.0 * k, f.0 * k); p.len()]
+                        };
+                        Shape::Wide {
+                            points: p,
+                            closed: c,
+                            widths: w,
+                        }
+                    }
+                    other => other,
+                }
+            }
             Shape::Wipeout { ring } => Shape::Wipeout {
                 ring: ring.iter().map(|p| t.apply(*p)).collect(),
             },
@@ -358,6 +396,13 @@ impl Shape {
     pub fn bbox(&self) -> Bbox {
         let mut b = Bbox::EMPTY;
         match self {
+            Shape::Wide { points, widths, .. } => {
+                let h = widths.iter().map(|(a, b)| a.max(*b)).fold(0.0, f64::max) / 2.0;
+                for (p, _) in points {
+                    b.add(Vec2::new(p.x - h, p.y - h));
+                    b.add(Vec2::new(p.x + h, p.y + h));
+                }
+            }
             Shape::Wipeout { ring } => {
                 for p in ring {
                     b.add(*p);
@@ -464,6 +509,108 @@ pub struct FontUse {
     pub ttf: String,
 }
 
+/// 폭 있는 폴리선을 채울 사각형들 (§65): 호는 꼭짓점으로 펼쳐 폭을 길이 비례로 잇고, 변마다 사각형 + 꺾인 곳은
+/// 바깥 면을 맞대는 마이터(너무 길면 빗면)로 틈을 메운다. 사각형 꼭짓점은 반시계 아니어도 된다
+pub fn wide_quads(
+    points: &[(Vec2, f64)],
+    closed: bool,
+    widths: &[(f64, f64)],
+    tol: f64,
+) -> Vec<[Vec2; 4]> {
+    let n = points.len();
+    if n < 2 {
+        return Vec::new();
+    }
+    let segs = if closed { n } else { n - 1 };
+    // (점, 반폭) 사슬 — 호는 펼쳐서
+    let mut chain: Vec<(Vec2, f64)> = Vec::new();
+    for i in 0..segs {
+        let (p, g) = points[i];
+        let q = points[(i + 1) % n].0;
+        let (w0, w1) = widths.get(i).copied().unwrap_or((0.0, 0.0));
+        let mut pts = Vec::new();
+        crate::curve::bulge_points(p, q, g, tol, &mut pts);
+        pts.push(q);
+        let total: f64 = pts
+            .windows(2)
+            .map(|w| w[0].dist(w[1]))
+            .sum::<f64>()
+            .max(1e-12);
+        let mut run = 0.0;
+        for (k, pt) in pts.iter().enumerate() {
+            if k > 0 {
+                run += pts[k - 1].dist(*pt);
+            }
+            let h = (w0 + (w1 - w0) * run / total) / 2.0;
+            // 변 사이 꼭짓점은 두 번 들어가지 않게 (폭이 바뀌는 곳은 뒤 변 시작 폭으로 덮어씀)
+            if k == 0 && !chain.is_empty() {
+                if let Some(last) = chain.last_mut() {
+                    last.1 = h.max(last.1);
+                }
+                continue;
+            }
+            chain.push((*pt, h));
+        }
+    }
+    let m = chain.len();
+    let mut out = Vec::new();
+    let side = |a: Vec2, b: Vec2| {
+        let l = a.dist(b).max(1e-12);
+        Vec2::new(-(b.y - a.y) / l, (b.x - a.x) / l)
+    };
+    for i in 0..m - 1 {
+        let ((a, ha), (b, hb)) = (chain[i], chain[i + 1]);
+        if a.dist(b) < 1e-12 || (ha <= 0.0 && hb <= 0.0) {
+            continue;
+        }
+        let nrm = side(a, b);
+        out.push([
+            Vec2::new(a.x + nrm.x * ha, a.y + nrm.y * ha),
+            Vec2::new(b.x + nrm.x * hb, b.y + nrm.y * hb),
+            Vec2::new(b.x - nrm.x * hb, b.y - nrm.y * hb),
+            Vec2::new(a.x - nrm.x * ha, a.y - nrm.y * ha),
+        ]);
+    }
+    // 꺾인 곳 메우기 (닫혔으면 처음·끝도)
+    let joints: Vec<usize> = if closed {
+        (0..m).collect()
+    } else {
+        (1..m.saturating_sub(1)).collect()
+    };
+    for j in joints {
+        let (prev, cur, next) = (chain[(j + m - 1) % m].0, chain[j], chain[(j + 1) % m].0);
+        let (c, h) = cur;
+        if h <= 0.0 || prev.dist(c) < 1e-12 || next.dist(c) < 1e-12 {
+            continue;
+        }
+        let (n0, n1) = (side(prev, c), side(c, next));
+        let turn = (c.x - prev.x) * (next.y - c.y) - (c.y - prev.y) * (next.x - c.x);
+        if turn.abs() < 1e-12 {
+            continue;
+        }
+        // 바깥쪽 (왼쪽으로 꺾으면 오른쪽 면이 바깥)
+        let s = if turn > 0.0 { -1.0 } else { 1.0 };
+        let pa = Vec2::new(c.x + n0.x * h * s, c.y + n0.y * h * s);
+        let pb = Vec2::new(c.x + n1.x * h * s, c.y + n1.y * h * s);
+        let bis = Vec2::new(n0.x + n1.x, n0.y + n1.y);
+        let bl = (bis.x * bis.x + bis.y * bis.y).sqrt();
+        let cosh = if bl > 1e-12 {
+            (bis.x * n0.x + bis.y * n0.y) / bl
+        } else {
+            0.0
+        };
+        if bl > 1e-12 && cosh > 0.25 {
+            // 마이터 꼭짓점: 이등분선 방향으로 h / cos(반각)
+            let k = h * s / cosh / bl;
+            let mp = Vec2::new(c.x + bis.x * k, c.y + bis.y * k);
+            out.push([c, pa, mp, pb]);
+        } else {
+            out.push([c, pa, pb, c]);
+        }
+    }
+    out
+}
+
 /// 블록 참조의 속성값 하나: 태그와 글자 (값은 `text.value`, 위치는 블록 안 좌표)
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Attr {
@@ -526,6 +673,7 @@ impl Drawing {
         let mut m = BTreeMap::new();
         for e in &self.entities {
             let k = match e.shape {
+                Shape::Wide { .. } => "폭 있는 폴리선",
                 Shape::Wipeout { .. } => "가리개",
                 Shape::Hatch { .. } => "해치 무늬",
                 Shape::Insert { .. } => "블록 참조",
@@ -568,5 +716,48 @@ impl Drawing {
         e.color
             .or_else(|| self.layers.get(e.layer as usize).map(|l| l.color))
             .unwrap_or([255, 255, 255])
+    }
+}
+
+#[cfg(test)]
+mod wide_tests {
+    use super::*;
+
+    /// 폭 있는 폴리선 (§65): ㄱ자 폭 100 — 변마다 사각형 + 꺾인 곳 마이터, 넓이가 띠 넓이와 같다
+    #[test]
+    fn wide_quads_l_shape() {
+        let pts = vec![
+            (Vec2::new(0.0, 0.0), 0.0),
+            (Vec2::new(1000.0, 0.0), 0.0),
+            (Vec2::new(1000.0, 1000.0), 0.0),
+        ];
+        let q = wide_quads(&pts, false, &[(100.0, 100.0); 3], 1.0);
+        assert_eq!(q.len(), 3);
+        let area = |r: &[Vec2; 4]| {
+            (0..4)
+                .map(|i| r[i].x * r[(i + 1) % 4].y - r[(i + 1) % 4].x * r[i].y)
+                .sum::<f64>()
+                .abs()
+                / 2.0
+        };
+        let total: f64 = q.iter().map(area).sum();
+        assert!(
+            (total - (2.0 * 1000.0 * 100.0 + 50.0 * 50.0)).abs() < 1e-6,
+            "{total}"
+        );
+        assert!(
+            q.iter()
+                .flatten()
+                .any(|p| p.dist(Vec2::new(1050.0, -50.0)) < 1e-9)
+        );
+        let w = Shape::Wide {
+            points: pts,
+            closed: false,
+            widths: vec![(100.0, 100.0); 3],
+        };
+        match w.transformed(&crate::geom::Affine::scale(2.0, 2.0)) {
+            Shape::Wide { widths, .. } => assert_eq!(widths[0], (200.0, 200.0)),
+            s => panic!("{s:?}"),
+        }
     }
 }

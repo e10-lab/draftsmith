@@ -83,6 +83,14 @@ pub fn text_box(t: &crate::drawing::TextShape) -> [Vec2; 4] {
 /// 점 p 에서 모양까지의 거리 (`tol` 은 곡선을 펼칠 때의 허용 오차)
 pub fn distance(shape: &Shape, p: Vec2, tol: f64) -> f64 {
     match shape {
+        Shape::Wide {
+            points,
+            closed,
+            widths,
+        } => {
+            let h = widths.iter().map(|(a, b)| a.max(*b)).fold(0.0, f64::max) / 2.0;
+            (chain_dist(p, &curve::polyline_points(points, *closed, tol), *closed) - h).max(0.0)
+        }
         Shape::Wipeout { .. } => f64::INFINITY,
         Shape::Hatch { .. } => distance(&shape.drawn(), p, tol),
         Shape::Insert { .. } => f64::INFINITY,
@@ -280,6 +288,7 @@ pub fn properties(d: &Drawing, i: usize) -> Vec<(String, String)> {
     let deg = |r: f64| format!("{:.2}°", r.to_degrees().rem_euclid(360.0));
     let mut out: Vec<(String, String)> = Vec::new();
     let kind = match &e.shape {
+        Shape::Wide { .. } => "폭 있는 폴리선",
         Shape::Wipeout { .. } => "가리개 (WIPEOUT)",
         Shape::Hatch { .. } => "해치 무늬",
         Shape::Insert { .. } => "블록 참조",
@@ -310,6 +319,23 @@ pub fn properties(d: &Drawing, i: usize) -> Vec<(String, String)> {
         ),
     ));
     match &e.shape {
+        Shape::Wide {
+            points,
+            closed,
+            widths,
+        } => {
+            out.push(("꼭짓점".into(), points.len().to_string()));
+            out.push(("닫힘".into(), if *closed { "예" } else { "아니오" }.into()));
+            let (a, b) = widths.first().copied().unwrap_or_default();
+            out.push((
+                "폭".into(),
+                if (a - b).abs() < 1e-9 {
+                    format!("{a:.1}")
+                } else {
+                    format!("{a:.1} → {b:.1}")
+                },
+            ));
+        }
         Shape::Wipeout { ring } => out.push(("꼭짓점".into(), ring.len().to_string())),
         Shape::Hatch { name, loops, .. } => {
             out.push(("무늬".into(), name.clone()));
@@ -407,6 +433,9 @@ pub fn outline(shape: &Shape, tol: f64, limit: usize) -> Vec<(Vec2, Vec2)> {
         v
     };
     let mut out = match shape {
+        Shape::Wide { points, closed, .. } => {
+            chain(&curve::polyline_points(points, *closed, tol), *closed)
+        }
         Shape::Wipeout { .. } => Vec::new(),
         Shape::Hatch { .. } => return outline(&shape.drawn(), tol, limit),
         Shape::Insert { .. } => Vec::new(),

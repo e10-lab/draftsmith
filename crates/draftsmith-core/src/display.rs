@@ -171,6 +171,17 @@ pub fn segments(d: &Drawing) -> Segments {
         });
         pieces.clear();
         match &e.shape {
+            Shape::Wide {
+                points,
+                closed,
+                widths,
+            } => {
+                for q in crate::drawing::wide_quads(points, *closed, widths, tol) {
+                    s.tri(&[q[0], q[1], q[2]], col);
+                    s.tri(&[q[0], q[2], q[3]], col);
+                }
+                continue;
+            }
             Shape::Wipeout { .. } => continue,
             Shape::Hatch { .. } => continue,
             Shape::Insert { .. } => continue,

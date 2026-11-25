@@ -287,24 +287,72 @@ impl<'a> Converter<'a> {
                 return;
             }
             EntityType::LwPolyline(x) => {
-                let s = Shape::Polyline {
-                    points: x
-                        .vertices
-                        .iter()
-                        .map(|v| (Vec2::new(v.location.x, v.location.y), v.bulge))
-                        .collect(),
-                    closed: x.is_closed,
+                let points: Vec<(Vec2, f64)> = x
+                    .vertices
+                    .iter()
+                    .map(|v| (Vec2::new(v.location.x, v.location.y), v.bulge))
+                    .collect();
+                // 폭 있으면 채운 띠 (§65): 고정 폭이 있으면 그것, 없으면 꼭짓점마다
+                let widths: Vec<(f64, f64)> = x
+                    .vertices
+                    .iter()
+                    .map(|v| {
+                        if x.constant_width > 0.0 {
+                            (x.constant_width, x.constant_width)
+                        } else {
+                            (v.start_width, v.end_width)
+                        }
+                    })
+                    .collect();
+                let s = if widths.iter().any(|(a, b)| *a > 0.0 || *b > 0.0) {
+                    Shape::Wide {
+                        points,
+                        closed: x.is_closed,
+                        widths,
+                    }
+                } else {
+                    Shape::Polyline {
+                        points,
+                        closed: x.is_closed,
+                    }
                 };
                 return self.push(layer, color, s, &ocs(&x.normal).then(t));
             }
             EntityType::Polyline2D(x) => {
-                let s = Shape::Polyline {
-                    points: x
-                        .vertices
-                        .iter()
-                        .map(|v| (v2(&v.location), v.bulge))
-                        .collect(),
-                    closed: x.is_closed(),
+                let points: Vec<(Vec2, f64)> = x
+                    .vertices
+                    .iter()
+                    .map(|v| (v2(&v.location), v.bulge))
+                    .collect();
+                // 꼭짓점 폭이 0 이면 기본 폭 (§65)
+                let widths: Vec<(f64, f64)> = x
+                    .vertices
+                    .iter()
+                    .map(|v| {
+                        let a = if v.start_width > 0.0 {
+                            v.start_width
+                        } else {
+                            x.start_width
+                        };
+                        let b = if v.end_width > 0.0 {
+                            v.end_width
+                        } else {
+                            x.end_width
+                        };
+                        (a, b)
+                    })
+                    .collect();
+                let s = if widths.iter().any(|(a, b)| *a > 0.0 || *b > 0.0) {
+                    Shape::Wide {
+                        points,
+                        closed: x.is_closed(),
+                        widths,
+                    }
+                } else {
+                    Shape::Polyline {
+                        points,
+                        closed: x.is_closed(),
+                    }
                 };
                 return self.push(layer, color, s, &ocs(&x.normal).then(t));
             }

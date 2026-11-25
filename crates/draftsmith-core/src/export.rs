@@ -63,6 +63,34 @@ fn principal_axes(u: Vec2, v: Vec2) -> (Vec2, f64, f64, bool) {
 /// 객체 하나 → acadrust 객체들
 fn to_cad(e: &Entity) -> Vec<EntityType> {
     match &e.shape {
+        Shape::Wide {
+            points,
+            closed,
+            widths,
+        } => {
+            let mut p = LwPolyline::new();
+            p.vertices = points
+                .iter()
+                .zip(widths.iter().chain(std::iter::repeat(&(0.0, 0.0))))
+                .map(|((q, g), (a, b))| {
+                    let mut v = LwVertex::new(Vector2::new(q.x, q.y));
+                    v.bulge = *g;
+                    v.start_width = *a;
+                    v.end_width = *b;
+                    v
+                })
+                .collect();
+            // 폭이 모두 같으면 고정 폭 (AutoCAD 가 다루기 쉬운 꼴)
+            if let Some(&(w, _)) = widths.first()
+                && widths
+                    .iter()
+                    .all(|(a, b)| (a - w).abs() < 1e-9 && (b - w).abs() < 1e-9)
+            {
+                p.constant_width = w;
+            }
+            p.is_closed = *closed;
+            vec![EntityType::LwPolyline(p)]
+        }
         // 가리개 (§60): 다각형 WIPEOUT (닫는 꼭짓점까지)
         Shape::Wipeout { ring } => {
             let mut v: Vec<Vector2> = ring.iter().map(|p| Vector2::new(p.x, p.y)).collect();
@@ -796,6 +824,62 @@ mod tests {
         // 원 반지름 2 를 (1,0)/(1,1) 같은 비스듬한 켤레로 써도 주축 길이는 같아야
         let (major, ratio, _, _) = principal_axes(Vec2::new(3.0, 0.0), Vec2::new(0.0, 1.0));
         assert!((major.x.hypot(major.y) - 3.0).abs() < 1e-9 && (ratio - 1.0 / 3.0).abs() < 1e-9);
+    }
+
+    /// 폭 있는 폴리선 왕복 (§65): 고정 폭·꼭짓점마다 폭
+    #[test]
+    fn wide_polyline_round_trip() {
+        let mut d = crate::archgen::new_drawing();
+        let ent = |shape: Shape| Entity {
+            layer: 0,
+            color: None,
+            aci: None,
+            linetype: None,
+            weight: None,
+            shape,
+        };
+        let pts = vec![
+            (Vec2::new(0.0, 0.0), 0.0),
+            (Vec2::new(1000.0, 0.0), 0.5),
+            (Vec2::new(2000.0, 0.0), 0.0),
+        ];
+        d.entities = vec![
+            ent(Shape::Wide {
+                points: pts.clone(),
+                closed: false,
+                widths: vec![(50.0, 50.0); 3],
+            }),
+            ent(Shape::Wide {
+                points: pts,
+                closed: true,
+                widths: vec![(0.0, 80.0), (80.0, 0.0), (0.0, 0.0)],
+            }),
+        ];
+        for ext in ["dxf", "dwg"] {
+            let dir =
+                std::env::temp_dir().join(format!("dsmith-wide-{}-{ext}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let p = dir.join(format!("w.{ext}"));
+            write(&d, &p).unwrap();
+            let back = crate::import::read_file(&p).unwrap();
+            let got: Vec<_> = back
+                .entities
+                .iter()
+                .filter_map(|e| match &e.shape {
+                    Shape::Wide {
+                        widths,
+                        points,
+                        closed,
+                    } => Some((widths.clone(), points.len(), *closed)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(got.len(), 2, "{ext}");
+            assert_eq!(got[0].0[0], (50.0, 50.0), "{ext}");
+            assert_eq!(got[1].0[0..2], [(0.0, 80.0), (80.0, 0.0)], "{ext}");
+            assert!(got[1].2, "{ext}");
+            std::fs::remove_dir_all(&dir).ok();
+        }
     }
 
     /// 치수 스타일 왕복 (§61): 스타일 이름·값이 돌아오고, 소수 자리는 스타일 DIMDEC 로

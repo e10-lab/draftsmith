@@ -54,6 +54,11 @@ impl SnapIndex {
                 continue;
             }
             match &e.shape {
+                Shape::Wide { points, .. } => {
+                    for (p, _) in points {
+                        add(*p, SnapKind::End);
+                    }
+                }
                 Shape::Wipeout { .. } => {}
                 Shape::Hatch { .. } => {}
                 Shape::Insert { at, .. } => add(*at, SnapKind::Insert),
