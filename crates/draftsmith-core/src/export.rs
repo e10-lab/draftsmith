@@ -13,7 +13,7 @@ use acadrust::entities::{
     LwVertex, MText, PolylineEdge, Text, TextHorizontalAlignment, TextVerticalAlignment,
     VerticalAlignment,
 };
-use acadrust::tables::{BlockRecord, Layer as CadLayer, LineType, LineTypeElement};
+use acadrust::tables::{BlockRecord, Layer as CadLayer, LineType, LineTypeElement, TextStyle};
 use acadrust::types::{Color, LineWeight, Vector2, Vector3};
 use acadrust::{CadDocument, DwgWriter, DxfWriter, EntityType};
 
@@ -63,6 +63,14 @@ fn principal_axes(u: Vec2, v: Vec2) -> (Vec2, f64, f64, bool) {
 /// 객체 하나 → acadrust 객체들
 fn to_cad(e: &Entity) -> Vec<EntityType> {
     match &e.shape {
+        // 가리개 (§60): 다각형 WIPEOUT (닫는 꼭짓점까지)
+        Shape::Wipeout { ring } => {
+            let mut v: Vec<Vector2> = ring.iter().map(|p| Vector2::new(p.x, p.y)).collect();
+            v.push(v[0]);
+            vec![EntityType::Wipeout(acadrust::entities::Wipeout::polygonal(
+                &v, 0.0,
+            ))]
+        }
         Shape::Hatch { loops, lines, name } => {
             // 무늬 해치는 HATCH (무늬 정의 그대로, §45)
             let mut pat = HatchPattern::new(if name.is_ascii() && !name.is_empty() {
@@ -234,6 +242,18 @@ fn to_cad(e: &Entity) -> Vec<EntityType> {
 }
 
 /// 객체 하나를 문서에 넣는다 (레이어·색·선 종류·굵기). `owner` 가 있으면 그 블록 안에
+/// DraftSmith 가 만든 글자의 스타일 (맑은 고딕 — 한글이 AutoCAD 에서 깨지지 않게, §60-1)
+pub const DS_STYLE: &str = "DRAFTSMITH";
+
+/// 글자 스타일 이름: 가져온 스타일이면 그대로, 아니면 DRAFTSMITH
+fn style_of(d: &Drawing, s: &str) -> String {
+    if !s.is_empty() && d.fonts.iter().any(|f| f.style.eq_ignore_ascii_case(s)) {
+        s.to_string()
+    } else {
+        DS_STYLE.to_string()
+    }
+}
+
 fn put(doc: &mut CadDocument, d: &Drawing, e: &Entity, owner: Option<acadrust::types::Handle>) {
     let layer = d
         .layers
@@ -241,6 +261,17 @@ fn put(doc: &mut CadDocument, d: &Drawing, e: &Entity, owner: Option<acadrust::t
         .map(|l| l.name.clone())
         .unwrap_or_else(|| "0".into());
     for mut c in to_cad(e) {
+        // 글자 스타일 (§60-1)
+        match (&mut c, &e.shape) {
+            (EntityType::Text(x), Shape::Text(t)) => x.style = style_of(d, &t.style),
+            (EntityType::MText(x), Shape::Text(t)) => x.style = style_of(d, &t.style),
+            (EntityType::Insert(x), Shape::Insert { attrs, .. }) => {
+                for (a, t) in x.attributes.iter_mut().zip(attrs) {
+                    a.text_style = style_of(d, &t.text.style);
+                }
+            }
+            _ => {}
+        }
         let common = c.common_mut();
         common.layer = layer.clone();
         common.color = match (e.aci, e.color) {
@@ -309,6 +340,33 @@ pub fn to_document(model: &Drawing) -> CadDocument {
             .layers
             .add(CadLayer::with_color(l.name.clone(), cad_color(l.color)));
     }
+    // 글자 스타일 (§60-1): 가져온 스타일은 원래 글꼴 파일·트루타입·큰 글꼴 그대로, DraftSmith 글자는 맑은 고딕
+    for f in &d.fonts {
+        let mut st = TextStyle::new(f.style.clone());
+        st.font_file = if f.file.is_empty() {
+            f.font.clone()
+        } else {
+            f.file.clone()
+        };
+        st.big_font_file = f.big_font.clone();
+        st.true_type_font = f.ttf.clone();
+        match doc.text_styles.get_mut(&f.style) {
+            Some(x) => {
+                x.font_file = st.font_file;
+                x.big_font_file = st.big_font_file;
+                x.true_type_font = st.true_type_font;
+            }
+            None => {
+                let _ = doc.text_styles.add(st);
+            }
+        }
+    }
+    if doc.text_styles.get(DS_STYLE).is_none() {
+        let mut st = TextStyle::new(DS_STYLE);
+        st.font_file = "malgun.ttf".into();
+        st.true_type_font = "맑은 고딕".into();
+        let _ = doc.text_styles.add(st);
+    }
     // 블록 정의
     for b in &model.blocks {
         let h = block_record(&mut doc, &b.name);
@@ -327,6 +385,7 @@ pub fn to_document(model: &Drawing) -> CadDocument {
             (x.horizontal_alignment, x.vertical_alignment) = align(&a.text);
             x.common.layer = "0".into();
             x.common.owner_handle = h;
+            x.text_style = style_of(&d, &a.text.style);
             let _ = doc.add_entity(EntityType::AttributeDefinition(x));
         }
     }
@@ -672,6 +731,54 @@ mod tests {
         // 원 반지름 2 를 (1,0)/(1,1) 같은 비스듬한 켤레로 써도 주축 길이는 같아야
         let (major, ratio, _, _) = principal_axes(Vec2::new(3.0, 0.0), Vec2::new(0.0, 1.0));
         assert!((major.x.hypot(major.y) - 3.0).abs() < 1e-9 && (ratio - 1.0 / 3.0).abs() < 1e-9);
+    }
+
+    /// 글자 스타일 왕복 (§60-1): 가져온 스타일은 그대로, DraftSmith 글자는 맑은 고딕 스타일
+    #[test]
+    fn text_styles_round_trip() {
+        let mut d = crate::archgen::new_drawing();
+        d.fonts.push(crate::drawing::FontUse {
+            style: "KOR".into(),
+            font: "txt.shx".into(),
+            big_font: "whgtxt.shx".into(),
+            count: 1,
+            file: "txt.shx".into(),
+            ttf: String::new(),
+        });
+        let t = |v: &str, style: &str| Entity {
+            layer: 0,
+            color: None,
+            aci: None,
+            linetype: None,
+            weight: None,
+            shape: Shape::Text(crate::drawing::TextShape {
+                at: Vec2::default(),
+                height: 250.0,
+                rotation: 0.0,
+                width_factor: 1.0,
+                halign: 0.0,
+                valign: crate::drawing::VAlign::Baseline,
+                value: v.into(),
+                style: style.into(),
+            }),
+        };
+        d.entities = vec![t("가져온 글자", "KOR"), t("새 글자", "")];
+        for ext in ["dxf", "dwg"] {
+            let dir = std::env::temp_dir().join(format!("dsmith-sty-{}-{ext}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let p = dir.join(format!("s.{ext}"));
+            write(&d, &p).unwrap();
+            let back = crate::import::read_file(&p).unwrap();
+            let kor = back.fonts.iter().find(|f| f.style == "KOR").unwrap();
+            assert_eq!(
+                (kor.big_font.as_str(), kor.count),
+                ("whgtxt.shx", 1),
+                "{ext}"
+            );
+            let ds = back.fonts.iter().find(|f| f.style == DS_STYLE).unwrap();
+            assert!(ds.file.contains("malgun") && ds.count == 1, "{ext} {ds:?}");
+            std::fs::remove_dir_all(&dir).ok();
+        }
     }
 
     #[test]

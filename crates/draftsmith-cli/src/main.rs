@@ -123,6 +123,17 @@ fn main() -> Result<()> {
             for (k, n) in d.counts() {
                 println!("  {k:<8} {n}");
             }
+            // 글자 스타일별 글꼴 (§57) — SHX 는 화면·PDF 에서 폴더에 있으면 그 모양으로 (§59)
+            let used: Vec<_> = d.fonts.iter().filter(|f| f.count > 0).collect();
+            if !used.is_empty() {
+                println!("글꼴");
+                for f in used {
+                    println!(
+                        "  {:<16} {:<14} {:<14} {}",
+                        f.style, f.font, f.big_font, f.count
+                    );
+                }
+            }
             if !d.skipped.is_empty() {
                 println!("가져오지 않은 객체");
                 for (k, n) in &d.skipped {

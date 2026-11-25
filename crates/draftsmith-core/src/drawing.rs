@@ -123,6 +123,10 @@ pub enum Shape {
     Segments {
         lines: Vec<(Vec2, Vec2)>,
     },
+    /// 가리개 (WIPEOUT, §60): 이 고리 안에서 그리기 순서상 앞에 있는 선을 지운다. 보이는 도면 단계에서 풀린다
+    Wipeout {
+        ring: Vec<Vec2>,
+    },
     Text(TextShape),
     /// 무늬 해치 (§45): 경계 고리(짝홀)와 무늬 선 정의. 화면·출력에는 무늬 선분이 대신 나오고, DXF·DWG 로는 HATCH 로
     Hatch {
@@ -172,6 +176,9 @@ impl Shape {
     /// 아핀 변환을 건 모양. 원은 변환이 등각(회전·균등 축척)이면 원으로, 아니면 타원이 된다.
     pub fn transformed(&self, t: &Affine) -> Shape {
         match self {
+            Shape::Wipeout { ring } => Shape::Wipeout {
+                ring: ring.iter().map(|p| t.apply(*p)).collect(),
+            },
             Shape::Hatch { loops, lines, name } => {
                 // 무늬 선: 기준점은 점처럼, 방향·이동은 선형 부분으로, 대시 길이는 방향 배율만큼
                 let lines = lines
@@ -351,6 +358,11 @@ impl Shape {
     pub fn bbox(&self) -> Bbox {
         let mut b = Bbox::EMPTY;
         match self {
+            Shape::Wipeout { ring } => {
+                for p in ring {
+                    b.add(*p);
+                }
+            }
             Shape::Hatch { loops, .. } => {
                 for p in loops.iter().flatten() {
                     b.add(*p);
@@ -447,6 +459,9 @@ pub struct FontUse {
     pub big_font: String,
     /// 이 스타일로 쓴 글자 객체 수 (블록 안 포함, 펼친 수)
     pub count: usize,
+    /// 원래 스타일 표의 글꼴 파일·트루타입 이름 (내보낼 때 그대로, §60-1)
+    pub file: String,
+    pub ttf: String,
 }
 
 /// 블록 참조의 속성값 하나: 태그와 글자 (값은 `text.value`, 위치는 블록 안 좌표)
@@ -511,6 +526,7 @@ impl Drawing {
         let mut m = BTreeMap::new();
         for e in &self.entities {
             let k = match e.shape {
+                Shape::Wipeout { .. } => "가리개",
                 Shape::Hatch { .. } => "해치 무늬",
                 Shape::Insert { .. } => "블록 참조",
                 Shape::Line { .. } => "선",

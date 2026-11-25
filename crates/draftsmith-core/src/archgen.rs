@@ -370,10 +370,12 @@ pub fn with_arch_owned(d: &Drawing) -> Option<(Drawing, Vec<(String, u64)>)> {
 /// 축척별 표현 (§42): 글자·그리드 기호는 축척에 맞춰 (종이 위 2.5 mm 등), 1:200 보다 작으면 문 열림 호·창호 기호·
 /// 실 면적 글자를 뺀다
 pub fn with_arch_scaled(d: &Drawing, scale: f64) -> Option<(Drawing, Vec<(String, u64)>)> {
-    let has_special = d
-        .entities
-        .iter()
-        .any(|e| matches!(e.shape, Shape::Insert { .. } | Shape::Hatch { .. }));
+    let has_special = d.entities.iter().any(|e| {
+        matches!(
+            e.shape,
+            Shape::Insert { .. } | Shape::Hatch { .. } | Shape::Wipeout { .. }
+        )
+    });
     // SHX 글꼴 폴더가 있고 가져온 글자 스타일이 있으면 글자를 SHX 획으로 (§59)
     let shx = crate::shx::folder().is_some() && !d.fonts.is_empty();
     if d.arch.is_empty() && !has_special && !shx {
@@ -395,6 +397,7 @@ pub fn with_arch_scaled(d: &Drawing, scale: f64) -> Option<(Drawing, Vec<(String
     if shx {
         crate::shx::apply(&mut out);
     }
+    crate::wipeout::apply(&mut out);
     Some((out, owners))
 }
 

@@ -343,6 +343,33 @@ impl<'a> Converter<'a> {
                     value: plain_mtext(&x.value),
                 })
             }
+            // 가리개 (§60): 경계 고리로 — 보이는 도면 단계에서 앞의 선을 지운다
+            EntityType::Wipeout(x) => {
+                let w: Vec<Vec2> = x
+                    .world_boundary_vertices()
+                    .iter()
+                    .map(|p| Vec2::new(p.x, p.y))
+                    .collect();
+                let ring = if w.len() == 2 {
+                    vec![
+                        w[0],
+                        Vec2::new(w[1].x, w[0].y),
+                        w[1],
+                        Vec2::new(w[0].x, w[1].y),
+                    ]
+                } else {
+                    let mut r = w;
+                    if r.len() > 1 && r[0].dist(*r.last().unwrap()) < 1e-9 {
+                        r.pop();
+                    }
+                    r
+                };
+                if ring.len() < 3 {
+                    self.skip("WIPEOUT");
+                    return;
+                }
+                Shape::Wipeout { ring }
+            }
             EntityType::Solid(x) => {
                 // SOLID 꼭짓점 순서는 1-2-4-3 (3·4 가 같으면 삼각형)
                 let mut ring = vec![
@@ -443,6 +470,8 @@ impl<'a> Converter<'a> {
                     font,
                     big_font: st.map(|s| s.big_font_file.clone()).unwrap_or_default(),
                     count: 1,
+                    file: st.map(|s| s.font_file.clone()).unwrap_or_default(),
+                    ttf: st.map(|s| s.true_type_font.clone()).unwrap_or_default(),
                 });
             }
         }
@@ -867,8 +896,9 @@ impl<'a> Converter<'a> {
                 continue;
             }
             let (al, ac) = self.style(&a.common, inherit);
+            self.font_use(&a.text_style);
             let s = Shape::Text(TextShape {
-                style: String::new(),
+                style: a.text_style.clone(),
                 at: v2(&a.insertion_point),
                 height: a.height,
                 rotation: a.rotation,
@@ -1348,6 +1378,8 @@ pub fn from_document(doc: &CadDocument) -> Drawing {
                 },
                 big_font: st.big_font_file.clone(),
                 count: 0,
+                file: st.font_file.clone(),
+                ttf: st.true_type_font.clone(),
             });
         }
     }

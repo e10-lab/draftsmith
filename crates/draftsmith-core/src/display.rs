@@ -171,6 +171,7 @@ pub fn segments(d: &Drawing) -> Segments {
         });
         pieces.clear();
         match &e.shape {
+            Shape::Wipeout { .. } => continue,
             Shape::Hatch { .. } => continue,
             Shape::Insert { .. } => continue,
             Shape::Line { a, b } => pieces.push(vec![*a, *b]),

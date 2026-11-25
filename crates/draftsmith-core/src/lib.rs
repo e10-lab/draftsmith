@@ -36,6 +36,7 @@ pub mod shp;
 pub mod shx;
 pub mod snap;
 pub mod text;
+pub mod wipeout;
 
 pub use drawing::{Drawing, Entity, Layer, LinePattern, LineStyle, Shape, TextShape, VAlign};
 pub use geom::{Affine, Bbox, Vec2};
