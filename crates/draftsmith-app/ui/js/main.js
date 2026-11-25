@@ -174,7 +174,12 @@ const host = {
     if (active) active.enter();
     else repeatLast();
   },
-  dblclick() { return false; },
+  /** 두 번 누르기 (§62): 글자면 내용 고치기, 실이면 이름 고치기. 아니면 화면 맞춤 */
+  dblclick(m) {
+    if (active || !app.doc || app.doc.sheet != null) return false;
+    editAt(m);
+    return true;
+  },
   paint(ctx, ts) {
     // 시트에서는 뷰포트 테두리를 점선으로
     for (const v0 of app.doc?.sheet != null ? app.doc.viewports ?? [] : []) {
@@ -411,7 +416,11 @@ function ask(title, fields) {
       const l = document.createElement("label");
       l.append(label);
       let i;
-      if (choices) {
+      if (choices === "textarea") {
+        i = document.createElement("textarea");
+        i.value = value;
+        i.rows = Math.min(8, value.split("\n").length + 1);
+      } else if (choices) {
         i = document.createElement("select");
         for (const c of choices) i.append(new Option(c, c, false, c === value));
       } else {
@@ -594,7 +603,36 @@ async function run(id) {
     case "merge": return app.doc && mergeJournal();
     case "palette": return palette.show();
     case "shx": return shxFolder();
+    case "find": return findReplace();
   }
+}
+
+/** 두 번 누른 곳의 글자·실 이름 고치기 (§62) */
+async function editAt(m) {
+  const r = await invoke("pick_at", { x: m[0], y: m[1], r: 6 / viewer.ppu }).catch(() => null);
+  if (!r) return viewer.fit();
+  if (r.arch && r.arch[0] === "room") {
+    const name = (r.props.find(([k]) => k === "실 이름:고침") || [])[1] ?? "";
+    const v = await ask("실 이름", [["name", "이름", name]]);
+    if (v && v.name.trim() && v.name !== name) await app.apply({ kind: "arch", op: { kind: "set", what: "room", id: r.arch[1], fields: [["실 이름", v.name]] } });
+    return;
+  }
+  if (!r.editable) return;
+  const text = await invoke("text_of", { id: r.index });
+  if (text == null) return app.select.click?.(m);
+  const v = await ask("글자 고치기", [["value", "내용", text, text.includes("\n") ? "textarea" : null]]);
+  if (v && v.value !== text) await app.apply({ kind: "set_text", id: r.index, value: v.value });
+}
+
+/** 찾아 바꾸기 (§62): 글자·블록 속성값·실 이름·치수 글자 */
+async function findReplace() {
+  if (!app.doc) return;
+  const v = await ask("찾아 바꾸기 (글자·속성값·실 이름·치수 글자)", [["find", "찾을 글자", ""], ["repl", "바꿀 글자", ""]]);
+  if (!v || !v.find) return;
+  const n = await invoke("count_text", { find: v.find });
+  if (!n) return status(`「${v.find}」 을 찾지 못했습니다`);
+  await app.apply({ kind: "replace_text", find: v.find, repl: v.repl });
+  status(`${n} 곳을 바꿨습니다 — ⌘Z 로 한 번에 되돌림`);
 }
 
 /** SHX 글꼴 폴더: 있으면 끌지·바꿀지 묻고, 없으면 고른다 (§59) */

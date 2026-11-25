@@ -632,6 +632,16 @@ enum EditReq {
         value: String,
         height: f64,
     },
+    /// 글자 내용 고치기 (§62)
+    SetText {
+        id: usize,
+        value: String,
+    },
+    /// 찾아 바꾸기 (§62)
+    ReplaceText {
+        find: String,
+        repl: String,
+    },
     /// 블록 참조의 속성을 블록 정의의 속성 정의로 (§49)
     DefineAttrs {
         id: usize,
@@ -902,6 +912,10 @@ fn edit(req: EditReq, state: State<'_, AppState>) -> Result<DocState, String> {
                 height,
             } => ed.add_attr(id, &tag, &value, height)?,
             EditReq::SetAttr { id, tag, value } => ed.set_attr(id, &tag, &value)?,
+            EditReq::SetText { id, value } => ed.set_text(id, &value)?,
+            EditReq::ReplaceText { find, repl } => {
+                ed.replace_text(&find, &repl, false);
+            }
             EditReq::DefineAttrs { id } => {
                 ed.define_attrs(id)?;
             }
@@ -1016,7 +1030,11 @@ fn pick_at(x: f64, y: f64, r: f64, state: State<'_, AppState>) -> Result<Option<
     };
     Ok(idx.pick(d, Vec2::new(x, y), r).map(|i| {
         let (model, arch) = open.owner_of(i);
-        let mut props = pick::properties(d, model.unwrap_or(i));
+        // 모형 객체는 원래 모양으로 (보이는 도면에서는 SHX 글자가 선분 묶음 등으로 바뀌어 있다, §62)
+        let mut props = match (model, open.ed.as_ref()) {
+            (Some(m), Some(e)) => pick::properties(&e.d, m),
+            _ => pick::properties(d, i),
+        };
         if let (Some((k, id)), Some(e)) = (&arch, open.ed.as_ref()) {
             props = archgen::properties(&e.d.arch, k, *id);
         }
@@ -1032,6 +1050,25 @@ fn pick_at(x: f64, y: f64, r: f64, state: State<'_, AppState>) -> Result<Option<
             outline,
         }
     }))
+}
+
+/// 찾을 글자가 몇 곳에 있나 (바꾸지 않음, §62)
+#[tauri::command]
+fn count_text(find: String, state: State<'_, AppState>) -> Result<usize, String> {
+    let mut open = state.lock().map_err(err)?;
+    let ed = open.ed.as_mut().ok_or("열린 도면이 없습니다")?;
+    Ok(ed.replace_text(&find, "", true))
+}
+
+/// 고른 모형 글자의 내용 (두 번 눌러 고치기, §62). 글자가 아니면 null
+#[tauri::command]
+fn text_of(id: usize, state: State<'_, AppState>) -> Result<Option<String>, String> {
+    let open = state.lock().map_err(err)?;
+    let ed = open.ed.as_ref().ok_or("열린 도면이 없습니다")?;
+    Ok(match ed.d.entities.get(id).map(|e| &e.shape) {
+        Some(draftsmith_core::drawing::Shape::Text(t)) => Some(t.value.clone()),
+        _ => None,
+    })
 }
 
 /// 상자 고르기 (도면 좌표). 걸침이면 상자에 걸친 것도. 모형 객체 번호만
@@ -1151,7 +1188,11 @@ fn selection_info(ids: Vec<usize>, tol: f64, state: State<'_, AppState>) -> Resu
         outline.extend(open.outline_model(i, tol));
     }
     let props = if ids.len() == 1 {
-        pick::properties(d, ids[0])
+        // 모형 객체는 원래 모양으로 (SHX 글자·가리개에 잘린 선은 보이는 도면에서 선분 묶음, §62)
+        match open.ed.as_ref() {
+            Some(e) => pick::properties(&e.d, ids[0]),
+            None => pick::properties(d, ids[0]),
+        }
     } else {
         let mut layers: Vec<String> = ids
             .iter()
@@ -1549,6 +1590,8 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             set_shx_folder,
+            count_text,
+            text_of,
             app_version,
             confirm_discard,
             startup_file,

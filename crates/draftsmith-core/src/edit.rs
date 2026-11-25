@@ -379,6 +379,80 @@ impl Editor {
         Ok(n)
     }
 
+    /// 글자 내용 고치기 (§62)
+    pub fn set_text(&mut self, i: usize, value: &str) -> Result<(), String> {
+        let e = self.d.entities.get(i).cloned().ok_or("객체가 없습니다")?;
+        let mut n = e.clone();
+        let Shape::Text(t) = &mut n.shape else {
+            return Err("글자가 아닙니다".into());
+        };
+        if value.trim().is_empty() {
+            return Err("빈 글자는 쓸 수 없습니다 — 지우려면 Delete".into());
+        }
+        t.value = value.to_string();
+        self.run(Op::Replace {
+            items: vec![(i, e, n)],
+        });
+        Ok(())
+    }
+
+    /// 찾아 바꾸기 (§62): 글자·블록 속성값·실 이름·치수 덮어쓴 글자. 바꾼 곳 수 (한 번에 되돌림)
+    pub fn replace_text(&mut self, find: &str, repl: &str, dry: bool) -> usize {
+        if find.is_empty() {
+            return 0;
+        }
+        let mut count = 0;
+        let mut items = Vec::new();
+        for (i, e) in self.d.entities.iter().enumerate() {
+            let mut n = e.clone();
+            let hit = match &mut n.shape {
+                Shape::Text(t) if t.value.contains(find) => {
+                    count += t.value.matches(find).count();
+                    t.value = t.value.replace(find, repl);
+                    true
+                }
+                Shape::Insert { attrs, .. } => {
+                    let mut h = false;
+                    for a in attrs.iter_mut().filter(|a| a.text.value.contains(find)) {
+                        count += a.text.value.matches(find).count();
+                        a.text.value = a.text.value.replace(find, repl);
+                        h = true;
+                    }
+                    h
+                }
+                _ => false,
+            };
+            if hit {
+                items.push((i, e.clone(), n));
+            }
+        }
+        let old = self.d.arch.clone();
+        let mut new = old.clone();
+        for r in new.rooms.iter_mut().filter(|r| r.name.contains(find)) {
+            count += r.name.matches(find).count();
+            r.name = r.name.replace(find, repl);
+        }
+        for x in new.dims.iter_mut().filter(|x| x.text.contains(find)) {
+            count += x.text.matches(find).count();
+            x.text = x.text.replace(find, repl);
+        }
+        if dry || count == 0 {
+            return count;
+        }
+        let mut ops = Vec::new();
+        if !items.is_empty() {
+            ops.push(Op::Replace { items });
+        }
+        if new != old {
+            ops.push(Op::Arch {
+                old: Box::new(old),
+                new: Box::new(new),
+            });
+        }
+        self.run(Op::Batch(ops));
+        count
+    }
+
     /// 블록 참조의 속성값 고치기 (§46)
     pub fn set_attr(&mut self, i: usize, tag: &str, value: &str) -> Result<(), String> {
         let e = self.d.entities.get(i).cloned().ok_or("객체가 없습니다")?;
@@ -812,6 +886,46 @@ pub fn offset_shape(s: &Shape, dist: f64, side: Vec2) -> Option<Shape> {
             })
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod text_tests {
+    use super::*;
+
+    /// 글자 고치기·찾아 바꾸기 (§62)
+    #[test]
+    fn edit_and_replace_text() {
+        let mut ed = Editor::new(crate::archgen::new_drawing());
+        let t = |v: &str| {
+            Shape::Text(crate::drawing::TextShape {
+                at: Vec2::default(),
+                height: 250.0,
+                rotation: 0.0,
+                width_factor: 1.0,
+                halign: 0.0,
+                valign: crate::drawing::VAlign::Baseline,
+                value: v.into(),
+                style: String::new(),
+            })
+        };
+        let _ = ed.add_shapes(vec![
+            t("거실"),
+            t("침실 1 · 침실 2"),
+            Shape::Line {
+                a: Vec2::default(),
+                b: Vec2::new(1.0, 0.0),
+            },
+        ]);
+        ed.set_text(0, "거실 겸 식당").unwrap();
+        assert!(ed.set_text(2, "x").is_err());
+        assert_eq!(ed.replace_text("침실", "방", true), 2);
+        assert_eq!(ed.d.entities[1].shape, t("침실 1 · 침실 2"));
+        assert_eq!(ed.replace_text("침실", "방", false), 2);
+        assert_eq!(ed.d.entities[1].shape, t("방 1 · 방 2"));
+        assert!(ed.undo());
+        assert_eq!(ed.d.entities[1].shape, t("침실 1 · 침실 2"));
+        assert_eq!(ed.d.entities[0].shape, t("거실 겸 식당"));
     }
 }
 
