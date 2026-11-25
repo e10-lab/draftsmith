@@ -8,8 +8,9 @@ use std::path::Path;
 
 use acadrust::entities::{
     Arc, BoundaryEdge, BoundaryPath, Circle, Dimension, DimensionAligned, DimensionAngular3Pt,
-    DimensionDiameter, DimensionLinear, DimensionRadius, Ellipse, Hatch, Insert, Line, LwPolyline,
-    LwVertex, MText, PolylineEdge, Text, TextHorizontalAlignment, TextVerticalAlignment,
+    DimensionDiameter, DimensionLinear, DimensionRadius, Ellipse, Hatch, HatchPattern,
+    HatchPatternLine, Insert, Line, LwPolyline, LwVertex, MText, PolylineEdge, Text,
+    TextHorizontalAlignment, TextVerticalAlignment,
 };
 use acadrust::tables::{BlockRecord, Layer as CadLayer, LineType, LineTypeElement};
 use acadrust::types::{Color, LineWeight, Vector2, Vector3};
@@ -61,6 +62,32 @@ fn principal_axes(u: Vec2, v: Vec2) -> (Vec2, f64, f64, bool) {
 /// 객체 하나 → acadrust 객체들
 fn to_cad(e: &Entity) -> Vec<EntityType> {
     match &e.shape {
+        Shape::Hatch { loops, lines, name } => {
+            // 무늬 해치는 HATCH (무늬 정의 그대로, §45)
+            let mut pat = HatchPattern::new(if name.is_ascii() && !name.is_empty() {
+                name.clone()
+            } else {
+                "DRAFTSMITH".into()
+            });
+            for l in lines {
+                pat.add_line(HatchPatternLine {
+                    angle: l.angle,
+                    base_point: Vector2::new(l.base.x, l.base.y),
+                    offset: Vector2::new(l.offset.x, l.offset.y),
+                    dash_lengths: l.dashes.clone(),
+                });
+            }
+            let mut h = Hatch::with_pattern(pat);
+            for r in loops {
+                let mut path = BoundaryPath::new();
+                path.add_edge(BoundaryEdge::Polyline(PolylineEdge::new(
+                    r.iter().map(|p| Vector2::new(p.x, p.y)).collect(),
+                    true,
+                )));
+                h.add_path(path);
+            }
+            vec![EntityType::Hatch(Box::new(h))]
+        }
         Shape::Insert {
             block,
             at,
@@ -280,7 +307,8 @@ pub fn to_document(model: &Drawing) -> CadDocument {
         }
     }
     // 모형 객체 (블록 참조는 INSERT 로)
-    for e in &d.entities[..base] {
+    // 모형 객체는 모형에서 (무늬 해치를 HATCH 그대로, §45)
+    for e in &model.entities {
         put(&mut doc, &d, e, None);
     }
     // 덧붙인 객체: 블록 펼친 것은 빼고, 치수는 치수 객체마다 모은다
@@ -391,6 +419,142 @@ pub fn to_document(model: &Drawing) -> CadDocument {
         let _ = doc.add_entity(ent);
     }
     doc
+}
+
+/// 모든 층을 한 도면에 (§45): 층마다 건물 폭 + 10 m 씩 오른쪽으로 옮겨 나란히 놓고, 층 이름 제목을 단다.
+/// 층마다 그리드를 복사하고(번호 새로) 그 층 치수가 묶인 그리드도 바꿔 준다. 대지·단면은 첫 층 자리에 한 번만.
+pub fn all_levels_model(d: &Drawing) -> Drawing {
+    let m = &d.arch;
+    if m.levels.len() < 2 {
+        return d.clone();
+    }
+    let mut levels = m.levels.clone();
+    levels.sort_by(|a, b| a.elevation.total_cmp(&b.elevation));
+    let bb = levels
+        .iter()
+        .filter_map(|l| crate::sheet::building_bbox(d, Some(l.id)))
+        .fold(crate::geom::Bbox::EMPTY, |mut acc, b| {
+            acc.merge(&b);
+            acc
+        });
+    let step = if bb.is_empty() {
+        30000.0
+    } else {
+        bb.width() + 10000.0
+    };
+    let mut out = d.clone();
+    let first = levels[0].id;
+    let mut a = crate::arch::ArchModel {
+        levels: vec![levels[0].clone()],
+        active_level: first,
+        site: m.site.clone(),
+        sections: m.sections.clone(),
+        next_id: m.next_id,
+        ..Default::default()
+    };
+    let sh = |p: Vec2, dx: f64| Vec2::new(p.x + dx, p.y);
+    for (i, l) in levels.iter().enumerate() {
+        let dx = step * i as f64;
+        // 그리드: 첫 층은 그대로, 다음 층은 새 번호로 복사
+        let mut grid_map: Vec<(u64, u64)> = Vec::new();
+        for g in &m.grids {
+            let id = if i == 0 { g.id } else { a.new_id() };
+            grid_map.push((g.id, id));
+            a.grids.push(crate::arch::Grid {
+                id,
+                a: sh(g.a, dx),
+                b: sh(g.b, dx),
+                ..g.clone()
+            });
+        }
+        for w in m.walls.iter().filter(|w| w.level == l.id) {
+            a.walls.push(crate::arch::Wall {
+                level: first,
+                a: sh(w.a, dx),
+                b: sh(w.b, dx),
+                ..w.clone()
+            });
+        }
+        let ids: Vec<u64> = m
+            .walls
+            .iter()
+            .filter(|w| w.level == l.id)
+            .map(|w| w.id)
+            .collect();
+        a.openings
+            .extend(m.openings.iter().filter(|o| ids.contains(&o.wall)).cloned());
+        for r in m.rooms.iter().filter(|r| r.level == l.id) {
+            a.rooms.push(crate::arch::Room {
+                level: first,
+                boundary: r.boundary.iter().map(|p| sh(*p, dx)).collect(),
+                ..r.clone()
+            });
+        }
+        for c in m.columns.iter().filter(|c| c.level == l.id) {
+            a.columns.push(crate::arch::Column {
+                level: first,
+                at: sh(c.at, dx),
+                ..c.clone()
+            });
+        }
+        for st in m.stairs.iter().filter(|s| s.level == l.id) {
+            a.stairs.push(crate::arch::Stair {
+                level: first,
+                a: sh(st.a, dx),
+                b: sh(st.b, dx),
+                mid: st.mid.map(|p| sh(p, dx)),
+                ..st.clone()
+            });
+        }
+        for dm in m.dims.iter().filter(|x| x.level == l.id) {
+            let remap = |k: &Option<crate::arch::Anchor>| {
+                k.clone().map(|mut k| {
+                    if k.what == "grid"
+                        && let Some((_, n)) = grid_map.iter().find(|(o, _)| *o == k.id)
+                    {
+                        k.id = *n;
+                    }
+                    k
+                })
+            };
+            a.dims.push(crate::arch::Dim {
+                level: first,
+                a: sh(dm.a, dx),
+                b: sh(dm.b, dx),
+                vertex: dm.vertex.map(|p| sh(p, dx)),
+                ka: remap(&dm.ka),
+                kb: remap(&dm.kb),
+                ..dm.clone()
+            });
+        }
+        // 층 제목
+        if !bb.is_empty() {
+            let layer = out.layer_index("A-ANNO-TEXT");
+            out.entities.push(Entity {
+                layer,
+                color: None,
+                aci: None,
+                linetype: None,
+                weight: None,
+                shape: crate::drawing::Shape::Text(crate::drawing::TextShape {
+                    at: Vec2::new(bb.min.x + dx, bb.min.y - 4000.0),
+                    height: 500.0,
+                    rotation: 0.0,
+                    width_factor: 1.0,
+                    halign: 0.0,
+                    valign: VAlign::Baseline,
+                    value: format!("{} 평면도", l.name),
+                }),
+            });
+        }
+    }
+    out.arch = a;
+    out
+}
+
+/// 모든 층을 나란히 놓아 DXF·DWG 로 (§45)
+pub fn write_all_levels(d: &Drawing, path: &Path) -> Result<(), String> {
+    write(&all_levels_model(d), path)
 }
 
 /// 확장자로 DXF·DWG 를 골라 쓴다
@@ -576,7 +740,19 @@ mod tests {
             std::fs::create_dir_all(&dir).unwrap();
             let p = dir.join(format!("r.{ext}"));
             write(&ed.d, &p).unwrap();
-            let back = crate::archgen::shown(&crate::import::read_file(&p).unwrap());
+            let raw = crate::import::read_file(&p).unwrap();
+            // 반지름·지름·각도 치수가 치수 객체로 돌아온다 (§45)
+            let kinds: Vec<_> = raw.arch.dims.iter().map(|x| x.kind).collect();
+            assert_eq!(
+                kinds,
+                vec![
+                    crate::arch::DimKind::Radius,
+                    crate::arch::DimKind::Diameter,
+                    crate::arch::DimKind::Angle
+                ],
+                "{ext}"
+            );
+            let back = crate::archgen::shown(&raw);
             // 모양 블록을 펼친 글자가 돌아온다
             assert!(
                 back.entities
@@ -586,5 +762,32 @@ mod tests {
             );
             std::fs::remove_dir_all(&dir).ok();
         }
+    }
+
+    #[test]
+    fn all_levels_side_by_side() {
+        let d = crate::demo::demo_building().unwrap();
+        let all = all_levels_model(&d);
+        assert_eq!(all.arch.levels.len(), 1);
+        assert_eq!(all.arch.walls.len(), 12);
+        assert_eq!(all.arch.rooms.len(), 6);
+        assert_eq!(all.arch.grids.len(), 12);
+        let doc = to_document(&all);
+        let texts: Vec<String> = doc
+            .entities()
+            .filter_map(|e| match e {
+                EntityType::Text(t) => Some(t.value.clone()),
+                _ => None,
+            })
+            .collect();
+        for want in ["거실", "침실 1", "1층 평면도", "2층 평면도"] {
+            assert!(texts.iter().any(|t| t == want), "{want}");
+        }
+        // 2 층 치수도 묶인 그리드를 따라 6,000
+        let dims = doc
+            .entities()
+            .filter(|e| matches!(e, EntityType::Dimension(_)))
+            .count();
+        assert_eq!(dims, 4);
     }
 }

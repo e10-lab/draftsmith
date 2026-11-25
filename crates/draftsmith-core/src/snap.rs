@@ -54,6 +54,7 @@ impl SnapIndex {
                 continue;
             }
             match &e.shape {
+                Shape::Hatch { .. } => {}
                 Shape::Insert { at, .. } => add(*at, SnapKind::Insert),
                 Shape::Line { a, b } => {
                     add(*a, SnapKind::End);

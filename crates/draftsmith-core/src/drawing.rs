@@ -121,6 +121,13 @@ pub enum Shape {
         lines: Vec<(Vec2, Vec2)>,
     },
     Text(TextShape),
+    /// 무늬 해치 (§45): 경계 고리(짝홀)와 무늬 선 정의. 화면·출력에는 무늬 선분이 대신 나오고, DXF·DWG 로는 HATCH 로
+    Hatch {
+        loops: Vec<Vec<Vec2>>,
+        lines: Vec<crate::fill::PatternLine>,
+        /// 무늬 이름 (ANSI31 등, DraftSmith 무늬는 한글 이름)
+        name: String,
+    },
     /// 블록 참조 (DraftSmith 에서 만든 블록 — 구현 노트 §30). 화면·출력에는 펼친 객체가 대신 나온다
     Insert {
         block: String,
@@ -132,9 +139,57 @@ pub enum Shape {
 }
 
 impl Shape {
+    /// 화면·출력용 모양: 무늬 해치는 무늬 선분(무늬가 없으면 칠)으로, 나머지는 그대로 (§45)
+    pub fn drawn(&self) -> Shape {
+        match self {
+            Shape::Hatch { loops, lines, .. } => {
+                if lines.is_empty() {
+                    return Shape::Fill {
+                        loops: loops.clone(),
+                    };
+                }
+                match crate::fill::pattern_segments(loops, lines, 200_000) {
+                    Some(segs) => Shape::Segments { lines: segs },
+                    // 너무 촘촘하면 경계선만
+                    None => Shape::Segments {
+                        lines: loops
+                            .iter()
+                            .flat_map(|r| (0..r.len()).map(move |i| (r[i], r[(i + 1) % r.len()])))
+                            .collect(),
+                    },
+                }
+            }
+            s => s.clone(),
+        }
+    }
+
     /// 아핀 변환을 건 모양. 원은 변환이 등각(회전·균등 축척)이면 원으로, 아니면 타원이 된다.
     pub fn transformed(&self, t: &Affine) -> Shape {
         match self {
+            Shape::Hatch { loops, lines, name } => {
+                // 무늬 선: 기준점은 점처럼, 방향·이동은 선형 부분으로, 대시 길이는 방향 배율만큼
+                let lines = lines
+                    .iter()
+                    .map(|l| {
+                        let d = t.linear(Vec2::new(l.angle.cos(), l.angle.sin()));
+                        let k = d.x.hypot(d.y);
+                        crate::fill::PatternLine {
+                            angle: d.y.atan2(d.x),
+                            base: t.apply(l.base),
+                            offset: t.linear(l.offset),
+                            dashes: l.dashes.iter().map(|x| x * k).collect(),
+                        }
+                    })
+                    .collect();
+                Shape::Hatch {
+                    loops: loops
+                        .iter()
+                        .map(|r| r.iter().map(|p| t.apply(*p)).collect())
+                        .collect(),
+                    lines,
+                    name: name.clone(),
+                }
+            }
             Shape::Insert {
                 block,
                 at,
@@ -287,6 +342,11 @@ impl Shape {
     pub fn bbox(&self) -> Bbox {
         let mut b = Bbox::EMPTY;
         match self {
+            Shape::Hatch { loops, .. } => {
+                for p in loops.iter().flatten() {
+                    b.add(*p);
+                }
+            }
             Shape::Insert { at, .. } => b.add(*at),
             Shape::Line { a, b: e } => {
                 b.add(*a);
@@ -408,6 +468,7 @@ impl Drawing {
         let mut m = BTreeMap::new();
         for e in &self.entities {
             let k = match e.shape {
+                Shape::Hatch { .. } => "해치 무늬",
                 Shape::Insert { .. } => "블록 참조",
                 Shape::Line { .. } => "선",
                 Shape::Polyline { .. } => "폴리선",

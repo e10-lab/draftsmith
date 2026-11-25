@@ -473,7 +473,9 @@ fn export_cad(format: String, state: State<'_, AppState>) -> Result<Option<Strin
     let d = open.ed.as_ref().ok_or("열린 도면이 없습니다")?;
     // 모형을 넘기면 블록은 INSERT, 치수는 DIMENSION, 건축 객체 선은 펼친 선으로 쓴다 (§31)
     let full = d.d.clone();
-    let ext = if format.eq_ignore_ascii_case("dwg") {
+    // 「dwg-all」·「dxf-all」 은 모든 층을 나란히 (§45)
+    let all = format.ends_with("-all");
+    let ext = if format.to_ascii_lowercase().starts_with("dwg") {
         "dwg"
     } else {
         "dxf"
@@ -485,7 +487,9 @@ fn export_cad(format: String, state: State<'_, AppState>) -> Result<Option<Strin
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "도면".into());
     // 건축 객체는 지금 층을 펼쳐 쓴다 — 층이 여럿이면 파일 이름에 층 이름 (§44)
-    let lv = if d.d.arch.levels.len() > 1 {
+    let lv = if all {
+        "-모든층".to_string()
+    } else if d.d.arch.levels.len() > 1 {
         d.d.arch
             .level(d.d.arch.active_level)
             .map(|l| format!("-{}", l.name))
@@ -503,7 +507,11 @@ fn export_cad(format: String, state: State<'_, AppState>) -> Result<Option<Strin
     let Some(path) = dlg.save_file() else {
         return Ok(None);
     };
-    export::write(&full, &path)?;
+    if all {
+        export::write_all_levels(&full, &path)?;
+    } else {
+        export::write(&full, &path)?;
+    }
     Ok(Some(path.display().to_string()))
 }
 

@@ -23,8 +23,11 @@ pub fn draw(m: &ArchModel, s: &Section) -> Vec<(&'static str, Shape)> {
     let p = |t: f64, z: f64| Vec2::new(o.x + t, o.y + z);
     let rect =
         |t0: f64, t1: f64, z0: f64, z1: f64| vec![p(t0, z0), p(t1, z0), p(t1, z1), p(t0, z1)];
+    // 가림: 자른 면과 앞에 보이는 벽이 뒤를 가린다 (t 구간 × 높이) — §45
+    let occ: std::cell::RefCell<Vec<[f64; 4]>> = std::cell::RefCell::new(Vec::new());
     let cut = |out: &mut Vec<(&'static str, Shape)>, t0: f64, t1: f64, z0: f64, z1: f64| {
         if z1 - z0 > 1e-6 && t1 - t0 > 1e-6 {
+            occ.borrow_mut().push([t0, t1, z0, z1]);
             let r = rect(t0, t1, z0, z1);
             out.push((
                 "A-SECT-PATT",
@@ -58,18 +61,50 @@ pub fn draw(m: &ArchModel, s: &Section) -> Vec<(&'static str, Shape)> {
     let nv = Vec2::new(-u.y, u.x);
     let side = |q: Vec2| (q.x - s.a.x) * nv.x + (q.y - s.a.y) * nv.y;
     let along = |q: Vec2| (q.x - s.a.x) * u.x + (q.y - s.a.y) * u.y;
-    let outline = |out: &mut Vec<(&'static str, Shape)>, t0: f64, t1: f64, z0: f64, z1: f64| {
+    // 보이는 외곽 (가린 구간은 빼고): 위·아래 변은 보이는 구간만, 세로 변은 그 끝이 보일 때만
+    let outline = |out: &mut Vec<(&'static str, Shape)>,
+                   occ: &[[f64; 4]],
+                   t0: f64,
+                   t1: f64,
+                   z0: f64,
+                   z1: f64| {
         let (t0, t1) = (t0.max(0.0), t1.min(len));
-        if t1 - t0 > 1.0 && z1 - z0 > 1.0 {
-            out.push((
-                "A-SECT-VIEW",
-                Shape::Polyline {
-                    points: rect(t0, t1, z0, z1).into_iter().map(|q| (q, 0.0)).collect(),
-                    closed: true,
-                },
-            ));
+        if t1 - t0 <= 1.0 || z1 - z0 <= 1.0 {
+            return;
+        }
+        // 높이를 다 덮는 앞 객체의 t 구간을 뺀다
+        let mut vis = vec![(t0, t1)];
+        for o in occ
+            .iter()
+            .filter(|o| o[2] <= z0 + 1e-6 && o[3] >= z1 - 1e-6)
+        {
+            vis = vis
+                .into_iter()
+                .flat_map(|(a, b)| {
+                    let mut r = Vec::new();
+                    if o[0] > a {
+                        r.push((a, o[0].min(b)));
+                    }
+                    if o[1] < b {
+                        r.push((o[1].max(a), b));
+                    }
+                    r.into_iter().filter(|(x, y)| y - x > 1e-6)
+                })
+                .collect();
+        }
+        let line = |a: Vec2, b: Vec2| ("A-SECT-VIEW", Shape::Line { a, b });
+        for (a, b) in &vis {
+            out.push(line(p(*a, z0), p(*b, z0)));
+            out.push(line(p(*a, z1), p(*b, z1)));
+        }
+        for t in [t0, t1] {
+            if vis.iter().any(|(a, b)| t >= a - 1e-6 && t <= b + 1e-6) {
+                out.push(line(p(t, z0), p(t, z1)));
+            }
         }
     };
+    // 보이는 벽: (보는 쪽 거리, 벽) — 층을 다 돈 뒤 가까운 것부터 그린다
+    let mut seen: Vec<(f64, u64, f64, f64)> = Vec::new();
     let top_level = m
         .levels
         .iter()
@@ -114,32 +149,17 @@ pub fn draw(m: &ArchModel, s: &Section) -> Vec<(&'static str, Shape)> {
                 }
             }
         }
-        // 보이는 벽 (자르지 않은 벽 중 보는 쪽에 있는 것): 입면 외곽과 창 (§41)
+        // 보이는 벽 (자르지 않은 벽 중 보는 쪽에 있는 것): 입면 외곽과 창 (§41) — 가림 처리는 층을 다 돈 뒤
         for w in m.walls.iter().filter(|w| w.level == l.id) {
             if cross(w.a, w.b).is_some() || side(w.a) <= 0.0 || side(w.b) <= 0.0 {
                 continue;
             }
-            let (ta, tb) = (along(w.a), along(w.b));
-            let h = w.thickness / 2.0;
-            let top = z0 + w.height.unwrap_or(l.height);
-            outline(&mut out, ta.min(tb) - h, ta.max(tb) + h, z0, top);
-            let dir = w.dir();
-            for op in m
-                .openings
-                .iter()
-                .filter(|op| op.wall == w.id && op.kind == OpeningKind::Window)
-            {
-                let c = Vec2::new(w.a.x + dir.x * op.offset, w.a.y + dir.y * op.offset);
-                let half = op.width / 2.0 * (dir.x * u.x + dir.y * u.y).abs();
-                let tc = along(c);
-                outline(
-                    &mut out,
-                    tc - half,
-                    tc + half,
-                    z0 + op.sill,
-                    (z0 + op.sill + op.height).min(top),
-                );
-            }
+            seen.push((
+                side(w.a).min(side(w.b)),
+                w.id,
+                z0,
+                z0 + w.height.unwrap_or(l.height),
+            ));
         }
         // 바닥판: 실 경계와 자르는 선이 만나는 점들을 짝지어 안쪽 구간 (맨 위층은 지붕판도)
         for r in m.rooms.iter().filter(|r| r.level == l.id) {
@@ -191,6 +211,35 @@ pub fn draw(m: &ArchModel, s: &Section) -> Vec<(&'static str, Shape)> {
                 ));
             }
         }
+    }
+    // 보이는 벽을 가까운 것부터: 앞의 자른 면·벽이 가린 구간은 빼고 그리고, 그 벽도 뒤를 가린다
+    seen.sort_by(|a, b| a.0.total_cmp(&b.0));
+    for (_, id, z0, top) in seen {
+        let Some(w) = m.wall(id) else { continue };
+        let (ta, tb) = (along(w.a), along(w.b));
+        let h = w.thickness / 2.0;
+        let snapshot = occ.borrow().clone();
+        outline(&mut out, &snapshot, ta.min(tb) - h, ta.max(tb) + h, z0, top);
+        let dir = w.dir();
+        for op in m
+            .openings
+            .iter()
+            .filter(|op| op.wall == w.id && op.kind == OpeningKind::Window)
+        {
+            let c = Vec2::new(w.a.x + dir.x * op.offset, w.a.y + dir.y * op.offset);
+            let half = op.width / 2.0 * (dir.x * u.x + dir.y * u.y).abs();
+            let tc = along(c);
+            outline(
+                &mut out,
+                &snapshot,
+                tc - half,
+                tc + half,
+                z0 + op.sill,
+                (z0 + op.sill + op.height).min(top),
+            );
+        }
+        occ.borrow_mut()
+            .push([ta.min(tb) - h, ta.max(tb) + h, z0, top]);
     }
     // 층 바닥선과 이름 (왼쪽), 지반선, 제목
     let (x0, x1) = (-1500.0, len + 1500.0);
@@ -349,6 +398,60 @@ mod tests {
                 .filter(|(_, s)| matches!(s, Shape::Text(_)))
                 .count(),
             2
+        );
+    }
+
+    #[test]
+    fn nearer_wall_hides_farther() {
+        // 자르는 선 y = 0 (x 0→10000, 보는 쪽 +y). 앞 벽 y = 2000 (x 2000~4000), 뒤 벽 y = 6000 (x 0~10000)
+        let mut ed = Editor::new(new_drawing());
+        apply(
+            &mut ed,
+            ArchReq::Walls {
+                points: vec![[2000.0, 2000.0], [4000.0, 2000.0]],
+                closed: false,
+                thickness: 200.0,
+                wall: WallKind::Interior,
+            },
+        )
+        .unwrap();
+        apply(
+            &mut ed,
+            ArchReq::Walls {
+                points: vec![[0.0, 6000.0], [10000.0, 6000.0]],
+                closed: false,
+                thickness: 200.0,
+                wall: WallKind::Exterior,
+            },
+        )
+        .unwrap();
+        let s = Section {
+            id: 1,
+            name: "A".into(),
+            a: Vec2::new(0.0, 0.0),
+            b: Vec2::new(10000.0, 0.0),
+            at: Vec2::default(),
+        };
+        let shapes = draw(&ed.d.arch, &s);
+        // 뒤 벽 아래 변은 앞 벽(1900~4100) 자리에서 끊겨 두 토막
+        let bottoms: Vec<(f64, f64)> = shapes
+            .iter()
+            .filter_map(|(l, s)| match s {
+                Shape::Line { a, b } if *l == "A-SECT-VIEW" && a.y == 0.0 && b.y == 0.0 => {
+                    Some((a.x, b.x))
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            bottoms.contains(&(0.0, 1900.0)) && bottoms.contains(&(4100.0, 10000.0)),
+            "{bottoms:?}"
+        );
+        assert!(
+            !bottoms
+                .iter()
+                .any(|(a, b)| *a < 3000.0 && *b > 3000.0 && *b - *a > 5000.0),
+            "{bottoms:?}"
         );
     }
 }

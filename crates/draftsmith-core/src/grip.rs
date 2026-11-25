@@ -32,7 +32,7 @@ pub fn grips(s: &Shape) -> Vec<Vec2> {
         Shape::Ellipse { center, .. } => vec![*center],
         Shape::Text(t) => vec![t.at],
         Shape::Insert { at, .. } => vec![*at],
-        Shape::Fill { .. } | Shape::Segments { .. } => Vec::new(),
+        Shape::Fill { .. } | Shape::Segments { .. } | Shape::Hatch { .. } => Vec::new(),
     }
 }
 

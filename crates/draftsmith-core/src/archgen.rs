@@ -352,11 +352,11 @@ pub fn with_arch_owned(d: &Drawing) -> Option<(Drawing, Vec<(String, u64)>)> {
 /// 축척별 표현 (§42): 글자·그리드 기호는 축척에 맞춰 (종이 위 2.5 mm 등), 1:200 보다 작으면 문 열림 호·창호 기호·
 /// 실 면적 글자를 뺀다
 pub fn with_arch_scaled(d: &Drawing, scale: f64) -> Option<(Drawing, Vec<(String, u64)>)> {
-    let has_insert = d
+    let has_special = d
         .entities
         .iter()
-        .any(|e| matches!(e.shape, Shape::Insert { .. }));
-    if d.arch.is_empty() && !has_insert {
+        .any(|e| matches!(e.shape, Shape::Insert { .. } | Shape::Hatch { .. }));
+    if d.arch.is_empty() && !has_special {
         return None;
     }
     let mut out = d.clone();
@@ -366,6 +366,12 @@ pub fn with_arch_scaled(d: &Drawing, scale: f64) -> Option<(Drawing, Vec<(String
         .map(|(_, (k, id))| (k.to_string(), *id))
         .collect();
     out.entities.extend(made.into_iter().map(|(e, _)| e));
+    // 무늬 해치는 화면·출력용 선분으로 (번호는 그대로)
+    for e in out.entities.iter_mut() {
+        if matches!(e.shape, Shape::Hatch { .. }) {
+            e.shape = e.shape.drawn();
+        }
+    }
     Some((out, owners))
 }
 

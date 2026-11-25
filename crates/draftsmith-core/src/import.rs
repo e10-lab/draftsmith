@@ -13,7 +13,7 @@ use thiserror::Error;
 
 use crate::curve;
 use crate::drawing::{Drawing, Entity, LinePattern, LineStyle, Shape, TextShape, VAlign};
-use crate::fill::{self, PatternLine};
+use crate::fill::PatternLine;
 use crate::geom::{Affine, Bbox, Vec2};
 use crate::layout::{Layout, ViewportView};
 use crate::text::{plain_mtext, plain_text};
@@ -435,21 +435,14 @@ impl<'a> Converter<'a> {
                 dashes: l.dash_lengths.clone(),
             })
             .collect();
+        // 무늬 해치는 무늬 정의째 (§45) — 화면에는 무늬 선분이 나온다
         let shape = if h.is_solid || lines.is_empty() {
             Shape::Fill { loops }
         } else {
-            match fill::pattern_segments(&loops, &lines, MAX_PATTERN_SEGMENTS) {
-                Some(segs) => Shape::Segments { lines: segs },
-                None => {
-                    // 너무 촘촘한 무늬(축척이 잘못된 해치 등): 경계선만
-                    self.skip("HATCH(무늬 과밀 — 경계선만)");
-                    Shape::Segments {
-                        lines: loops
-                            .iter()
-                            .flat_map(|r| (0..r.len()).map(move |i| (r[i], r[(i + 1) % r.len()])))
-                            .collect(),
-                    }
-                }
+            Shape::Hatch {
+                loops,
+                lines,
+                name: h.pattern.name.clone(),
             }
         };
         self.push(layer, color, shape, &place);
@@ -462,6 +455,92 @@ impl<'a> Converter<'a> {
         let b = x.base();
         if b.normal.x.abs() > 1e-9 || b.normal.y.abs() > 1e-9 || b.normal.z <= 0.0 {
             return false;
+        }
+        // 반지름·지름·각도: (종류, a, b, 꼭짓점, 호 반지름) (§45)
+        use crate::arch::DimKind as K;
+        let special: Option<(K, Vec2, Vec2, Option<Vec2>, f64)> = match x {
+            D::Radius(r) => Some((
+                K::Radius,
+                v2(&r.angle_vertex),
+                v2(&r.definition_point),
+                None,
+                0.0,
+            )),
+            D::Diameter(r) => {
+                let (p, q) = (v2(&r.angle_vertex), v2(&r.definition_point));
+                Some((K::Diameter, p.lerp(q, 0.5), q, None, 0.0))
+            }
+            D::Angular3Pt(g) => {
+                let v = v2(&g.angle_vertex);
+                let arc = if g.definition_point.x != 0.0 || g.definition_point.y != 0.0 {
+                    v2(&g.definition_point)
+                } else {
+                    v2(&b.text_middle_point)
+                };
+                Some((
+                    K::Angle,
+                    v2(&g.first_point),
+                    v2(&g.second_point),
+                    Some(v),
+                    v.dist(arc),
+                ))
+            }
+            D::Angular2Ln(g) => {
+                // 두 선 (first→second, vertex→definition) 의 교점이 꼭짓점, 각 선에서 꼭짓점에서 먼 끝이 반직선 위 점
+                let (a0, a1, b0, b1) = (
+                    v2(&g.first_point),
+                    v2(&g.second_point),
+                    v2(&g.angle_vertex),
+                    v2(&g.definition_point),
+                );
+                let (r, t) = (
+                    Vec2::new(a1.x - a0.x, a1.y - a0.y),
+                    Vec2::new(b1.x - b0.x, b1.y - b0.y),
+                );
+                let den = r.x * t.y - r.y * t.x;
+                if den.abs() < 1e-12 {
+                    return false;
+                }
+                let k = ((b0.x - a0.x) * t.y - (b0.y - a0.y) * t.x) / den;
+                let v = Vec2::new(a0.x + r.x * k, a0.y + r.y * k);
+                let far = |p: Vec2, q: Vec2| if v.dist(p) >= v.dist(q) { p } else { q };
+                Some((
+                    K::Angle,
+                    far(a0, a1),
+                    far(b0, b1),
+                    Some(v),
+                    v.dist(v2(&g.dimension_arc)),
+                ))
+            }
+            _ => None,
+        };
+        if let Some((kind, a, bb, vertex, rad)) = special {
+            let text_height = self.dim_text_height(&b.block_name);
+            let text = match b.user_text.as_deref() {
+                Some(t) if !t.trim().is_empty() && t.trim() != "<>" => crate::text::plain_mtext(t),
+                _ => String::new(),
+            };
+            let _ = self.layer(&b.common.layer);
+            let m = &mut self.d.arch;
+            let level = m.ensure_level();
+            let id = m.new_id();
+            m.dims.push(crate::arch::Dim {
+                id,
+                level,
+                a,
+                b: bb,
+                vertex,
+                offset: rad,
+                kind,
+                text_height,
+                text,
+                layer: b.common.layer.clone(),
+                arrow: true,
+                plain: true,
+                precision: self.doc.header.dim_decimal_places.clamp(0, 4) as u8,
+                ..Default::default()
+            });
+            return true;
         }
         let (p1, p2, dp, rotation) = match x {
             D::Linear(l) => (
@@ -545,6 +624,27 @@ impl<'a> Converter<'a> {
             ..Default::default()
         });
         true
+    }
+
+    /// 치수 글자 높이: 치수 블록(*D) 안 글자에서, 없으면 DIMTXT × DIMSCALE, 그것도 없으면 250
+    fn dim_text_height(&self, block: &str) -> f64 {
+        let doc = self.doc;
+        let from_block = doc.block_records.get(block).and_then(|_| {
+            doc.entities_in_block(block).find_map(|e| match e {
+                EntityType::Text(t) => Some(t.height),
+                EntityType::MText(t) => Some(t.height),
+                _ => None,
+            })
+        });
+        let header = doc.header.dim_text_height
+            * if doc.header.dim_scale > 0.0 {
+                doc.header.dim_scale
+            } else {
+                1.0
+            };
+        from_block
+            .filter(|h| *h > 0.0)
+            .unwrap_or(if header > 0.0 { header } else { 250.0 })
     }
 
     /// 모형 공간의 블록 참조를 `Shape::Insert` 로 살린다: 평면(+Z)이고 보이는 속성값이 없을 때 (배열은 칸마다 하나씩).

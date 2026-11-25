@@ -53,6 +53,9 @@ enum Cmd {
         /// 건축 객체를 펼칠 층 이름 (없으면 지금 층)
         #[arg(long)]
         level: Option<String>,
+        /// 모든 층을 나란히 한 파일에
+        #[arg(long)]
+        all_levels: bool,
     },
     /// PDF 로 출력
     Pdf {
@@ -222,7 +225,12 @@ fn main() -> Result<()> {
                 d.layouts.len()
             );
         }
-        Cmd::Export { file, out, level } => {
+        Cmd::Export {
+            file,
+            out,
+            level,
+            all_levels,
+        } => {
             let mut d = import::read_file(&file)?;
             if let Some(name) = level {
                 let l = d
@@ -233,7 +241,11 @@ fn main() -> Result<()> {
                     .ok_or_else(|| anyhow::anyhow!("층 「{name}」 이 없습니다"))?;
                 d.arch.active_level = l.id;
             }
-            draftsmith_core::export::write(&d, &out).map_err(anyhow::Error::msg)?;
+            if all_levels {
+                draftsmith_core::export::write_all_levels(&d, &out).map_err(anyhow::Error::msg)?;
+            } else {
+                draftsmith_core::export::write(&d, &out).map_err(anyhow::Error::msg)?;
+            }
             println!("{} 에 썼습니다", out.display());
         }
         Cmd::Ifc { file, out } => {

@@ -315,7 +315,7 @@ async function exportCad(format) {
   if (!app.doc) return;
   try {
     const p = await invoke(format === "ifc" ? "export_ifc" : "export_cad", { format });
-    status(p ? `${format.toUpperCase()} 내보내기: ${p}` : "내보내기를 취소했습니다");
+    status(p ? `${format.replace("-all", "").toUpperCase()} 내보내기: ${p}` : "내보내기를 취소했습니다");
   } catch (e) {
     status(`내보내지 못했습니다: ${e}`);
   }

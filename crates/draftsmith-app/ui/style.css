@@ -169,3 +169,5 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
 .bar .group { gap: 2px; }
 .bar button { padding: 3px 7px; }
 .bar select { max-width: 120px; }
+/* 내보내기·최근 파일 고르기는 폭 고정 (긴 항목 때문에 도구 막대가 두 줄이 되지 않게) */
+#export, #recent { width: 96px; }

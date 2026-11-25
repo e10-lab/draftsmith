@@ -83,6 +83,7 @@ pub fn text_box(t: &crate::drawing::TextShape) -> [Vec2; 4] {
 /// 점 p 에서 모양까지의 거리 (`tol` 은 곡선을 펼칠 때의 허용 오차)
 pub fn distance(shape: &Shape, p: Vec2, tol: f64) -> f64 {
     match shape {
+        Shape::Hatch { .. } => distance(&shape.drawn(), p, tol),
         Shape::Insert { .. } => f64::INFINITY,
         Shape::Line { a, b } => seg_dist(p, *a, *b),
         Shape::Polyline { points, closed } => {
@@ -278,6 +279,7 @@ pub fn properties(d: &Drawing, i: usize) -> Vec<(String, String)> {
     let deg = |r: f64| format!("{:.2}°", r.to_degrees().rem_euclid(360.0));
     let mut out: Vec<(String, String)> = Vec::new();
     let kind = match &e.shape {
+        Shape::Hatch { .. } => "해치 무늬",
         Shape::Insert { .. } => "블록 참조",
         Shape::Line { .. } => "선",
         Shape::Polyline { closed: true, .. } => "닫힌 폴리선",
@@ -306,6 +308,10 @@ pub fn properties(d: &Drawing, i: usize) -> Vec<(String, String)> {
         ),
     ));
     match &e.shape {
+        Shape::Hatch { name, loops, .. } => {
+            out.push(("무늬".into(), name.clone()));
+            out.push(("경계 고리".into(), loops.len().to_string()));
+        }
         Shape::Insert {
             block,
             at,
@@ -393,6 +399,7 @@ pub fn outline(shape: &Shape, tol: f64, limit: usize) -> Vec<(Vec2, Vec2)> {
         v
     };
     let mut out = match shape {
+        Shape::Hatch { .. } => return outline(&shape.drawn(), tol, limit),
         Shape::Insert { .. } => Vec::new(),
         Shape::Line { a, b } => vec![(*a, *b)],
         Shape::Polyline { points, closed } => {

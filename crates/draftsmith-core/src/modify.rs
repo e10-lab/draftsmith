@@ -918,9 +918,15 @@ pub fn hatch_shape(ring: Vec<Vec2>, pattern: &str, spacing: f64) -> Result<Shape
         ],
         _ => return Err(format!("모르는 무늬: {pattern}")),
     };
-    let segs = fill::pattern_segments(&[ring], &lines, 200_000)
-        .ok_or("무늬가 너무 촘촘합니다 — 간격을 키우세요")?;
-    Ok(Shape::Segments { lines: segs })
+    if fill::pattern_segments(std::slice::from_ref(&ring), &lines, 200_000).is_none() {
+        return Err("무늬가 너무 촘촘합니다 — 간격을 키우세요".into());
+    }
+    // 무늬 정의째 해치 객체로 (§45)
+    Ok(Shape::Hatch {
+        loops: vec![ring],
+        lines,
+        name: pattern.to_string(),
+    })
 }
 
 #[cfg(test)]
@@ -1031,7 +1037,8 @@ mod tests {
         let r = region_at(&v, Vec2::new(3.0, 2.0)).unwrap();
         assert!((ring_area(&r) - 50.0).abs() < 0.5, "{}", ring_area(&r));
         let h = hatch_shape(r, "사선", 1.0).unwrap();
-        assert!(matches!(h, Shape::Segments { ref lines } if !lines.is_empty()));
+        assert!(matches!(h, Shape::Hatch { ref lines, .. } if !lines.is_empty()));
+        assert!(matches!(h.drawn(), Shape::Segments { ref lines } if !lines.is_empty()));
     }
 
     #[test]

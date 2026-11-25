@@ -84,7 +84,7 @@ pub fn triangulate(loops: &[Vec<Vec2>]) -> Vec<Vec2> {
 }
 
 /// 해치 무늬 선 한 묶음 (DXF 에 저장된 값 — 축척·각도가 이미 적용됨)
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PatternLine {
     /// 선 방향 (라디안)
     pub angle: f64,
