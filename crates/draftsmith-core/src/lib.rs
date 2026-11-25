@@ -12,6 +12,7 @@ pub mod archgen;
 pub mod block;
 pub mod ctb;
 pub mod curve;
+pub mod demo;
 pub mod display;
 pub mod docfile;
 pub mod drawing;

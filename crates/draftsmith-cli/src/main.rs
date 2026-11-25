@@ -5,6 +5,8 @@
 //! - `dsmith bench 도면.dxf|dwg` : 읽기·표시 데이터 만들기 시간 (M0 ①·②)
 //! - `dsmith display 도면 출력.bin` : 표시 데이터를 파일로 (화면 시험용)
 //! - `dsmith ifc 도면.dsmith 출력.ifc` : 건축 객체를 IFC4 로
+//! - `dsmith demo 출력.dsmith` : 검증용 예제 건물
+//! - `dsmith export 도면 출력.dxf|dwg` : DXF·DWG 로 내보내기
 //! - `dsmith pdf 도면 출력.pdf [--paper A3] [--portrait] [--scale 100] [--mono] [--layout 이름]` : PDF 출력
 
 use std::path::PathBuf;
@@ -42,6 +44,16 @@ enum Cmd {
     Display { file: PathBuf, out: PathBuf },
     /// 건축 객체를 IFC4 로 (.dsmith)
     Ifc { file: PathBuf, out: PathBuf },
+    /// 검증용 예제 건물(2 층 주택)을 .dsmith 로
+    Demo { out: PathBuf },
+    /// DXF·DWG 로 내보내기 (확장자로 고름) — 앱 「내보내기」 와 같음
+    Export {
+        file: PathBuf,
+        out: PathBuf,
+        /// 건축 객체를 펼칠 층 이름 (없으면 지금 층)
+        #[arg(long)]
+        level: Option<String>,
+    },
     /// PDF 로 출력
     Pdf {
         file: PathBuf,
@@ -85,6 +97,20 @@ fn main() -> Result<()> {
                 }
             );
             println!("레이어    {} 개", d.layers.len());
+            if !d.arch.is_empty() {
+                let a = draftsmith_core::archgen::summary(&d.arch);
+                println!(
+                    "건축 객체 층 {} · 벽 {} · 문·창 {} · 실 {} · 기둥 {} · 계단 {} · 치수 {} · 그리드 {}",
+                    a.levels.len(),
+                    a.walls,
+                    a.openings,
+                    a.rooms,
+                    a.columns,
+                    a.stairs,
+                    a.dims,
+                    a.grids
+                );
+            }
             println!(
                 "객체      {} 개 (블록 참조 {} 개 펼침)",
                 d.entities.len(),
@@ -183,6 +209,32 @@ fn main() -> Result<()> {
         Cmd::Display { file, out } => {
             let d = shown(import::read_file(&file)?);
             std::fs::write(&out, display::segments(&d).to_bytes())?;
+        }
+        Cmd::Demo { out } => {
+            let d = draftsmith_core::demo::demo_building().map_err(anyhow::Error::msg)?;
+            draftsmith_core::docfile::save(&d, &out).map_err(anyhow::Error::msg)?;
+            println!(
+                "{} 에 썼습니다 (층 {} · 벽 {} · 실 {} · 시트 {})",
+                out.display(),
+                d.arch.levels.len(),
+                d.arch.walls.len(),
+                d.arch.rooms.len(),
+                d.layouts.len()
+            );
+        }
+        Cmd::Export { file, out, level } => {
+            let mut d = import::read_file(&file)?;
+            if let Some(name) = level {
+                let l = d
+                    .arch
+                    .levels
+                    .iter()
+                    .find(|l| l.name == name)
+                    .ok_or_else(|| anyhow::anyhow!("층 「{name}」 이 없습니다"))?;
+                d.arch.active_level = l.id;
+            }
+            draftsmith_core::export::write(&d, &out).map_err(anyhow::Error::msg)?;
+            println!("{} 에 썼습니다", out.display());
         }
         Cmd::Ifc { file, out } => {
             let d = import::read_file(&file)?;

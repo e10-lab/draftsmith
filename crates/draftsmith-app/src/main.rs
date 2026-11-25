@@ -484,10 +484,19 @@ fn export_cad(format: String, state: State<'_, AppState>) -> Result<Option<Strin
         .and_then(|p| p.file_stem())
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "도면".into());
+    // 건축 객체는 지금 층을 펼쳐 쓴다 — 층이 여럿이면 파일 이름에 층 이름 (§44)
+    let lv = if d.d.arch.levels.len() > 1 {
+        d.d.arch
+            .level(d.d.arch.active_level)
+            .map(|l| format!("-{}", l.name))
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
     let mut dlg = rfd::FileDialog::new()
         .set_title(format!("{} 로 내보내기", ext.to_uppercase()))
         .add_filter(ext.to_uppercase(), &[ext])
-        .set_file_name(format!("{stem}.{ext}"));
+        .set_file_name(format!("{stem}{lv}.{ext}"));
     if let Some(dir) = open.path.as_ref().and_then(|p| p.parent()) {
         dlg = dlg.set_directory(dir);
     }

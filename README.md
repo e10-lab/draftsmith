@@ -39,7 +39,7 @@
 | 건축 객체 고치기 | 눌러 고르면 옆 칸에서 두께·폭·이름·마감 등 바로 고침 |
 | 층 | 옆 칸 「층」 — 눌러 바꾸기, ＋ 더하기, ⧉ 지금 층 복사 |
 
-계획 전체는 [docs/ROADMAP.md](docs/ROADMAP.md), 결정과 근거는 [docs/implementation-notes.md](docs/implementation-notes.md).
+검증 결과는 [docs/verification.md](docs/verification.md). 계획 전체는 [docs/ROADMAP.md](docs/ROADMAP.md), 결정과 근거는 [docs/implementation-notes.md](docs/implementation-notes.md).
 
 ## 구조
 

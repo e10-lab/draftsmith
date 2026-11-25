@@ -232,6 +232,9 @@ fn put(doc: &mut CadDocument, d: &Drawing, e: &Entity, owner: Option<acadrust::t
 fn block_record(doc: &mut CadDocument, name: &str) -> acadrust::types::Handle {
     let mut br = BlockRecord::new(name);
     br.handle = doc.allocate_handle();
+    // BLOCK·ENDBLK 도 핸들이 있어야 한다 (없으면 0 — AutoCAD·ezdxf 가 거부, §44)
+    br.block_entity_handle = doc.allocate_handle();
+    br.block_end_handle = doc.allocate_handle();
     let h = br.handle;
     let _ = doc.block_records.add(br);
     h

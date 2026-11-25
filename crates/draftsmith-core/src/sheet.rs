@@ -147,7 +147,7 @@ pub fn edit_viewport(d: &Drawing, i: usize, k: usize, e: &VpEdit) -> Result<Layo
         v.view_height = v.height * s;
     }
     if e.fit {
-        let bb = model_for(d, level).bbox();
+        let bb = building_bbox(d, level).unwrap_or_else(|| model_for(d, level).bbox());
         if bb.is_empty() {
             return Err("모형에 그린 것이 없습니다".into());
         }
@@ -184,6 +184,33 @@ pub fn edit_viewport(d: &Drawing, i: usize, k: usize, e: &VpEdit) -> Result<Layo
         }
     }
     Ok(lay)
+}
+
+/// 그 층 건물(벽·실·기둥·계단·그리드) 범위 — 대지·단면도처럼 멀리 놓인 것은 빼고 (§44)
+pub fn building_bbox(d: &Drawing, level: Option<u64>) -> Option<crate::geom::Bbox> {
+    let m = &d.arch;
+    let lv = level
+        .filter(|l| m.levels.iter().any(|x| x.id == *l))
+        .unwrap_or(m.active_level);
+    let mut b = crate::geom::Bbox::EMPTY;
+    for w in m.walls.iter().filter(|w| w.level == lv) {
+        b.add(w.a);
+        b.add(w.b);
+    }
+    for r in m.rooms.iter().filter(|r| r.level == lv) {
+        r.boundary.iter().for_each(|p| b.add(*p));
+    }
+    for c in m.columns.iter().filter(|c| c.level == lv) {
+        b.add(c.at);
+    }
+    if b.is_empty() {
+        return None;
+    }
+    for g in &m.grids {
+        b.add(g.a);
+        b.add(g.b);
+    }
+    Some(b)
 }
 
 /// 뷰포트 하나 더하기 (§42): 종이 왼쪽 아래 1/3 크기, 첫 뷰포트와 같은 가운데·축척 (없으면 1:100)
@@ -453,8 +480,7 @@ pub fn make(d: &mut Drawing, req: &SheetReq) -> Result<Layout, String> {
     // 뷰포트: 틀 안, 표제란 위 띠는 비움 (도면 목록 시트는 뷰포트 없음)
     let (vx0, vy0, vx1, vy1) = (l + 2.0, b + th + 2.0, r - 2.0, t - 2.0);
     let (vw, vh) = (vx1 - vx0, vy1 - vy0);
-    let model = model_for(d, req.level);
-    let bb = model.bbox();
+    let bb = building_bbox(d, req.level).unwrap_or_else(|| model_for(d, req.level).bbox());
     let view_center = if bb.is_empty() {
         Vec2::new(vw * req.scale / 2.0, vh * req.scale / 2.0)
     } else {

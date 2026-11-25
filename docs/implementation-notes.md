@@ -461,3 +461,10 @@ OverallHeight·Width), 실(IfcSpace, 이름·면적 LongName, 층고 돌출), �
 - 치수 소수 자리(`precision` 0~4): 속성 칸·치수 스타일에서. 소수 끝 0 은 뺀다(AutoCAD DIMZIN 처럼 3000.00 → 3000).
   가져온 치수는 머리글 DIMDEC.
 - 반지름·지름·각도 치수도 DXF·DWG 에 DIMENSION(반지름·지름·3 점 각도)과 모양 블록 *D 로 쓴다.
+
+## §44 최초 버전 검증 (2026-11-25)
+
+결과와 다시 하는 법은 `docs/verification.md`. 검증용 예제 건물(`demo::demo_building`, `dsmith demo`)과 `dsmith export
+[--level]` 을 더했다. 외부 도구(ezdxf 감사, IfcOpenShell 스키마·형상)로 확인하다 찾은 결함: 블록 정의 BLOCK·ENDBLK 핸들 0
+(고침), 새 시트가 대지·단면도까지 포함한 범위 가운데를 봄(그 층 건물 범위로 — `sheet::building_bbox`), 내보내기가 지금 층만
+펼침(파일 이름에 층·CLI `--level`), 건축 객체만 있는 도면의 객체 수 표시.

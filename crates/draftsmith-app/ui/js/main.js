@@ -269,6 +269,7 @@ async function open(path) {
     const t = await setDoc(st, false);
     status(
       `${base(path)} · 객체 ${fmt(st.entities)} 개` +
+        (st.arch.walls || st.arch.rooms ? ` · 건축 객체 층 ${st.arch.levels.length} · 벽 ${st.arch.walls} · 실 ${st.arch.rooms}` : "") +
         (st.inserts ? ` (블록 참조 ${fmt(st.inserts)} 개)` : "") +
         (st.recovered ? " · 깨진 곳이 있어 복구해서 읽음" : "") +
         ` · 읽기 ${ms(st.read_ms)} · ` +

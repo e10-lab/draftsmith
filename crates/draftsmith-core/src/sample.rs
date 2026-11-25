@@ -27,6 +27,8 @@ fn on(mut e: EntityType, layer: &str, color: Color) -> EntityType {
 fn define_door(doc: &mut CadDocument) {
     let mut br = BlockRecord::new(DOOR);
     br.handle = doc.allocate_handle();
+    br.block_entity_handle = doc.allocate_handle();
+    br.block_end_handle = doc.allocate_handle();
     let owner = br.handle;
     let _ = doc.block_records.add(br);
     let mut arc = Arc::new();
@@ -58,6 +60,8 @@ fn define_dimension_block(
 ) {
     let mut br = BlockRecord::new(name);
     br.handle = doc.allocate_handle();
+    br.block_entity_handle = doc.allocate_handle();
+    br.block_end_handle = doc.allocate_handle();
     let owner = br.handle;
     let _ = doc.block_records.add(br);
     let v = |x: f64, y: f64| Vector3::new(x, y, 0.0);
