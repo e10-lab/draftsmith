@@ -219,6 +219,10 @@ pub fn demo_building() -> Result<Drawing, String> {
             list: false,
         });
     }
+    // 반자높이 2400 (§55)
+    for r in d.arch.rooms.iter_mut() {
+        r.ceiling = Some(2400.0);
+    }
     for r in reqs {
         let l = sheet::make(&mut d, &r)?;
         d.layouts.push(l);

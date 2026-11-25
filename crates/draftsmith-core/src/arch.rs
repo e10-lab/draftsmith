@@ -295,6 +295,9 @@ pub struct Room {
     pub finish_wall: String,
     #[serde(default)]
     pub finish_ceiling: String,
+    /// 반자높이 (바닥에서 천장까지, mm). 없으면 정하지 않음 (§55)
+    #[serde(default)]
+    pub ceiling: Option<f64>,
 }
 
 impl Room {
@@ -356,6 +359,9 @@ pub struct Site {
     /// 용적률 한도 (%)
     #[serde(default)]
     pub far_limit: f64,
+    /// 지번 (지적도에서 고른 필지 안 글자, §56)
+    #[serde(default)]
+    pub parcel: String,
 }
 
 /// 치수 종류 (§36)

@@ -428,6 +428,21 @@ pub struct Drawing {
     pub arch: crate::arch::ArchModel,
     /// 블록 정의 (DraftSmith 에서 만든 것 — 가져온 DWG 블록은 펼쳐서 들어온다)
     pub blocks: Vec<Block>,
+    /// 가져온 글자들이 쓰던 글꼴 (글자 스타일별, §57) — 화면·PDF 는 모두 내장 글꼴로 대체
+    pub fonts: Vec<FontUse>,
+}
+
+/// 글자 스타일 하나가 쓰던 글꼴과 글자 수 (§57)
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct FontUse {
+    pub style: String,
+    /// 글꼴 파일 (SHX 또는 TTF 이름)
+    pub font: String,
+    /// 큰 글꼴 (한글 SHX 등)
+    pub big_font: String,
+    /// 이 스타일로 쓴 글자 객체 수 (블록 안 포함, 펼친 수)
+    pub count: usize,
 }
 
 /// 블록 참조의 속성값 하나: 태그와 글자 (값은 `text.value`, 위치는 블록 안 좌표)

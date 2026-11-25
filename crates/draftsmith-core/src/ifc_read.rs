@@ -1083,6 +1083,7 @@ pub fn read(text: &str) -> Result<Drawing, String> {
             finish_floor: String::new(),
             finish_wall: String::new(),
             finish_ceiling: String::new(),
+            ceiling: None,
         });
     }
 

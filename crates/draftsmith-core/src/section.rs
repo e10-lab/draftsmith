@@ -177,6 +177,16 @@ pub fn draw(m: &ArchModel, s: &Section) -> Vec<(&'static str, Shape)> {
             for pair in ts.chunks(2) {
                 if let [t0, t1] = pair {
                     cut(&mut out, *t0, *t1, z0 - 150.0, z0);
+                    // 반자(천장) 선 (§55)
+                    if let Some(c) = r.ceiling {
+                        out.push((
+                            "A-CLNG",
+                            Shape::Line {
+                                a: p(*t0, z0 + c),
+                                b: p(*t1, z0 + c),
+                            },
+                        ));
+                    }
                     if Some(l.id) == top_level {
                         let zt = z0 + l.height;
                         cut(&mut out, *t0, *t1, zt, zt + 200.0);

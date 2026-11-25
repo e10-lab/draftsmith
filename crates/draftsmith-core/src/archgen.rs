@@ -29,6 +29,7 @@ pub const LAYERS: &[(&str, [u8; 3])] = &[
     ("A-COLS-PATT", [128, 128, 128]),
     ("A-STRS", [255, 255, 255]),
     ("S-BEAM", [0, 191, 255]),
+    ("A-CLNG", [255, 191, 0]),
     ("A-ANNO-DIMS", [0, 255, 0]),
     ("A-SECT", [255, 255, 255]),
     ("A-SECT-PATT", [128, 128, 128]),
@@ -1013,6 +1014,8 @@ pub enum ArchReq {
         coverage_limit: f64,
         far_limit: f64,
     },
+    /// 지적도 필지 안을 눌러 대지 경계로 (§56)
+    SiteAt { at: [f64; 2] },
     /// 지우기
     Delete { what: String, id: u64 },
     /// 속성 고치기 (이름=값 목록)
@@ -1413,6 +1416,96 @@ pub fn find_room(m: &ArchModel, p: Vec2) -> Option<Vec<Vec2>> {
     (poly.len() >= 3).then_some(poly)
 }
 
+/// 지적도에서 점을 품은 필지 (§56): 점을 품은 가장 작은 닫힌 폴리선, 없으면 둘레 선분들(선·폴리선)이 이루는 면을
+/// 점 둘레 20 m → 100 m → 500 m 범위에서 찾는다. 필지 안의 숫자 든 글자 중 가운데에 가까운 것을 지번으로.
+pub fn parcel_at(d: &Drawing, p: Vec2) -> Option<(Vec<Vec2>, String)> {
+    let visible = |e: &&Entity| d.layers.get(e.layer as usize).is_none_or(|l| l.visible);
+    let area = |r: &[Vec2]| poly_area(r).abs();
+    let mut ring: Option<Vec<Vec2>> = None;
+    // 선분 그래프의 면 먼저 (필지 선이 낱개 선이어도, 큰 닫힌 선 안의 작은 필지여도)
+    {
+        let mut segs: Vec<(Vec2, Vec2)> = Vec::new();
+        for e in d.entities.iter().filter(visible) {
+            match &e.shape {
+                Shape::Line { a, b } => segs.push((*a, *b)),
+                Shape::Polyline { points, closed } => {
+                    let n = points.len();
+                    let m = if *closed { n } else { n.saturating_sub(1) };
+                    for i in 0..m {
+                        segs.push((points[i].0, points[(i + 1) % n].0));
+                    }
+                }
+                _ => {}
+            }
+        }
+        // 범위는 mm 기준 — 단위가 m·cm 인 지적도면 줄인다
+        let k = match d.units {
+            6 => 0.001,
+            5 => 0.01,
+            _ => 1.0,
+        };
+        for r in [20_000.0 * k, 100_000.0 * k, 500_000.0 * k] {
+            let near: Vec<(Vec2, Vec2)> = segs
+                .iter()
+                .filter(|(a, b)| {
+                    a.x.min(b.x) <= p.x + r
+                        && a.x.max(b.x) >= p.x - r
+                        && a.y.min(b.y) <= p.y + r
+                        && a.y.max(b.y) >= p.y - r
+                })
+                .copied()
+                .collect();
+            if near.len() > 20_000 {
+                break;
+            }
+            if let Some(f) = face_around(&near, p) {
+                ring = Some(f);
+                break;
+            }
+        }
+    }
+    if ring.is_none() {
+        for e in d.entities.iter().filter(visible) {
+            if let Shape::Polyline { points, closed } = &e.shape {
+                let mut r: Vec<Vec2> = points.iter().map(|(q, _)| *q).collect();
+                if !*closed && r.len() > 3 && r[0].dist(*r.last().unwrap()) < 1e-6 {
+                    r.pop();
+                } else if !*closed {
+                    continue;
+                }
+                if r.len() >= 3
+                    && crate::fill::inside(p, &r)
+                    && ring.as_ref().is_none_or(|b| area(&r) < area(b))
+                {
+                    ring = Some(r);
+                }
+            }
+        }
+    }
+    let ring = ring?;
+    let n = ring.len() as f64;
+    let c = ring.iter().fold(Vec2::default(), |s, q| {
+        Vec2::new(s.x + q.x / n, s.y + q.y / n)
+    });
+    let parcel = d
+        .entities
+        .iter()
+        .filter(visible)
+        .filter_map(|e| match &e.shape {
+            Shape::Text(t)
+                if t.value.chars().any(|ch| ch.is_ascii_digit())
+                    && crate::fill::inside(t.at, &ring) =>
+            {
+                Some((t.at.dist(c), t.value.trim().to_string()))
+            }
+            _ => None,
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|x| x.1)
+        .unwrap_or_default();
+    Some((ring, parcel))
+}
+
 /// 선분들이 이루는 평면 그래프에서 점 p 를 둘러싼 면 (반시계, 일직선 꼭짓점은 뺌)
 pub fn face_around(segs: &[(Vec2, Vec2)], p: Vec2) -> Option<Vec<Vec2>> {
     use std::collections::HashMap;
@@ -1606,6 +1699,14 @@ fn set_field(m: &mut ArchModel, what: &str, id: u64, k: &str, v: &str) -> Result
                 "바닥 마감" => r.finish_floor = v.trim().to_string(),
                 "벽 마감" => r.finish_wall = v.trim().to_string(),
                 "천장 마감" => r.finish_ceiling = v.trim().to_string(),
+                // 반자높이 (빈칸이면 없음) — §55
+                "천장 높이" => {
+                    r.ceiling = if v.trim().is_empty() {
+                        None
+                    } else {
+                        Some(num()?.max(1.0))
+                    }
+                }
                 _ => {}
             }
         }
@@ -1795,6 +1896,7 @@ pub fn apply(ed: &mut Editor, req: ArchReq) -> Result<(), String> {
                 finish_floor: String::new(),
                 finish_wall: String::new(),
                 finish_ceiling: String::new(),
+                ceiling: None,
             });
         }
         ArchReq::RoomAt { at, name } => {
@@ -1809,6 +1911,7 @@ pub fn apply(ed: &mut Editor, req: ArchReq) -> Result<(), String> {
                 finish_floor: String::new(),
                 finish_wall: String::new(),
                 finish_ceiling: String::new(),
+                ceiling: None,
             });
         }
         ArchReq::Grid { a, b, label } => {
@@ -2030,7 +2133,20 @@ pub fn apply(ed: &mut Editor, req: ArchReq) -> Result<(), String> {
                 zone,
                 coverage_limit,
                 far_limit,
+                parcel: m.site.parcel.clone(),
             };
+        }
+        ArchReq::SiteAt { at } => {
+            let (ring, parcel) = parcel_at(&ed.d, p2(at)).ok_or(
+                "이 점을 둘러싼 닫힌 필지 선을 찾지 못했습니다 — 지적도 선 안쪽을 누르세요",
+            )?;
+            if m.site.zone.is_empty() && m.site.coverage_limit == 0.0 {
+                m.site.zone = "제2종일반주거지역".into();
+                m.site.coverage_limit = 60.0;
+                m.site.far_limit = 200.0;
+            }
+            m.site.boundary = ring;
+            m.site.parcel = parcel;
         }
         ArchReq::Delete { what, id } => match what.as_str() {
             "wall" => {
@@ -2377,6 +2493,10 @@ pub fn properties(m: &ArchModel, what: &str, id: u64) -> Vec<(String, String)> {
                 out.push(("바닥 마감:고침".into(), r.finish_floor.clone()));
                 out.push(("벽 마감:고침".into(), r.finish_wall.clone()));
                 out.push(("천장 마감:고침".into(), r.finish_ceiling.clone()));
+                out.push((
+                    "천장 높이:고침".into(),
+                    r.ceiling.map(f).unwrap_or_default(),
+                ));
             }
         }
         "section" => {
@@ -2750,7 +2870,8 @@ fn chain_polygon(walls: &[&Wall]) -> Option<Vec<Vec2>> {
 
 pub fn tables(d: &Drawing) -> Tables {
     let m = &d.arch;
-    let f2 = |v: f64| format!("{v:.2}");
+    // 반올림해 0 이 되는 음수는 「-0.00」 이 아니라 0.00 으로
+    let f2 = |v: f64| format!("{:.2}", if v.abs() < 0.005 { 0.0 } else { v });
     let mut out = Vec::new();
 
     // 면적표
@@ -2870,6 +2991,7 @@ pub fn tables(d: &Drawing) -> Tables {
             "바닥".into(),
             "벽".into(),
             "천장".into(),
+            "천장 높이".into(),
         ],
         rows: m
             .levels
@@ -2885,11 +3007,50 @@ pub fn tables(d: &Drawing) -> Tables {
                             r.finish_floor.clone(),
                             r.finish_wall.clone(),
                             r.finish_ceiling.clone(),
+                            r.ceiling.map(|c| format!("{c:.0}")).unwrap_or_default(),
                         ]
                     })
             })
             .collect(),
     });
+
+    // 글꼴 (§57): 가져온 도면의 글자 스타일이 쓰던 글꼴과 대체
+    if !d.fonts.is_empty() {
+        let shx = |f: &str| {
+            f.to_ascii_lowercase().ends_with(".shx") || (!f.is_empty() && !f.contains('.'))
+        };
+        out.push(Table {
+            name: "글꼴".into(),
+            title: "글꼴 (가져온 도면)".into(),
+            head: vec![
+                "글자 스타일".into(),
+                "글꼴".into(),
+                "큰 글꼴".into(),
+                "글자 수".into(),
+                "화면·PDF".into(),
+            ],
+            rows: d
+                .fonts
+                .iter()
+                .map(|f| {
+                    let how = if f.font.is_empty() {
+                        "Pretendard (스타일 정보 없음)".to_string()
+                    } else if shx(&f.font) || shx(&f.big_font) {
+                        "Pretendard 로 대체 (SHX 모양 아님 — 폭이 다를 수 있음)".into()
+                    } else {
+                        format!("Pretendard 로 대체 ({})", f.font)
+                    };
+                    vec![
+                        f.style.clone(),
+                        f.font.clone(),
+                        f.big_font.clone(),
+                        f.count.to_string(),
+                        how,
+                    ]
+                })
+                .collect(),
+        });
+    }
 
     // 법규 검토 (건폐율·용적률)
     let site = poly_area(&m.site.boundary) * 1e-6;
@@ -2919,12 +3080,18 @@ pub fn tables(d: &Drawing) -> Tables {
     let far = pct(far_area);
     out.push(Table {
         name: "법규검토".into(),
-        title: "법규 검토 (건폐율·용적률)".into(),
+        title: "법규 검토 (건폐율·용적률·반자높이)".into(),
         head: vec!["항목".into(), "값".into(), "한도".into(), "판정".into()],
         rows: vec![
             vec![
                 "대지 면적 (㎡)".into(),
                 f2(site),
+                String::new(),
+                String::new(),
+            ],
+            vec![
+                "지번".into(),
+                m.site.parcel.clone(),
                 String::new(),
                 String::new(),
             ],
@@ -2960,6 +3127,39 @@ pub fn tables(d: &Drawing) -> Tables {
             ],
         ],
     });
+    // 거실 반자높이 2.1 m 이상 (건축법 시행령 제50조) — 천장 높이를 정한 거실만 (§55)
+    if let Some(t) = out.iter_mut().find(|t| t.name == "법규검토") {
+        let not_living = [
+            "욕실",
+            "화장실",
+            "현관",
+            "창고",
+            "계단",
+            "복도",
+            "다용도",
+            "드레스",
+            "발코니",
+            "기계",
+        ];
+        for l in &m.levels {
+            for r in m.rooms.iter().filter(|r| r.level == l.id) {
+                let Some(c) = r.ceiling else { continue };
+                if not_living.iter().any(|w| r.name.contains(w)) {
+                    continue;
+                }
+                t.rows.push(vec![
+                    format!("반자높이 {} {} (m)", l.name, r.name),
+                    format!("{:.2}", c / 1000.0),
+                    "2.10 이상".into(),
+                    if c >= 2100.0 - 1e-6 {
+                        "적합".into()
+                    } else {
+                        "미달".into()
+                    },
+                ]);
+            }
+        }
+    }
     // 레이어 검사 (§40): 건축 도면 레이어 이름 표준(분야 글자-주 4 자 내외[-부])과 「0」 레이어 객체
     out.push(layer_check(d));
     // 도면 목록 (배치 순서)
@@ -3025,6 +3225,144 @@ mod tests {
         .unwrap();
     }
 
+    /// 지적도 필지 → 대지 경계·지번 (§56)
+    #[test]
+    fn site_from_parcel() {
+        let mut ed = Editor::new(new_drawing());
+        let pl = |pts: &[[f64; 2]]| Shape::Polyline {
+            points: pts.iter().map(|q| (Vec2::new(q[0], q[1]), 0.0)).collect(),
+            closed: true,
+        };
+        let _ = ed.add_shapes(vec![
+            // 블록 전체(큰 닫힌 선)와 그 안의 ㄱ자 필지
+            pl(&[
+                [-50000.0, -50000.0],
+                [50000.0, -50000.0],
+                [50000.0, 50000.0],
+                [-50000.0, 50000.0],
+            ]),
+            pl(&[
+                [0.0, 0.0],
+                [20000.0, 0.0],
+                [20000.0, 8000.0],
+                [8000.0, 8000.0],
+                [8000.0, 15000.0],
+                [0.0, 15000.0],
+            ]),
+            Shape::Text(crate::drawing::TextShape {
+                at: Vec2::new(3000.0, 5000.0),
+                height: 1000.0,
+                rotation: 0.0,
+                width_factor: 1.0,
+                halign: 0.0,
+                valign: crate::drawing::VAlign::Baseline,
+                value: "123-4 대".into(),
+            }),
+            // 선으로만 된 옆 필지
+            Shape::Line {
+                a: Vec2::new(20000.0, 0.0),
+                b: Vec2::new(30000.0, 0.0),
+            },
+            Shape::Line {
+                a: Vec2::new(30000.0, 0.0),
+                b: Vec2::new(30000.0, 8000.0),
+            },
+            Shape::Line {
+                a: Vec2::new(30000.0, 8000.0),
+                b: Vec2::new(20000.0, 8000.0),
+            },
+        ]);
+        apply(
+            &mut ed,
+            ArchReq::SiteAt {
+                at: [2000.0, 12000.0],
+            },
+        )
+        .unwrap();
+        let s = &ed.d.arch.site;
+        assert_eq!(s.boundary.len(), 6);
+        assert_eq!(s.parcel, "123-4 대");
+        assert!((poly_area(&s.boundary).abs() - (20000.0 * 8000.0 + 8000.0 * 7000.0)).abs() < 1.0);
+        let law = tables(&ed.d)
+            .tables
+            .into_iter()
+            .find(|t| t.name == "법규검토")
+            .unwrap();
+        assert!(
+            law.rows
+                .iter()
+                .any(|r| r[0] == "지번" && r[1] == "123-4 대")
+        );
+        // 선으로만 된 필지 (닫힌 선 「123-4」 필지 오른쪽 변과 선 셋이 둘러쌈)
+        apply(
+            &mut ed,
+            ArchReq::SiteAt {
+                at: [25000.0, 4000.0],
+            },
+        )
+        .unwrap();
+        assert!((poly_area(&ed.d.arch.site.boundary).abs() - 10000.0 * 8000.0).abs() < 1.0);
+    }
+
+    /// 반자높이 (§55): 속성으로 정하면 마감표·법규 검토·단면 천장선
+    #[test]
+    fn ceiling_height() {
+        let mut ed = Editor::new(new_drawing());
+        walls(
+            &mut ed,
+            &[[0.0, 0.0], [6000.0, 0.0], [6000.0, 4000.0], [0.0, 4000.0]],
+            true,
+        );
+        apply(
+            &mut ed,
+            ArchReq::RoomAt {
+                at: [1000.0, 1000.0],
+                name: "거실".into(),
+            },
+        )
+        .unwrap();
+        let id = ed.d.arch.rooms[0].id;
+        apply(
+            &mut ed,
+            ArchReq::Set {
+                what: "room".into(),
+                id,
+                fields: vec![("천장 높이".into(), "2000".into())],
+            },
+        )
+        .unwrap();
+        assert_eq!(ed.d.arch.rooms[0].ceiling, Some(2000.0));
+        let t = tables(&ed.d);
+        let law = t.tables.iter().find(|x| x.name == "법규검토").unwrap();
+        let row = law.rows.iter().find(|r| r[0].contains("반자높이")).unwrap();
+        assert_eq!((row[1].as_str(), row[3].as_str()), ("2.00", "미달"));
+        let fin = t.tables.iter().find(|x| x.name == "실별마감표").unwrap();
+        assert_eq!(fin.rows[0][5], "2000");
+        let sec = crate::section::draw(
+            &ed.d.arch,
+            &crate::arch::Section {
+                id: 0,
+                a: Vec2::new(-1000.0, 2000.0),
+                b: Vec2::new(7000.0, 2000.0),
+                name: "A".into(),
+                at: Vec2::new(0.0, -10000.0),
+            },
+        );
+        assert!(sec.iter().any(|(l, s)| *l == "A-CLNG"
+            && matches!(s, Shape::Line { a, .. } if (a.y - (-10000.0 + 2000.0)).abs() < 1e-6)));
+        // 빈칸이면 없음
+        apply(
+            &mut ed,
+            ArchReq::Set {
+                what: "room".into(),
+                id,
+                fields: vec![("천장 높이".into(), "".into())],
+            },
+        )
+        .unwrap();
+        assert_eq!(ed.d.arch.rooms[0].ceiling, None);
+    }
+
     /// 곡선 벽 (§54): 호 길이·점·위치, 두 반원 벽으로 둘러싼 둥근 실, 문, 손잡이로 굽히기, 평면·3D·IFC
     #[test]
     fn curved_walls() {
@@ -3062,6 +3400,7 @@ mod tests {
             finish_floor: String::new(),
             finish_wall: String::new(),
             finish_ceiling: String::new(),
+            ceiling: None,
         }
         .area();
         let want = pi * 2900.0 * 2900.0;
@@ -3234,6 +3573,7 @@ mod tests {
             finish_floor: String::new(),
             finish_wall: String::new(),
             finish_ceiling: String::new(),
+            ceiling: None,
         }
         .area();
         // 안쪽 치수: 7800×2800 + 2800×5000
@@ -3370,8 +3710,8 @@ mod tests {
         let law = t.tables.iter().find(|x| x.name == "법규검토").unwrap();
         // 대지 20 × 18 = 360 ㎡, 건축면적(외벽 중심선) 80 ㎡ → 22.22 %
         assert_eq!(law.rows[0][1], "360.00");
-        assert_eq!(law.rows[4][1], "22.22");
-        assert_eq!(law.rows[4][3], "적합");
+        assert_eq!(law.rows[5][1], "22.22");
+        assert_eq!(law.rows[5][3], "적합");
         let sched = t.tables.iter().find(|x| x.name == "창호일람표").unwrap();
         assert_eq!(sched.rows.len(), 2);
         assert!(table_csv(&t, "면적표").unwrap().contains("거실"));

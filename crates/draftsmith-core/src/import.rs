@@ -313,9 +313,11 @@ impl<'a> Converter<'a> {
                 }
             }
             EntityType::Text(x) => {
+                self.font_use(&x.style);
                 return self.push(layer, color, text_shape(x), &ocs(&x.normal).then(t));
             }
             EntityType::MText(x) => {
+                self.font_use(&x.style);
                 // 붙는 점 1–9: (위·가운데·아래) × (왼·가운데·오른)
                 let k = (x.attachment_point as i32 - 1).clamp(0, 8);
                 let valign = match k / 3 {
@@ -400,6 +402,42 @@ impl<'a> Converter<'a> {
             }
         };
         self.push(layer, color, shape, t);
+    }
+
+    /// 글자 스타일 쓰임 세기 (§57)
+    fn font_use(&mut self, style: &str) {
+        let key = if style.is_empty() { "Standard" } else { style };
+        match self
+            .d
+            .fonts
+            .iter_mut()
+            .find(|f| f.style.eq_ignore_ascii_case(key))
+        {
+            Some(f) => f.count += 1,
+            None => {
+                let st = self.doc.text_styles.get(key).or_else(|| {
+                    self.doc
+                        .text_styles
+                        .iter()
+                        .find(|s| s.name.eq_ignore_ascii_case(key))
+                });
+                let font = st
+                    .map(|s| {
+                        if s.true_type_font.is_empty() {
+                            s.font_file.clone()
+                        } else {
+                            s.true_type_font.clone()
+                        }
+                    })
+                    .unwrap_or_default();
+                self.d.fonts.push(crate::drawing::FontUse {
+                    style: key.to_string(),
+                    font,
+                    big_font: st.map(|s| s.big_font_file.clone()).unwrap_or_default(),
+                    count: 1,
+                });
+            }
+        }
     }
 
     /// 블록 참조 펼치기:
@@ -1383,6 +1421,31 @@ mod tests {
             Shape::Line { a, b } => (*a, *b),
             s => panic!("선이 아님: {s:?}"),
         }
+    }
+
+    /// 글자 스타일별 글꼴 쓰임 (§57)
+    #[test]
+    fn font_use_by_style() {
+        let mut doc = CadDocument::new();
+        let mut st = acadrust::tables::TextStyle::new("KOR");
+        st.font_file = "romans.shx".into();
+        st.big_font_file = "whgtxt.shx".into();
+        doc.text_styles.add(st).unwrap();
+        for k in 0..3 {
+            let mut t =
+                acadrust::entities::Text::with_value("가나다", Vector3::new(k as f64, 0.0, 0.0));
+            t.style = "KOR".into();
+            doc.add_entity(EntityType::Text(t)).unwrap();
+        }
+        let d = from_document(&doc);
+        let f = d.fonts.iter().find(|f| f.style == "KOR").unwrap();
+        assert_eq!(
+            (f.font.as_str(), f.big_font.as_str(), f.count),
+            ("romans.shx", "whgtxt.shx", 3)
+        );
+        let t = crate::archgen::tables(&d);
+        let g = t.tables.iter().find(|x| x.name == "글꼴").unwrap();
+        assert!(g.rows[0][4].contains("SHX"));
     }
 
     #[test]

@@ -828,8 +828,22 @@ class GridSetTool extends Tool {
 }
 
 class SiteTool extends PlineTool {
-  start() { this.say("대지 경계: 첫 점"); }
-  take(p) {
+  start() { this.say("대지 경계: 첫 점 — 지적도 필지 안을 눌러 고르려면 P"); }
+  input(t) {
+    if (!this.pts.length && ["P", "ㅔ", "필지", "지적"].includes(t.trim().toUpperCase())) {
+      this.pick = true;
+      this.say("대지: 지적도에서 대지가 될 필지 안을 누르세요 (지번 글자도 읽음)");
+      return true;
+    }
+    return super.input(t);
+  }
+  async take(p) {
+    // 필지 고르기 (§56)
+    if (this.pick) {
+      await this.app.apply({ kind: "arch", op: { kind: "site_at", at: p } });
+      this.app.done();
+      return;
+    }
     this.pts.push(p);
     this.say("대지 경계: 다음 점 (Enter 로 닫고 끝)");
   }
