@@ -369,20 +369,23 @@ async function dimStyle() {
     ["arrow", "끝 모양", app.dimArrow ? "화살표" : "사선", ["사선", "화살표"]],
     ["plain", "쉼표", app.dimPlain ? "아니오" : "예", ["예", "아니오"]],
     ["h", "글자 높이", String(app.textHeight)],
+    ["prec", "소수 자리", String(app.dimPrec ?? 0), ["0", "1", "2", "3"]],
   ]);
   if (!v) return;
   app.dimArrow = v.arrow === "화살표";
   app.dimPlain = v.plain === "아니오";
   if (Number(v.h) > 0) app.textHeight = Number(v.h);
-  invoke("set_setting", { key: "dimstyle", value: JSON.stringify([app.dimArrow, app.dimPlain, app.textHeight]) }).catch(() => {});
+  app.dimPrec = Number(v.prec) || 0;
+  invoke("set_setting", { key: "dimstyle", value: JSON.stringify([app.dimArrow, app.dimPlain, app.textHeight, app.dimPrec]) }).catch(() => {});
   status(`치수 스타일: ${v.arrow} · 쉼표 ${v.plain} · 글자 ${app.textHeight}`);
 }
 invoke("get_setting", { key: "dimstyle" }).then((v) => {
   try {
-    const [a, p, h] = JSON.parse(v);
+    const [a, p, h, d] = JSON.parse(v);
     app.dimArrow = !!a;
     app.dimPlain = !!p;
     if (h > 0) app.textHeight = h;
+    app.dimPrec = Number(d) || 0;
   } catch {
     /* 처음 */
   }

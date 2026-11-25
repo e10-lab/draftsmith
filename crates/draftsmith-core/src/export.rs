@@ -7,9 +7,9 @@
 use std::path::Path;
 
 use acadrust::entities::{
-    Arc, BoundaryEdge, BoundaryPath, Circle, Dimension, DimensionAligned, DimensionLinear, Ellipse,
-    Hatch, Insert, Line, LwPolyline, LwVertex, MText, PolylineEdge, Text, TextHorizontalAlignment,
-    TextVerticalAlignment,
+    Arc, BoundaryEdge, BoundaryPath, Circle, Dimension, DimensionAligned, DimensionAngular3Pt,
+    DimensionDiameter, DimensionLinear, DimensionRadius, Ellipse, Hatch, Insert, Line, LwPolyline,
+    LwVertex, MText, PolylineEdge, Text, TextHorizontalAlignment, TextVerticalAlignment,
 };
 use acadrust::tables::{BlockRecord, Layer as CadLayer, LineType, LineTypeElement};
 use acadrust::types::{Color, LineWeight, Vector2, Vector3};
@@ -297,11 +297,56 @@ pub fn to_document(model: &Drawing) -> CadDocument {
         let Some(dm) = model.arch.dims.iter().find(|x| x.id == id) else {
             continue;
         };
-        // 반지름·지름·각도 치수는 아직 선·글자로 (§36)
+        // 반지름·지름·각도 치수도 DIMENSION 과 그 모양 블록으로 (§43)
         if dm.kind != crate::arch::DimKind::Linear {
+            use crate::arch::DimKind as K;
+            let (a, b) = dm.ends(&model.arch);
+            let name = format!("*D{}", n + 1);
+            let h = block_record(&mut doc, &name);
             for e in &parts {
-                put(&mut doc, &d, e, None);
+                put(&mut doc, &d, e, Some(h));
             }
+            let mut dim = match dm.kind {
+                K::Radius => Dimension::Radius(DimensionRadius::new(v3(a), v3(b))),
+                K::Diameter => {
+                    let far = Vec2::new(2.0 * a.x - b.x, 2.0 * a.y - b.y);
+                    Dimension::Diameter(DimensionDiameter::new(v3(b), v3(far)))
+                }
+                _ => {
+                    let Some(v) = dm.vertex else { continue };
+                    let mut x = DimensionAngular3Pt::new(v3(v), v3(a), v3(b));
+                    // 호가 지나는 점 (두 반직선 사이 가운데)
+                    let (t0, t1) = ((a.y - v.y).atan2(a.x - v.x), (b.y - v.y).atan2(b.x - v.x));
+                    let mut sw = crate::curve::ccw_sweep(t0, t1);
+                    let mut s0 = t0;
+                    if sw > std::f64::consts::PI {
+                        s0 = t1;
+                        sw = std::f64::consts::TAU - sw;
+                    }
+                    let mid = s0 + sw / 2.0;
+                    let r = dm.offset.abs();
+                    x.definition_point = v3(Vec2::new(v.x + r * mid.cos(), v.y + r * mid.sin()));
+                    Dimension::Angular3Pt(x)
+                }
+            };
+            let bb = dim.base_mut();
+            bb.block_name = name;
+            bb.actual_measurement = match dm.kind {
+                K::Radius => a.dist(b),
+                K::Diameter => 2.0 * a.dist(b),
+                _ => bb.actual_measurement,
+            };
+            if !dm.text.trim().is_empty() {
+                bb.user_text = Some(dm.text.clone());
+            }
+            let layer = parts
+                .first()
+                .and_then(|e| d.layers.get(e.layer as usize))
+                .map(|l| l.name.clone())
+                .unwrap_or_else(|| "0".into());
+            let mut ent = EntityType::Dimension(Box::new(dim));
+            ent.common_mut().layer = layer;
+            let _ = doc.add_entity(ent);
             continue;
         }
         let Some(k) = dm.geom(&model.arch) else {
@@ -424,6 +469,7 @@ mod tests {
                 text_height: 250.0,
                 arrow: false,
                 plain: false,
+                precision: 0,
             },
         )
         .unwrap();
@@ -462,6 +508,77 @@ mod tests {
                 back.entities
                     .iter()
                     .any(|e| matches!(&e.shape, Shape::Text(t) if t.value == "2000")),
+                "{ext}"
+            );
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    #[test]
+    fn radial_and_angle_dims_become_dimensions() {
+        use crate::archgen::{ArchReq, apply, new_drawing};
+        let mut ed = crate::edit::Editor::new(new_drawing());
+        apply(
+            &mut ed,
+            ArchReq::DimRadial {
+                center: [0.0, 0.0],
+                point: [600.0, 0.0],
+                diameter: false,
+                text_height: 250.0,
+                arrow: true,
+                plain: false,
+            },
+        )
+        .unwrap();
+        apply(
+            &mut ed,
+            ArchReq::DimRadial {
+                center: [0.0, 0.0],
+                point: [0.0, 600.0],
+                diameter: true,
+                text_height: 250.0,
+                arrow: true,
+                plain: false,
+            },
+        )
+        .unwrap();
+        apply(
+            &mut ed,
+            ArchReq::DimAngle {
+                vertex: [0.0, 0.0],
+                a: [1000.0, 0.0],
+                b: [1000.0, 1000.0],
+                at: [800.0, 0.0],
+                text_height: 250.0,
+                arrow: true,
+            },
+        )
+        .unwrap();
+        let doc = to_document(&ed.d);
+        let kinds: Vec<&str> = doc
+            .entities()
+            .filter_map(|e| match e {
+                EntityType::Dimension(x) => Some(match x.as_ref() {
+                    Dimension::Radius(_) => "R",
+                    Dimension::Diameter(_) => "D",
+                    Dimension::Angular3Pt(_) => "A",
+                    _ => "?",
+                }),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(kinds, vec!["R", "D", "A"]);
+        for ext in ["dxf", "dwg"] {
+            let dir = std::env::temp_dir().join(format!("dsmith-rad-{}-{ext}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let p = dir.join(format!("r.{ext}"));
+            write(&ed.d, &p).unwrap();
+            let back = crate::archgen::shown(&crate::import::read_file(&p).unwrap());
+            // 모양 블록을 펼친 글자가 돌아온다
+            assert!(
+                back.entities
+                    .iter()
+                    .any(|e| matches!(&e.shape, Shape::Text(t) if t.value == "R600")),
                 "{ext}"
             );
             std::fs::remove_dir_all(&dir).ok();

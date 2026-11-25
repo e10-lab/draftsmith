@@ -493,7 +493,7 @@ pub fn fillet(
     r: f64,
 ) -> Result<(Shape, Shape, Option<Shape>), String> {
     let (Shape::Line { a: a0, b: a1 }, Shape::Line { a: b0, b: b1 }) = (a, b) else {
-        return Err("모깎기는 선 두 개, 선과 호·원, 폴리선 모서리에 됩니다".into());
+        return Err("모깎기는 선 두 개, 선과 호·원, 호·원 둘, 폴리선 모서리에 됩니다".into());
     };
     let x = raw_hits(&Piece::Seg(*a0, *a1), &Piece::Seg(*b0, *b1))
         .pop()
@@ -605,31 +605,7 @@ pub fn fillet_line_arc(
         *l1
     };
     let new_line = Shape::Line { a: far, b: tl };
-    // 호: 접점 각에서 나눠 고른 쪽을 남긴다 (접점이 호 밖이면 가까운 끝을 접점으로)
-    let ang = |p: Vec2| (p.y - c.y).atan2(p.x - c.x);
-    let th = ang(tc);
-    let new_curve = match curve {
-        Shape::Arc { start, end, .. } => {
-            let sw = ccw_sweep(*start, *end);
-            let at = ccw_sweep(*start, th).rem_euclid(TAU);
-            let (s0, e0) = if at > 1e-9 && at < sw - 1e-9 {
-                let pick = ccw_sweep(*start, ang(pc)).rem_euclid(TAU);
-                if pick < at { (*start, th) } else { (th, *end) }
-            } else {
-                // 호 밖: 시작·끝 중 각이 가까운 쪽을 접점으로
-                let ds = ccw_sweep(th, *start).min(ccw_sweep(*start, th));
-                let de = ccw_sweep(th, *end).min(ccw_sweep(*end, th));
-                if ds < de { (th, *end) } else { (*start, th) }
-            };
-            Shape::Arc {
-                center: c,
-                radius: big,
-                start: s0.rem_euclid(TAU),
-                end: e0.rem_euclid(TAU),
-            }
-        }
-        other => other.clone(),
-    };
+    let new_curve = trim_arc_to(curve, tc, pc);
     let (mut s0, mut e0) = (
         (tl.y - o.y).atan2(tl.x - o.x),
         (tc.y - o.y).atan2(tc.x - o.x),
@@ -640,6 +616,94 @@ pub fn fillet_line_arc(
     Ok((
         new_line,
         new_curve,
+        Shape::Arc {
+            center: o,
+            radius: r,
+            start: s0.rem_euclid(TAU),
+            end: e0.rem_euclid(TAU),
+        },
+    ))
+}
+
+/// 호를 접점 tc 에서 나눠 누른 점 pc 쪽을 남긴다 (접점이 호 밖이면 가까운 끝을 접점으로). 원은 그대로
+fn trim_arc_to(curve: &Shape, tc: Vec2, pc: Vec2) -> Shape {
+    let Shape::Arc {
+        center: c,
+        radius,
+        start,
+        end,
+    } = curve
+    else {
+        return curve.clone();
+    };
+    let ang = |p: Vec2| (p.y - c.y).atan2(p.x - c.x);
+    let th = ang(tc);
+    let sw = ccw_sweep(*start, *end);
+    let at = ccw_sweep(*start, th).rem_euclid(TAU);
+    let (s0, e0) = if at > 1e-9 && at < sw - 1e-9 {
+        let pick = ccw_sweep(*start, ang(pc)).rem_euclid(TAU);
+        if pick < at { (*start, th) } else { (th, *end) }
+    } else {
+        let ds = ccw_sweep(th, *start).min(ccw_sweep(*start, th));
+        let de = ccw_sweep(th, *end).min(ccw_sweep(*end, th));
+        if ds < de { (th, *end) } else { (*start, th) }
+    };
+    Shape::Arc {
+        center: *c,
+        radius: *radius,
+        start: s0.rem_euclid(TAU),
+        end: e0.rem_euclid(TAU),
+    }
+}
+
+/// 호·원 둘 사이 모깎기 (§43): 모깎기 원 중심은 두 원에서 각각 R±r 떨어진 원들의 교점 중 접점이 누른 점에 가까운 것
+pub fn fillet_arcs(
+    a: &Shape,
+    pa: Vec2,
+    b: &Shape,
+    pb: Vec2,
+    r: f64,
+) -> Result<(Shape, Shape, Shape), String> {
+    let circ = |s: &Shape| match s {
+        Shape::Arc { center, radius, .. } | Shape::Circle { center, radius } => {
+            Some((*center, *radius))
+        }
+        _ => None,
+    };
+    let ((c1, r1), (c2, r2)) = (
+        circ(a).ok_or("호·원이 아닙니다")?,
+        circ(b).ok_or("호·원이 아닙니다")?,
+    );
+    if r <= 1e-9 {
+        return Err("호와 호의 모깎기는 반지름이 있어야 합니다".into());
+    }
+    let mut best: Option<(f64, Vec2, Vec2, Vec2)> = None;
+    for k1 in [r1 + r, r1 - r] {
+        for k2 in [r2 + r, r2 - r] {
+            if k1 <= 1e-9 || k2 <= 1e-9 {
+                continue;
+            }
+            for o in circle_circle(c1, k1, c2, k2) {
+                let t1 = add(c1, mul(norm(sub(o, c1)), r1));
+                let t2 = add(c2, mul(norm(sub(o, c2)), r2));
+                let score = t1.dist(pa) + t2.dist(pb);
+                if best.as_ref().is_none_or(|x| score < x.0) {
+                    best = Some((score, o, t1, t2));
+                }
+            }
+        }
+    }
+    let (_, o, t1, t2) = best.ok_or("모깎기 원을 놓을 곳이 없습니다 — 반지름을 바꾸세요")?;
+    let (mut s0, mut e0) = (
+        (t1.y - o.y).atan2(t1.x - o.x),
+        (t2.y - o.y).atan2(t2.x - o.x),
+    );
+    if ccw_sweep(s0, e0) > PI {
+        std::mem::swap(&mut s0, &mut e0);
+    }
+    Ok((
+        trim_arc_to(a, t1, pa),
+        trim_arc_to(b, t2, pb),
         Shape::Arc {
             center: o,
             radius: r,
@@ -1051,6 +1115,28 @@ mod tests {
         match nl {
             Shape::Line { a, b } => assert!(
                 a == Vec2::new(20.0, -8.0) && (b.y + 8.0).abs() < 1e-9 && b.x > 0.0 && b.x < 5.0
+            ),
+            s => panic!("{s:?}"),
+        }
+    }
+
+    #[test]
+    fn fillet_two_circles() {
+        // 두 원 R5 (0,0)·(14,0), 바깥으로 반지름 2 원: 두 중심에서 7 떨어진 점 (7, ±0)
+        let c1 = Shape::Circle {
+            center: Vec2::default(),
+            radius: 5.0,
+        };
+        let c2 = Shape::Circle {
+            center: Vec2::new(14.0, 0.0),
+            radius: 5.0,
+        };
+        let (_, _, arc) =
+            fillet_arcs(&c1, Vec2::new(4.0, 3.0), &c2, Vec2::new(10.0, 3.0), 2.0).unwrap();
+        match arc {
+            Shape::Arc { center, radius, .. } => assert!(
+                center.dist(Vec2::new(7.0, 0.0)) < 1e-9 && radius == 2.0,
+                "{center:?}"
             ),
             s => panic!("{s:?}"),
         }

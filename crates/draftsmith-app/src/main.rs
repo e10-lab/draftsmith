@@ -730,6 +730,12 @@ fn edit(req: EditReq, state: State<'_, AppState>) -> Result<DocState, String> {
                         format!("{e} — 선 두 개를 고르거나 폴리선 모서리 양쪽 변을 누르세요")
                     })?;
                     reshape = Some(vec![(*a, vec![s])]);
+                } else if matches!(sa, Shape::Arc { .. } | Shape::Circle { .. })
+                    && matches!(sb, Shape::Arc { .. } | Shape::Circle { .. })
+                {
+                    // 호·원 둘 (§43)
+                    let (na, nb, arc) = modify::fillet_arcs(sa, pt(*pa), sb, pt(*pb), *r)?;
+                    reshape = Some(vec![(*a, vec![na, arc]), (*b, vec![nb])]);
                 } else if matches!(sa, Shape::Line { .. })
                     && matches!(sb, Shape::Arc { .. } | Shape::Circle { .. })
                 {

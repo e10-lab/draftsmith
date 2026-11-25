@@ -303,7 +303,7 @@ class DimTool extends Tool {
       : "치수: 연속 치수 — 다음 점 (B 누적, N 새 치수, Enter 끝)");
   }
   op(a, b, at) {
-    return { kind: "arch", op: { kind: "dim", a, b, at, text_height: this.app.textHeight, arrow: this.app.dimArrow, plain: this.app.dimPlain } };
+    return { kind: "arch", op: { kind: "dim", a, b, at, text_height: this.app.textHeight, arrow: this.app.dimArrow, plain: this.app.dimPlain, precision: this.app.dimPrec ?? 0 } };
   }
   /** 연속·누적 치수의 다음 점: [시작점, 치수선 점] */
   next(p) {
@@ -955,10 +955,23 @@ class ColumnTool extends Tool {
 
 class StairTool extends Tool {
   start() {
-    this.say(`계단 (폭 ${fmt(this.app.stairWidth)}, ${this.app.stairRisers} 단): 오르기 시작점 — 숫자는 폭, R18 처럼 치면 단 수`);
+    this.spiral = false;
+    this.say(`계단 (폭 ${fmt(this.app.stairWidth)}, ${this.app.stairRisers} 단): 오르기 시작점 — 숫자는 폭, R18 은 단 수, S 는 돌음 계단`);
   }
   input(t) {
     const k = t.trim();
+    // 돌음 계단 (§43): S → 중심 → 중심선 위 시작점 → 회전각
+    if (/^S$/i.test(k) && !this.pts.length) {
+      this.spiral = true;
+      this.say("돌음 계단: 중심");
+      return true;
+    }
+    if (this.spiral && this.pts.length === 2 && /^-?[\d.]+$/.test(k)) {
+      const [a, b] = this.pts;
+      this.app.apply({ kind: "arch", op: { kind: "stair", a, b, mid: null, spiral: Number(k), width: this.app.stairWidth, risers: this.app.stairRisers } })
+        .then(() => this.app.done());
+      return true;
+    }
     const r = k.match(/^R(\d+)$/i);
     if (r) {
       this.app.stairRisers = Number(r[1]);
@@ -973,7 +986,11 @@ class StairTool extends Tool {
     return super.input(t);
   }
   async take(p) {
+    if (this.spiral && this.pts.length >= 2) return;
     this.pts.push(p);
+    if (this.spiral) {
+      return this.say(this.pts.length === 1 ? "돌음 계단: 중심선 위 시작점 (중심에서 거리 = 중심선 반지름)" : "돌음 계단: 회전각을 치세요 (도, 예: 270 · 음수면 시계 방향)");
+    }
     if (this.pts.length === 1) return this.say("계단: 다음 점 (거리를 쳐도 됨)");
     if (this.pts.length === 2) return this.say("계단: Enter 면 곧은 계단 — 꺾으려면 다음 점 (둘째 점에 참, 옆으로 돌아오면 U자)");
     const [a, mid, b] = this.pts;
@@ -984,7 +1001,7 @@ class StairTool extends Tool {
     this.app.done();
   }
   enter() {
-    if (this.pts.length === 2) this.put(this.pts[0], this.pts[1]);
+    if (this.pts.length === 2 && !this.spiral) this.put(this.pts[0], this.pts[1]);
     else this.app.done();
   }
   paint(ctx, ts) {

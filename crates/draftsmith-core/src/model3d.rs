@@ -146,6 +146,20 @@ pub fn mesh(m: &ArchModel) -> Mesh {
         }
         // 계단: 단마다 바닥에서 그 단 높이까지 상자, 참은 첫 줄기 끝 높이까지 (§34)
         for st in m.stairs.iter().filter(|s| s.level == l.id) {
+            // 돌음 계단: 단마다 부채꼴(네 모서리) 상자 (§43)
+            if let Some((ri, ro, steps)) = st.spiral_steps() {
+                let rise = l.height / st.risers.max(1) as f64;
+                let at = |r: f64, t: f64| Vec2::new(st.a.x + r * t.cos(), st.a.y + r * t.sin());
+                for (k, (ta, tb)) in steps.iter().enumerate() {
+                    let q = if tb >= ta {
+                        [at(ri, *ta), at(ro, *ta), at(ro, *tb), at(ri, *tb)]
+                    } else {
+                        [at(ri, *tb), at(ro, *tb), at(ro, *ta), at(ri, *ta)]
+                    };
+                    out.prism(q, z0, z0 + rise * (k + 1) as f64, STAIR);
+                }
+                continue;
+            }
             let Some((flights, landing)) = st.flights() else {
                 continue;
             };

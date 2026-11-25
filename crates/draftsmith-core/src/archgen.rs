@@ -37,6 +37,34 @@ pub const LAYERS: &[(&str, [u8; 3])] = &[
 ];
 
 /// 치수 글자: 세 자리마다 쉼표 (12,000)
+/// 소수 자리 p 로, 쉼표를 넣거나(plain 거짓) 빼고
+pub fn number(v: f64, p: u8, plain: bool) -> String {
+    let p = p.min(4) as usize;
+    let s = format!("{:.*}", p, v.abs());
+    // 소수 끝의 0 은 뺀다 (AutoCAD DIMZIN 처럼: 3000.00 → 3000, 12.50 → 12.5)
+    let (int, frac) = s
+        .split_once('.')
+        .map(|(a, b)| {
+            let b = b.trim_end_matches('0');
+            (
+                a.to_string(),
+                if b.is_empty() {
+                    String::new()
+                } else {
+                    format!(".{b}")
+                },
+            )
+        })
+        .unwrap_or((s.clone(), String::new()));
+    let int = if plain {
+        int
+    } else {
+        comma(int.parse::<f64>().unwrap_or(0.0))
+    };
+    let neg = v < 0.0 && s.chars().any(|c| c.is_ascii_digit() && c != '0');
+    format!("{}{int}{frac}", if neg { "-" } else { "" })
+}
+
 pub fn comma(v: f64) -> String {
     let n = v.round() as i64;
     let s = n.abs().to_string();
@@ -585,13 +613,7 @@ fn generate_scaled(d: &mut Drawing, scale: f64) -> Vec<(Entity, Owner)> {
             &dm.layer
         };
         let h = dm.text_height.max(1e-6);
-        let value = |v: f64| {
-            if dm.plain {
-                format!("{}", v.round())
-            } else {
-                comma(v)
-            }
-        };
+        let value = |v: f64| number(v, dm.precision, dm.plain);
         let text = |v: String| {
             if dm.text.trim().is_empty() {
                 v
@@ -765,6 +787,70 @@ fn generate_scaled(d: &mut Drawing, scale: f64) -> Vec<(Entity, Owner)> {
     // 계단: 줄기마다 외곽·디딤판 선, 참 외곽, 중심선을 따라 오름 화살표 (§34)
     for st in m.stairs.iter().filter(|x| x.level == level) {
         let own = ("stair", st.id);
+        // 돌음 계단: 안·바깥 호, 단마다 반지름 선, 중심선 호 화살표 (§43)
+        if let Some((ri, ro, steps)) = st.spiral_steps() {
+            let c = st.a;
+            let at = |r: f64, t: f64| Vec2::new(c.x + r * t.cos(), c.y + r * t.sin());
+            let (t0, t1) = (steps[0].0, steps[steps.len() - 1].1);
+            let (s0, e0) = if t1 >= t0 { (t0, t1) } else { (t1, t0) };
+            let tau = std::f64::consts::TAU;
+            for r in [ri, ro] {
+                g.put(
+                    "A-STRS",
+                    Shape::Arc {
+                        center: c,
+                        radius: r,
+                        start: s0.rem_euclid(tau),
+                        end: e0.rem_euclid(tau),
+                    },
+                    own,
+                );
+            }
+            for (k, (ta, _)) in steps.iter().enumerate() {
+                g.line("A-STRS", at(ri, *ta), at(ro, *ta), own);
+                if k + 1 == steps.len() {
+                    g.line("A-STRS", at(ri, t1), at(ro, t1), own);
+                }
+            }
+            let rc = (ri + ro) / 2.0;
+            let n = steps.len() as f64;
+            let (a0, a1) = (t0 + (t1 - t0) * 0.5 / n, t1 - (t1 - t0) * 0.15 / n);
+            let (s1, e1) = if a1 >= a0 { (a0, a1) } else { (a1, a0) };
+            g.put(
+                "A-STRS",
+                Shape::Arc {
+                    center: c,
+                    radius: rc,
+                    start: s1.rem_euclid(tau),
+                    end: e1.rem_euclid(tau),
+                },
+                own,
+            );
+            let tip = at(rc, a1);
+            let dir = if t1 >= t0 {
+                Vec2::new(-a1.sin(), a1.cos())
+            } else {
+                Vec2::new(a1.sin(), -a1.cos())
+            };
+            let head = (st.width * 0.12).max(1.0);
+            let back = sub(tip, mul(dir, head));
+            let side = mul(Vec2::new(-dir.y, dir.x), head * 0.4);
+            g.put(
+                "A-STRS",
+                Shape::Fill {
+                    loops: vec![vec![tip, add(back, side), sub(back, side)]],
+                },
+                own,
+            );
+            g.text(
+                "A-STRS",
+                at(rc, t0 - (t1 - t0).signum() * 0.15),
+                text_h * 0.8,
+                "UP".into(),
+                own,
+            );
+            continue;
+        }
         let Some((flights, landing)) = st.flights() else {
             continue;
         };
@@ -918,6 +1004,9 @@ pub enum ArchReq {
         /// 쉼표 없이
         #[serde(default)]
         plain: bool,
+        /// 소수 자리
+        #[serde(default)]
+        precision: u8,
     },
     /// 반지름·지름 치수 (§36): 중심, 원 위 점
     DimRadial {
@@ -955,6 +1044,9 @@ pub enum ArchReq {
         /// 꺾는 점 (있으면 꺾인 계단)
         #[serde(default)]
         mid: Option<[f64; 2]>,
+        /// 돌음 계단 회전각 (도, 양수 반시계) — 있으면 a 는 중심
+        #[serde(default)]
+        spiral: Option<f64>,
     },
     /// 단면 (§38): 자르는 선 a→b, 단면도 자리 at, 이름 (비면 A, B, …)
     Section {
@@ -1350,6 +1442,7 @@ fn set_field(m: &mut ArchModel, what: &str, id: u64, k: &str, v: &str) -> Result
                 "치수선 거리" | "호 반지름" => x.offset = num()?,
                 "끝 모양" => x.arrow = v.trim() == "화살표",
                 "쉼표" => x.plain = v.trim() == "아니오",
+                "소수 자리" => x.precision = num()?.round().clamp(0.0, 4.0) as u8,
                 _ => {}
             }
         }
@@ -1499,6 +1592,7 @@ pub fn apply(ed: &mut Editor, req: ArchReq) -> Result<(), String> {
             text_height,
             arrow,
             plain,
+            precision,
         } => {
             let (a, b, at) = (p2(a), p2(b), p2(at));
             let len = a.dist(b);
@@ -1526,6 +1620,7 @@ pub fn apply(ed: &mut Editor, req: ArchReq) -> Result<(), String> {
                 layer: String::new(),
                 arrow,
                 plain,
+                precision,
                 ..Default::default()
             });
         }
@@ -1601,6 +1696,7 @@ pub fn apply(ed: &mut Editor, req: ArchReq) -> Result<(), String> {
             width,
             risers,
             mid,
+            spiral,
         } => {
             if p2(a).dist(p2(b)) < 1e-6 {
                 return Err("계단 길이가 0 입니다".into());
@@ -1614,6 +1710,7 @@ pub fn apply(ed: &mut Editor, req: ArchReq) -> Result<(), String> {
                 width: width.max(1.0),
                 risers: risers.max(1),
                 mid: mid.map(p2),
+                spiral: spiral.map(f64::to_radians),
             });
             if m.stairs.last().and_then(|x| x.flights()).is_none() {
                 m.stairs.pop();
@@ -2075,6 +2172,7 @@ pub fn properties(m: &ArchModel, what: &str, id: u64) -> Vec<(String, String)> {
                     "쉼표:고침".into(),
                     if x.plain { "아니오" } else { "예" }.into(),
                 ));
+                out.push(("소수 자리:고침".into(), x.precision.to_string()));
             }
         }
         "column" => {
@@ -2091,7 +2189,9 @@ pub fn properties(m: &ArchModel, what: &str, id: u64) -> Vec<(String, String)> {
                 let r = x.risers.max(1) as f64;
                 out.push((
                     "종류".into(),
-                    if x.u_turn().is_some() {
+                    if x.spiral.is_some() {
+                        "돌음 계단"
+                    } else if x.u_turn().is_some() {
                         "U자 계단"
                     } else if x.mid.is_some() {
                         "꺾인 계단"
@@ -2779,6 +2879,7 @@ mod tests {
                 text_height: 250.0,
                 arrow: false,
                 plain: false,
+                precision: 0,
             },
         )
         .unwrap();
@@ -2799,6 +2900,7 @@ mod tests {
                 width: 1200.0,
                 risers: 18,
                 mid: None,
+                spiral: None,
             },
         )
         .unwrap();
@@ -2860,6 +2962,7 @@ mod tests {
                 text_height: 250.0,
                 arrow: false,
                 plain: false,
+                precision: 0,
             },
         )
         .unwrap();
@@ -2951,6 +3054,7 @@ mod tests {
                 width: 1000.0,
                 risers: 18,
                 mid: Some([3000.0, 0.0]),
+                spiral: None,
             },
         )
         .unwrap();
@@ -2975,7 +3079,8 @@ mod tests {
                     b: [400.0, 400.0],
                     width: 1000.0,
                     risers: 18,
-                    mid: Some([400.0, 0.0])
+                    mid: Some([400.0, 0.0]),
+                    spiral: None
                 }
             )
             .is_err()
@@ -3082,6 +3187,7 @@ mod tests {
                 width: 1000.0,
                 risers: 20,
                 mid: Some([4000.0, 0.0]),
+                spiral: None,
             },
         )
         .unwrap();
@@ -3193,5 +3299,63 @@ mod tests {
                 .unwrap()
         };
         assert!((h(200.0) / h(100.0) - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn spiral_stair() {
+        let mut ed = Editor::new(new_drawing());
+        apply(
+            &mut ed,
+            ArchReq::Stair {
+                a: [0.0, 0.0],
+                b: [1000.0, 0.0],
+                width: 1000.0,
+                risers: 16,
+                mid: None,
+                spiral: Some(270.0),
+            },
+        )
+        .unwrap();
+        let st = &ed.d.arch.stairs[0];
+        let (ri, ro, steps) = st.spiral_steps().unwrap();
+        assert_eq!((ri, ro, steps.len()), (500.0, 1500.0, 16));
+        assert!((steps[15].1 - 270f64.to_radians()).abs() < 1e-9);
+        assert_eq!(crate::model3d::mesh(&ed.d.arch).tris.len(), 16 * 12);
+        let g = with_arch(&ed.d).unwrap();
+        assert!(
+            g.entities
+                .iter()
+                .any(|e| matches!(&e.shape, Shape::Text(t) if t.value == "UP"))
+        );
+        assert!(
+            properties(&ed.d.arch, "stair", st.id)
+                .iter()
+                .any(|(_, v)| v == "돌음 계단")
+        );
+        // 안쪽 반지름이 0 이하면 거절
+        assert!(
+            apply(
+                &mut ed,
+                ArchReq::Stair {
+                    a: [0.0, 0.0],
+                    b: [300.0, 0.0],
+                    width: 1000.0,
+                    risers: 16,
+                    mid: None,
+                    spiral: Some(180.0)
+                }
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn number_format() {
+        assert_eq!(number(12345.678, 0, false), "12,346");
+        assert_eq!(number(12345.678, 2, false), "12,345.68");
+        assert_eq!(number(12345.678, 1, true), "12345.7");
+        assert_eq!(number(3000.0, 4, true), "3000");
+        assert_eq!(number(12.5, 2, false), "12.5");
+        assert_eq!(number(-0.0001, 0, false), "0");
     }
 }

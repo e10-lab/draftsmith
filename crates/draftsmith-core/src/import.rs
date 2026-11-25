@@ -540,17 +540,19 @@ impl<'a> Converter<'a> {
             // 원래 모양을 따라: 화살표면 화살표, 값은 쉼표 없이 (AutoCAD 기본 단위 형식)
             arrow,
             plain: true,
+            // 소수 자리는 머리글 DIMDEC (선형 치수, 0~4)
+            precision: doc.header.dim_decimal_places.clamp(0, 4) as u8,
             ..Default::default()
         });
         true
     }
 
-    /// 모형 공간의 블록 참조를 `Shape::Insert` 로 살린다: 배열이 아니고, 평면(+Z)이고, 보이는 속성값이 없을 때.
+    /// 모형 공간의 블록 참조를 `Shape::Insert` 로 살린다: 평면(+Z)이고 보이는 속성값이 없을 때 (배열은 칸마다 하나씩).
     /// 블록 정의는 처음 만날 때 기준점이 원점이 되게 펼쳐 `Drawing::blocks` 에 넣는다 (안의 블록은 펼친 채로).
     /// 살렸으면 참
     fn keep_insert(&mut self, x: &acadrust::entities::Insert) -> bool {
         let n = &x.normal;
-        if x.is_array() || n.x.abs() > 1e-9 || n.y.abs() > 1e-9 || n.z <= 0.0 {
+        if n.x.abs() > 1e-9 || n.y.abs() > 1e-9 || n.z <= 0.0 {
             return false;
         }
         if x.attributes
@@ -586,20 +588,31 @@ impl<'a> Converter<'a> {
             });
         }
         let (layer, color) = self.style(&x.common, None);
-        self.d.inserts += 1;
-        self.d.entities.push(Entity {
-            layer,
-            aci: self.cur_aci,
-            weight: self.cur_w,
-            linetype: None,
-            color,
-            shape: Shape::Insert {
-                block: x.block_name.clone(),
-                at: Vec2::new(x.insert_point.x, x.insert_point.y),
-                scale: Vec2::new(x.x_scale(), x.y_scale()),
-                rotation: x.rotation,
-            },
-        });
+        // 배열 블록(MINSERT)은 칸마다 블록 참조 하나씩 (§43)
+        let points = if x.is_array() {
+            x.array_points()
+        } else {
+            vec![x.insert_point]
+        };
+        if points.is_empty() {
+            return false;
+        }
+        for p in points {
+            self.d.inserts += 1;
+            self.d.entities.push(Entity {
+                layer,
+                aci: self.cur_aci,
+                weight: self.cur_w,
+                linetype: None,
+                color,
+                shape: Shape::Insert {
+                    block: x.block_name.clone(),
+                    at: Vec2::new(p.x, p.y),
+                    scale: Vec2::new(x.x_scale(), x.y_scale()),
+                    rotation: x.rotation,
+                },
+            });
+        }
         true
     }
 

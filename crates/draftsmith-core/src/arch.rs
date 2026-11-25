@@ -231,6 +231,9 @@ pub struct Dim {
     /// 참이면 값에 쉼표 없이 (6000)
     #[serde(default)]
     pub plain: bool,
+    /// 소수 자리 (0 이면 정수, §43)
+    #[serde(default)]
+    pub precision: u8,
 }
 
 /// 치수의 지금 모양: 두 점, 치수 방향 u·왼쪽 n, 치수선 위 두 점, 값
@@ -325,7 +328,7 @@ impl Column {
 }
 
 /// 계단 (a 에서 b 로 올라감). `mid` 가 있으면 그 점(중심선 꺾이는 곳)에 참이 있는 꺾인(ㄱ자) 계단 (§34)
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Stair {
     pub id: u64,
     pub level: u64,
@@ -336,7 +339,13 @@ pub struct Stair {
     pub risers: u32,
     #[serde(default)]
     pub mid: Option<Vec2>,
+    /// 돌음(나선) 계단 (§43): 회전각 (라디안, 양수 반시계). 이때 a 는 중심, b 는 중심선 위 시작점
+    #[serde(default)]
+    pub spiral: Option<f64>,
 }
+
+/// 돌음 계단 단: (안쪽 반지름, 바깥 반지름, 단마다 (시작각, 끝각))
+pub type SpiralSteps = (f64, f64, Vec<(f64, f64)>);
 
 /// 계단 한 줄기: 시작점(중심선), 방향, 길이, 단 수, 앞 줄기까지 단 수
 #[derive(Debug, Clone, Copy)]
@@ -352,6 +361,9 @@ impl Stair {
     /// U자 계단이면 첫 줄기 중심선에서 둘째 줄기 중심선까지 옆으로 간 벡터: 끝점이 꺾는 점보다 뒤로(첫 줄기 쪽)
     /// 반 폭 넘게 돌아오고, 옆으로 계단 폭 이상 떨어져 있을 때
     pub fn u_turn(&self) -> Option<Vec2> {
+        if self.spiral.is_some() {
+            return None;
+        }
         let c = self.mid?;
         let l = self.a.dist(c);
         if l < 1e-9 {
@@ -365,6 +377,27 @@ impl Stair {
         (back < -self.width / 2.0 && w.x.hypot(w.y) >= self.width - 1e-6).then_some(w)
     }
 
+    /// 돌음 계단의 단: (안쪽 반지름, 바깥 반지름, 단마다 시작·끝 각)
+    pub fn spiral_steps(&self) -> Option<SpiralSteps> {
+        let sw = self.spiral?;
+        let rc = self.a.dist(self.b);
+        let (ri, ro) = (rc - self.width / 2.0, rc + self.width / 2.0);
+        if ri <= 0.0 || sw.abs() < 1e-6 {
+            return None;
+        }
+        let t0 = (self.b.y - self.a.y).atan2(self.b.x - self.a.x);
+        let n = self.risers.max(1);
+        let steps = (0..n)
+            .map(|k| {
+                (
+                    t0 + sw * k as f64 / n as f64,
+                    t0 + sw * (k + 1) as f64 / n as f64,
+                )
+            })
+            .collect();
+        Some((ri, ro, steps))
+    }
+
     /// 화살표가 꺾이는 점들 (꺾인 계단은 꺾는 점, U자는 참 양쪽)
     pub fn turns(&self) -> Vec<Vec2> {
         match (self.mid, self.u_turn()) {
@@ -376,6 +409,10 @@ impl Stair {
 
     /// 줄기들과 참(네 모서리). 꺾인 계단은 참 폭만큼 두 줄기가 짧아지고, 단 수는 길이 비례로 나눈다
     pub fn flights(&self) -> Option<(Vec<Flight>, Option<[Vec2; 4]>)> {
+        // 돌음 계단은 줄기가 없다 (따로 그린다)
+        if self.spiral.is_some() {
+            return (self.a.dist(self.b) > self.width / 2.0 + 1e-6).then(|| (Vec::new(), None));
+        }
         let unit = |a: Vec2, b: Vec2| {
             let l = a.dist(b);
             (l > 1e-9).then(|| (Vec2::new((b.x - a.x) / l, (b.y - a.y) / l), l))
