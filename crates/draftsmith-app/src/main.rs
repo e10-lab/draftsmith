@@ -1452,6 +1452,25 @@ fn display_data(state: State<'_, AppState>) -> Result<Response, String> {
     ))
 }
 
+/// 편집 뒤 표시 데이터: 바뀐 객체만 부분 갱신(`DSP1`)할 수 있으면 그것, 아니면 전체(`DSD3`) (§68).
+/// 화면이 바로 앞 결과를 들고 있을 때만 부른다 (처음 열 때는 `display_data`)
+#[tauri::command]
+fn display_update(state: State<'_, AppState>) -> Result<Response, String> {
+    let mut open = state.lock().map_err(err)?;
+    let open = &mut *open;
+    let d = open
+        .view
+        .as_ref()
+        .or(open.ed.as_ref().map(|e| &e.d))
+        .ok_or("열린 도면이 없습니다")?;
+    let s = display::segments_cached(d, &mut open.seg_cache);
+    Ok(Response::new(
+        open.seg_cache
+            .patch_bytes(&s)
+            .unwrap_or_else(|| s.to_bytes()),
+    ))
+}
+
 /// 문자 표시 데이터 (바이너리, 형식은 `draftsmith_core::display::texts`)
 #[tauri::command]
 fn text_data(state: State<'_, AppState>) -> Result<Response, String> {
@@ -1637,6 +1656,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             set_shx_folder,
+            display_update,
             export_frames_pdf,
             count_text,
             text_of,

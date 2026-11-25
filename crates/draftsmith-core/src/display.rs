@@ -277,6 +277,37 @@ pub struct SegCache {
     items: Vec<(Entity, Segments)>,
     /// 마지막에 다시 펼친 객체 수 (측정용)
     pub rebuilt: usize,
+    /// 마지막 결과에서 객체마다 (선분 시작, 선분 수, 삼각형 시작, 삼각형 수)
+    layout: Vec<(usize, usize, usize, usize)>,
+    /// 바로 앞 결과와 비교해 부분 갱신이 되면 바뀐 객체 번호들 (§68)
+    patch: Option<Vec<usize>>,
+}
+
+impl SegCache {
+    /// 바로 앞 [`segments_cached`] 결과 `s` 를 화면에 부분 갱신으로 보낼 수 있으면 그 바이너리 (`DSP1`).
+    /// 형식: 매직 · 범위 수 u32 · 범위마다 (선분 시작·수·삼각형 시작·수 u32 ×4, 좌표 f32, 색 u8×4, 굵기 u8, 삼각형 f32, 색 u8×4)
+    pub fn patch_bytes(&self, s: &Segments) -> Option<Vec<u8>> {
+        let ids = self.patch.as_ref()?;
+        let mut out = Vec::new();
+        out.extend_from_slice(b"DSP1");
+        out.extend_from_slice(&(ids.len() as u32).to_le_bytes());
+        for &i in ids {
+            let (lo, ln, to, tn) = self.layout[i];
+            for v in [lo, ln, to, tn] {
+                out.extend_from_slice(&(v as u32).to_le_bytes());
+            }
+            for v in &s.coords[lo * 4..(lo + ln) * 4] {
+                out.extend_from_slice(&v.to_le_bytes());
+            }
+            out.extend_from_slice(&s.colors[lo * 4..(lo + ln) * 4]);
+            out.extend(s.weights[lo..lo + ln].iter().map(|&w| w.min(255) as u8));
+            for v in &s.tris[to * 6..(to + tn) * 6] {
+                out.extend_from_slice(&v.to_le_bytes());
+            }
+            out.extend_from_slice(&s.tri_colors[to * 4..(to + tn) * 4]);
+        }
+        Some(out)
+    }
 }
 
 impl Segments {
@@ -301,6 +332,10 @@ pub fn segments_cached(d: &Drawing, cache: &mut SegCache) -> Segments {
         .key
         .as_ref()
         .is_some_and(|(b, l, t)| *b == bbox && *l == d.layers && *t == d.linetypes);
+    // 부분 갱신은 범위·레이어·객체 수가 같고, 다시 펼친 객체의 선분·삼각형 수가 그대로일 때만 (§68)
+    let mut patch =
+        (same && cache.items.len() == d.entities.len() && cache.layout.len() == d.entities.len())
+            .then(Vec::new);
     if !same {
         cache.items.clear();
         cache.key = Some((bbox, d.layers.clone(), d.linetypes.clone()));
@@ -312,9 +347,13 @@ pub fn segments_cached(d: &Drawing, cache: &mut SegCache) -> Segments {
     };
     let mut pieces: Vec<Vec<Vec2>> = Vec::new();
     cache.rebuilt = 0;
+    let mut layout = Vec::with_capacity(d.entities.len());
     for (i, e) in d.entities.iter().enumerate() {
         let hit = cache.items.get(i).is_some_and(|(c, _)| c == e);
         if !hit {
+            if let Some(p) = patch.as_mut() {
+                p.push(i);
+            }
             let mut p = Segments {
                 origin,
                 bbox,
@@ -328,9 +367,19 @@ pub fn segments_cached(d: &Drawing, cache: &mut SegCache) -> Segments {
             }
             cache.rebuilt += 1;
         }
+        let (ln, tn) = (s.len(), s.tri_count());
         s.append(&cache.items[i].1);
+        layout.push((ln, s.len() - ln, tn, s.tri_count() - tn));
     }
     cache.items.truncate(d.entities.len());
+    // 다시 펼친 객체의 자리가 그대로인지
+    if let Some(p) = &patch
+        && p.iter().any(|&i| cache.layout.get(i) != layout.get(i))
+    {
+        patch = None;
+    }
+    cache.patch = patch;
+    cache.layout = layout;
     s
 }
 
@@ -589,5 +638,18 @@ mod cache_tests {
         d2.layers[d2.entities[i].layer as usize].visible = false;
         assert!(same(&segments_cached(&d2, &mut c), &segments(&d2)));
         assert_eq!(c.rebuilt, d2.entities.len());
+        // 부분 갱신 (§68): 색만 바꾼 객체 하나 → 범위 하나, 새로 다 펼친 뒤엔 없음
+        assert!(c.patch_bytes(&segments(&d2)).is_none());
+        let mut d3 = d2.clone();
+        d3.entities[i].color = Some([9, 9, 9]);
+        let s3 = segments_cached(&d3, &mut c);
+        let p = c.patch_bytes(&s3).unwrap();
+        assert_eq!(&p[0..4], b"DSP1");
+        assert_eq!(u32::from_le_bytes(p[4..8].try_into().unwrap()), 1);
+        // 객체가 늘면 부분 갱신 없음
+        let mut d4 = d3.clone();
+        d4.entities.push(d4.entities[i].clone());
+        let s4 = segments_cached(&d4, &mut c);
+        assert!(c.patch_bytes(&s4).is_none());
     }
 }

@@ -269,7 +269,8 @@ app.onSelect = () => {
 /** 표시 데이터(선·채움, 문자)를 받아 그린다. 전달·올리기 시간을 돌려준다 */
 async function redraw(keepView = false) {
   const t = performance.now();
-  const [buf, textBuf] = (await Promise.all([invoke("display_data"), invoke("text_data")])).map(toBuffer);
+  // 편집 뒤(보던 자리 그대로)에는 바뀐 객체만 부분 갱신될 수 있다 (§68)
+  const [buf, textBuf] = (await Promise.all([invoke(keepView && viewer.hasData ? "display_update" : "display_data"), invoke("text_data")])).map(toBuffer);
   const transfer = performance.now() - t;
   const upload = viewer.load(buf, textBuf, { keepView });
   return { transfer, upload, mb: (buf.byteLength + textBuf.byteLength) / 1e6 };

@@ -380,7 +380,8 @@ impl Shape {
                 let h = up.x.hypot(up.y);
                 let w = dir.x.hypot(dir.y);
                 Shape::Text(TextShape {
-                    style: String::new(),
+                    // 스타일은 그대로 — 잃으면 SHX 큰 글꼴이 빠져 한글이 내장 글꼴로 바뀐다 (§68)
+                    style: x.style.clone(),
                     at: t.apply(x.at),
                     height: x.height * h,
                     rotation: dir.y.atan2(dir.x),
@@ -797,6 +798,32 @@ mod wide_tests {
         };
         match w.transformed(&crate::geom::Affine::scale(2.0, 2.0)) {
             Shape::Wide { widths, .. } => assert_eq!(widths[0], (200.0, 200.0)),
+            s => panic!("{s:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod text_style_tests {
+    use super::*;
+
+    /// 글자를 옮겨도 스타일이 남는다 (§68)
+    #[test]
+    fn transform_keeps_style() {
+        let tx = Shape::Text(TextShape {
+            at: Vec2::default(),
+            height: 1.0,
+            rotation: 0.0,
+            width_factor: 1.0,
+            halign: 0.0,
+            valign: VAlign::Baseline,
+            value: "회전".into(),
+            style: "K1".into(),
+        });
+        match tx.transformed(
+            &crate::geom::Affine::translate(10.0, 0.0).then(&crate::geom::Affine::scale(-1.0, 1.0)),
+        ) {
+            Shape::Text(t) => assert_eq!(t.style, "K1"),
             s => panic!("{s:?}"),
         }
     }

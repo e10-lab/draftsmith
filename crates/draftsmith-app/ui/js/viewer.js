@@ -231,7 +231,14 @@ export class Viewer {
     const t = performance.now();
     const dv = new DataView(buf);
     const magic = String.fromCharCode(...new Uint8Array(buf, 0, 4));
+    if (magic === "DSP1") {
+      this.patch(buf);
+      this.texts = parseTexts(textBuf);
+      this.draw();
+      return performance.now() - t;
+    }
     if (magic !== "DSD3") throw new Error("표시 데이터 형식이 다릅니다");
+    this.hasData = true;
     const n = dv.getUint32(4, true), m = dv.getUint32(8, true);
     const old = this.origin;
     this.origin = [dv.getFloat64(12, true), dv.getFloat64(20, true)];
@@ -252,6 +259,36 @@ export class Viewer {
     else this.draw();
     this.gl.finish();
     return performance.now() - t;
+  }
+
+  /** 부분 갱신 (DSP1, §68): 바뀐 객체의 선분·삼각형 자리만 버퍼에 덮어쓴다 */
+  patch(buf) {
+    const gl = this.gl, dv = new DataView(buf);
+    const k = dv.getUint32(4, true);
+    let p = 8;
+    const [wPos, wCol, wW] = this.wideBufs;
+    const put = (b, off, data) => {
+      if (!data.byteLength) return;
+      gl.bindBuffer(gl.ARRAY_BUFFER, b);
+      gl.bufferSubData(gl.ARRAY_BUFFER, off, data);
+    };
+    for (let r = 0; r < k; r++) {
+      const lo = dv.getUint32(p, true), ln = dv.getUint32(p + 4, true), to = dv.getUint32(p + 8, true), tn = dv.getUint32(p + 12, true);
+      p += 16;
+      // Float32Array 는 4 바이트 정렬이 필요해 복사해서 읽는다
+      const f32 = (count) => { const a = new Float32Array(buf.slice(p, p + count * 4)); p += count * 4; return a; };
+      const u8 = (count) => { const a = new Uint8Array(buf, p, count); p += count; return a; };
+      const segs = f32(ln * 4), segCol = u8(ln * 4), segW = u8(ln);
+      const tris = f32(tn * 6), triCol = u8(tn * 4);
+      put(this.lines.pos, lo * 16, segs);
+      put(this.lines.col, lo * 8, perVertex(segCol, ln, 2));
+      put(wPos, lo * 16, segs);
+      put(wCol, lo * 4, segCol);
+      put(wW, lo, segW);
+      put(this.tris.pos, to * 24, tris);
+      put(this.tris.col, to * 12, perVertex(triCol, tn, 3));
+    }
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
   }
 
   /** 굵은 선용 인스턴스 버퍼: 선분(a, b)·색·굵기 */
