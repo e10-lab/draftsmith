@@ -569,6 +569,7 @@ pub fn all_levels_model(d: &Drawing) -> Drawing {
                 linetype: None,
                 weight: None,
                 shape: crate::drawing::Shape::Text(crate::drawing::TextShape {
+                    style: String::new(),
                     at: Vec2::new(bb.min.x + dx, bb.min.y - 4000.0),
                     height: 500.0,
                     rotation: 0.0,

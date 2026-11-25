@@ -1313,6 +1313,49 @@ fn export_sheets_pdf(
     Ok(Some(path.display().to_string()))
 }
 
+/// SHX 글꼴 폴더 고르기(`pick`) 또는 끄기 (§59). 고른 폴더(끄면 null)와 그 안의 SHX 수
+#[tauri::command]
+fn set_shx_folder(
+    pick: bool,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<(String, usize)>, String> {
+    let dir = if pick {
+        match rfd::FileDialog::new()
+            .set_title("SHX 글꼴 폴더 고르기 (AutoCAD Fonts 폴더 등)")
+            .pick_folder()
+        {
+            Some(d) => Some(d),
+            None => {
+                return Ok(draftsmith_core::shx::folder().map(|d| {
+                    (
+                        d.display().to_string(),
+                        draftsmith_core::shx::available().len(),
+                    )
+                }));
+            }
+        }
+    } else {
+        None
+    };
+    set_setting(
+        "shx_folder".into(),
+        dir.as_ref()
+            .map(|d| d.display().to_string())
+            .unwrap_or_default(),
+        app,
+    )?;
+    draftsmith_core::shx::set_folder(dir.clone());
+    let mut open = state.lock().map_err(err)?;
+    open.refresh();
+    Ok(dir.map(|d| {
+        (
+            d.display().to_string(),
+            draftsmith_core::shx::available().len(),
+        )
+    }))
+}
+
 /// 표시 데이터 (바이너리, 형식은 `draftsmith_core::display`)
 #[tauri::command]
 fn display_data(state: State<'_, AppState>) -> Result<Response, String> {
@@ -1494,7 +1537,18 @@ fn main() {
                 }
             }
         })
+        // 저장해 둔 SHX 글꼴 폴더 (§59)
+        .setup(|app| {
+            let dir = read_settings(app.handle())
+                .into_iter()
+                .find(|(k, _)| k == "shx_folder")
+                .map(|(_, v)| v)
+                .filter(|v| !v.trim().is_empty() && std::path::Path::new(v).is_dir());
+            draftsmith_core::shx::set_folder(dir.map(PathBuf::from));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
+            set_shx_folder,
             app_version,
             confirm_discard,
             startup_file,

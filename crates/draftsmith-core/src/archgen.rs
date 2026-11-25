@@ -196,6 +196,7 @@ impl Gen<'_> {
         self.put(
             layer,
             Shape::Text(TextShape {
+                style: String::new(),
                 at,
                 height,
                 rotation: 0.0,
@@ -373,7 +374,9 @@ pub fn with_arch_scaled(d: &Drawing, scale: f64) -> Option<(Drawing, Vec<(String
         .entities
         .iter()
         .any(|e| matches!(e.shape, Shape::Insert { .. } | Shape::Hatch { .. }));
-    if d.arch.is_empty() && !has_special {
+    // SHX 글꼴 폴더가 있고 가져온 글자 스타일이 있으면 글자를 SHX 획으로 (§59)
+    let shx = crate::shx::folder().is_some() && !d.fonts.is_empty();
+    if d.arch.is_empty() && !has_special && !shx {
         return None;
     }
     let mut out = d.clone();
@@ -388,6 +391,9 @@ pub fn with_arch_scaled(d: &Drawing, scale: f64) -> Option<(Drawing, Vec<(String
         if matches!(e.shape, Shape::Hatch { .. }) {
             e.shape = e.shape.drawn();
         }
+    }
+    if shx {
+        crate::shx::apply(&mut out);
     }
     Some((out, owners))
 }
@@ -681,6 +687,7 @@ fn generate_scaled(d: &mut Drawing, scale: f64) -> Vec<(Entity, Owner)> {
             g.put(
                 lay,
                 Shape::Text(TextShape {
+                    style: String::new(),
                     at,
                     height: h,
                     rotation: rot,
@@ -3032,8 +3039,25 @@ pub fn tables(d: &Drawing) -> Tables {
             rows: d
                 .fonts
                 .iter()
+                .filter(|f| f.count > 0)
                 .map(|f| {
-                    let how = if f.font.is_empty() {
+                    let drawn = crate::shx::font(&f.font).is_some()
+                        || crate::shx::font(&f.big_font).is_some();
+                    let how = if drawn {
+                        format!(
+                            "SHX 로 그림 ({}{})",
+                            if crate::shx::font(&f.font).is_some() {
+                                f.font.as_str()
+                            } else {
+                                ""
+                            },
+                            if crate::shx::font(&f.big_font).is_some() {
+                                format!(" + {}", f.big_font)
+                            } else {
+                                String::new()
+                            }
+                        )
+                    } else if f.font.is_empty() {
                         "Pretendard (스타일 정보 없음)".to_string()
                     } else if shx(&f.font) || shx(&f.big_font) {
                         "Pretendard 로 대체 (SHX 모양 아님 — 폭이 다를 수 있음)".into()
@@ -3250,6 +3274,7 @@ mod tests {
                 [0.0, 15000.0],
             ]),
             Shape::Text(crate::drawing::TextShape {
+                style: String::new(),
                 at: Vec2::new(3000.0, 5000.0),
                 height: 1000.0,
                 rotation: 0.0,

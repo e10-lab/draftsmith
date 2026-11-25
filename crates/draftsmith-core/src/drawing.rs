@@ -79,6 +79,9 @@ pub struct TextShape {
     pub valign: VAlign,
     /// 보이는 글자 (서식 코드 걷어 냄). 여러 줄이면 `\n`
     pub value: String,
+    /// 가져온 글자 스타일 이름 (SHX 로 그릴 때 글꼴을 찾는다, §59). DraftSmith 가 만든 글자는 빈칸
+    #[serde(default)]
+    pub style: String,
 }
 
 /// 모양. 각도는 라디안, 반시계 방향.
@@ -332,6 +335,7 @@ impl Shape {
                 let h = up.x.hypot(up.y);
                 let w = dir.x.hypot(dir.y);
                 Shape::Text(TextShape {
+                    style: String::new(),
                     at: t.apply(x.at),
                     height: x.height * h,
                     rotation: dir.y.atan2(dir.x),

@@ -593,6 +593,25 @@ async function run(id) {
     case "journal": return app.doc && saveJournal();
     case "merge": return app.doc && mergeJournal();
     case "palette": return palette.show();
+    case "shx": return shxFolder();
+  }
+}
+
+/** SHX 글꼴 폴더: 있으면 끌지·바꿀지 묻고, 없으면 고른다 (§59) */
+async function shxFolder() {
+  const now = await invoke("get_setting", { key: "shx_folder" });
+  let pick = true;
+  if (now) {
+    const v = await ask(`SHX 글꼴 폴더: ${now}`, [["what", "어떻게", "다른 폴더 고르기", ["다른 폴더 고르기", "SHX 끄기 (내장 글꼴로)"]]]);
+    if (!v) return;
+    pick = v.what !== "SHX 끄기 (내장 글꼴로)";
+  }
+  try {
+    const r = await invoke("set_shx_folder", { pick });
+    if (app.doc) await redraw(true);
+    status(r ? `SHX 글꼴 폴더: ${r[0]} (SHX ${r[1]} 개) — 가져온 글자를 SHX 로 그립니다 · 「표 → 글꼴」 에서 확인` : "SHX 끔 — 모든 글자를 내장 글꼴로 그립니다");
+  } catch (err) {
+    status(String(err));
   }
 }
 

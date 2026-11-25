@@ -252,6 +252,7 @@ pub fn read(path: &Path) -> Result<Drawing, String> {
             d.entities.push(ent(
                 txt,
                 Shape::Text(TextShape {
+                    style: String::new(),
                     at: inner_point(big),
                     height: h,
                     rotation: 0.0,

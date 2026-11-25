@@ -333,6 +333,7 @@ impl<'a> Converter<'a> {
                     _ => VAlign::Bottom,
                 };
                 Shape::Text(TextShape {
+                    style: x.style.clone(),
                     at: v2(&x.insertion_point),
                     height: x.height,
                     rotation: x.rotation,
@@ -867,6 +868,7 @@ impl<'a> Converter<'a> {
             }
             let (al, ac) = self.style(&a.common, inherit);
             let s = Shape::Text(TextShape {
+                style: String::new(),
                 at: v2(&a.insertion_point),
                 height: a.height,
                 rotation: a.rotation,
@@ -911,6 +913,7 @@ fn text_shape(x: &acadrust::entities::Text) -> Shape {
             .unwrap_or_else(|| v2(&x.insertion_point))
     };
     Shape::Text(TextShape {
+        style: x.style.clone(),
         at,
         height: x.height,
         rotation: x.rotation,
@@ -943,7 +946,7 @@ fn doc_attdefs<'a>(
 
 /// ATTDEF → 기본값 글자 (블록 안 좌표)
 fn attdef_text(x: &acadrust::entities::AttributeDefinition) -> TextShape {
-    att_text(
+    let t = att_text(
         x.horizontal_alignment,
         x.vertical_alignment,
         &x.insertion_point,
@@ -952,12 +955,16 @@ fn attdef_text(x: &acadrust::entities::AttributeDefinition) -> TextShape {
         x.rotation,
         x.width_factor,
         &x.default_value,
-    )
+    );
+    TextShape {
+        style: x.text_style.clone(),
+        ..t
+    }
 }
 
 /// ATTRIB → 글자 (세계 좌표)
 fn attrib_text(x: &acadrust::entities::AttributeEntity) -> TextShape {
-    att_text(
+    let t = att_text(
         x.horizontal_alignment,
         x.vertical_alignment,
         &x.insertion_point,
@@ -966,7 +973,11 @@ fn attrib_text(x: &acadrust::entities::AttributeEntity) -> TextShape {
         x.rotation,
         x.width_factor,
         &x.value,
-    )
+    );
+    TextShape {
+        style: x.text_style.clone(),
+        ..t
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1020,6 +1031,7 @@ fn att_text(
     let plain = matches!(x.horizontal_alignment, H::Left | H::Aligned | H::Fit)
         && valign == VAlign::Baseline;
     TextShape {
+        style: String::new(),
         at: v2(if plain {
             x.insertion_point
         } else {
@@ -1226,6 +1238,7 @@ fn simple_dimension(x: &acadrust::entities::Dimension) -> Option<Vec<Shape>> {
         tick(q1),
         tick(q2),
         Shape::Text(TextShape {
+            style: String::new(),
             at,
             height: h,
             rotation: rot,
@@ -1318,6 +1331,26 @@ pub fn from_document(doc: &CadDocument) -> Drawing {
         c.entity(e, &Affine::IDENTITY, None);
     }
     read_layouts(&mut c);
+    // 글자 스타일 표 전부 (속성값만 쓰는 스타일도 SHX 로 그릴 수 있게, §59)
+    for st in doc.text_styles.iter() {
+        if !c
+            .d
+            .fonts
+            .iter()
+            .any(|f| f.style.eq_ignore_ascii_case(&st.name))
+        {
+            c.d.fonts.push(crate::drawing::FontUse {
+                style: st.name.clone(),
+                font: if st.true_type_font.is_empty() {
+                    st.font_file.clone()
+                } else {
+                    st.true_type_font.clone()
+                },
+                big_font: st.big_font_file.clone(),
+                count: 0,
+            });
+        }
+    }
     c.d
 }
 

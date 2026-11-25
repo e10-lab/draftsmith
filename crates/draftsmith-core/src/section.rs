@@ -432,6 +432,7 @@ pub fn mark(s: &Section) -> Vec<(&'static str, Shape)> {
 
 fn text(at: Vec2, height: f64, halign: f64, value: String) -> Shape {
     Shape::Text(TextShape {
+        style: String::new(),
         at,
         height,
         rotation: 0.0,

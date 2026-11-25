@@ -414,6 +414,7 @@ mod tests {
             linetype: None,
             color: None,
             shape: Shape::Text(TextShape {
+                style: String::new(),
                 at: Vec2::new(0.0, 0.0),
                 height: 1.0,
                 rotation: 0.0,

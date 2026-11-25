@@ -497,6 +497,7 @@ mod tests {
             ]],
         });
         put(Shape::Text(TextShape {
+            style: String::new(),
             at: Vec2::new(0.0, 200.0),
             height: 10.0,
             rotation: 0.0,

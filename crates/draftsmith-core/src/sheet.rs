@@ -360,6 +360,7 @@ fn list_table(d: &Drawing, frame: crate::geom::Bbox, layer: u32) -> Vec<Entity> 
     };
     let text = |x: f64, y: f64, h: f64, v: String| {
         Shape::Text(TextShape {
+            style: String::new(),
             at: Vec2::new(x, y),
             height: h,
             rotation: 0.0,
@@ -465,6 +466,7 @@ pub fn make(d: &mut Drawing, req: &SheetReq) -> Result<Layout, String> {
     };
     let text = |x: f64, y: f64, h: f64, v: &str| {
         Shape::Text(TextShape {
+            style: String::new(),
             at: Vec2::new(x, y),
             height: h,
             rotation: 0.0,
@@ -539,6 +541,7 @@ pub fn make(d: &mut Drawing, req: &SheetReq) -> Result<Layout, String> {
     );
     put(
         Shape::Text(TextShape {
+            style: String::new(),
             at: Vec2::new(nx, ny + 9.5),
             height: 3.0,
             rotation: 0.0,

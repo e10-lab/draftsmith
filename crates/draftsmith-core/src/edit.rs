@@ -424,6 +424,7 @@ impl Editor {
         let h = height / k;
         attrs.push(crate::drawing::Attr {
             text: crate::drawing::TextShape {
+                style: String::new(),
                 at: Vec2::new(0.0, -h * 1.6 * (attrs.len() + 1) as f64),
                 height: h,
                 rotation: 0.0,

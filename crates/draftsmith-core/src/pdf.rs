@@ -17,12 +17,12 @@ use crate::drawing::{Drawing, Shape, VAlign};
 use crate::geom::{Bbox, Vec2};
 
 /// 내장 글꼴 (SIL OFL 1.1, `fonts/Pretendard-LICENSE.txt`)
-static FONT: &[u8] = include_bytes!("../fonts/Pretendard-Regular.otf");
+pub(crate) static FONT: &[u8] = include_bytes!("../fonts/Pretendard-Regular.otf");
 
 /// 1 mm 가 몇 pt 인가
 const PT_PER_MM: f64 = 72.0 / 25.4;
 /// 도면 글자 높이(대문자·한글 높이)에 맞추려면 글꼴 크기를 키운다 (화면과 같은 값)
-const EM_PER_HEIGHT: f64 = 1.35;
+pub(crate) const EM_PER_HEIGHT: f64 = 1.35;
 /// MTEXT 줄 간격 (글자 높이의 5/3)
 const LINE_GAP: f64 = 5.0 / 3.0;
 
@@ -115,7 +115,7 @@ fn rgb_of(c: [u8; 3]) -> rgb::Color {
 }
 
 /// 글자 폭 (글꼴 단위 → 글꼴 크기 1 기준). 없는 글자는 1 em 으로.
-fn text_width(face: &ttf_parser::Face, s: &str) -> f64 {
+pub(crate) fn text_width(face: &ttf_parser::Face, s: &str) -> f64 {
     let upem = face.units_per_em() as f64;
     s.chars()
         .map(|ch| {

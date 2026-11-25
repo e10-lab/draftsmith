@@ -46,6 +46,7 @@ export const COMMANDS = [
   ["site", "대지 경계", ["SITE", "대지"], "건축"],
   ["level", "층 더하기", ["LV", "LEVEL", "층추가", "층"], "건축"],
   ["copylevel", "층 복사", ["CL", "COPYLEVEL", "층복사"], "건축"],
+  ["shx", "SHX 글꼴 폴더 (고르기·끄기)", ["SHX", "글꼴", "SHXFOLDER"], "보기"],
   ["tables", "면적표·일람표", ["TB", "TABLES", "표", "면적표", "일람표"], "건축"],
   ["section", "단면 만들기", ["SEC", "SECTION", "단면", "단면도"], "건축"],
   ["view3d", "3D 보기", ["3D", "3DV", "VIEW3D", "입체"], "건축"],
