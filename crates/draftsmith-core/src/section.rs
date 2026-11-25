@@ -54,6 +54,27 @@ pub fn draw(m: &ArchModel, s: &Section) -> Vec<(&'static str, Shape)> {
         (t >= -1e-9 && t <= len + 1e-9 && (-1e-9..=1.0 + 1e-9).contains(&k)).then_some((t, k))
     };
     let mut zmin = 0.0f64;
+    // 보는 쪽(자르는 선 왼쪽)과 자르는 선 위 거리
+    let nv = Vec2::new(-u.y, u.x);
+    let side = |q: Vec2| (q.x - s.a.x) * nv.x + (q.y - s.a.y) * nv.y;
+    let along = |q: Vec2| (q.x - s.a.x) * u.x + (q.y - s.a.y) * u.y;
+    let outline = |out: &mut Vec<(&'static str, Shape)>, t0: f64, t1: f64, z0: f64, z1: f64| {
+        let (t0, t1) = (t0.max(0.0), t1.min(len));
+        if t1 - t0 > 1.0 && z1 - z0 > 1.0 {
+            out.push((
+                "A-SECT-VIEW",
+                Shape::Polyline {
+                    points: rect(t0, t1, z0, z1).into_iter().map(|q| (q, 0.0)).collect(),
+                    closed: true,
+                },
+            ));
+        }
+    };
+    let top_level = m
+        .levels
+        .iter()
+        .max_by(|a, b| a.elevation.total_cmp(&b.elevation))
+        .map(|l| l.id);
     for l in &m.levels {
         let z0 = l.elevation;
         zmin = zmin.min(z0 - 150.0);
@@ -93,7 +114,34 @@ pub fn draw(m: &ArchModel, s: &Section) -> Vec<(&'static str, Shape)> {
                 }
             }
         }
-        // 바닥판: 실 경계와 자르는 선이 만나는 점들을 짝지어 안쪽 구간
+        // 보이는 벽 (자르지 않은 벽 중 보는 쪽에 있는 것): 입면 외곽과 창 (§41)
+        for w in m.walls.iter().filter(|w| w.level == l.id) {
+            if cross(w.a, w.b).is_some() || side(w.a) <= 0.0 || side(w.b) <= 0.0 {
+                continue;
+            }
+            let (ta, tb) = (along(w.a), along(w.b));
+            let h = w.thickness / 2.0;
+            let top = z0 + w.height.unwrap_or(l.height);
+            outline(&mut out, ta.min(tb) - h, ta.max(tb) + h, z0, top);
+            let dir = w.dir();
+            for op in m
+                .openings
+                .iter()
+                .filter(|op| op.wall == w.id && op.kind == OpeningKind::Window)
+            {
+                let c = Vec2::new(w.a.x + dir.x * op.offset, w.a.y + dir.y * op.offset);
+                let half = op.width / 2.0 * (dir.x * u.x + dir.y * u.y).abs();
+                let tc = along(c);
+                outline(
+                    &mut out,
+                    tc - half,
+                    tc + half,
+                    z0 + op.sill,
+                    (z0 + op.sill + op.height).min(top),
+                );
+            }
+        }
+        // 바닥판: 실 경계와 자르는 선이 만나는 점들을 짝지어 안쪽 구간 (맨 위층은 지붕판도)
         for r in m.rooms.iter().filter(|r| r.level == l.id) {
             let n = r.boundary.len();
             let mut ts: Vec<f64> = (0..n)
@@ -104,6 +152,10 @@ pub fn draw(m: &ArchModel, s: &Section) -> Vec<(&'static str, Shape)> {
             for pair in ts.chunks(2) {
                 if let [t0, t1] = pair {
                     cut(&mut out, *t0, *t1, z0 - 150.0, z0);
+                    if Some(l.id) == top_level {
+                        let zt = z0 + l.height;
+                        cut(&mut out, *t0, *t1, zt, zt + 200.0);
+                    }
                 }
             }
         }
@@ -281,8 +333,10 @@ mod tests {
             .iter()
             .filter(|(l, s)| *l == "A-SECT-PATT" && matches!(s, Shape::Fill { .. }))
             .count();
-        // 아래 벽 하나 + 창 있는 위 벽 둘(창대 아래·인방 위) + 바닥판 하나
-        assert_eq!(fills, 4, "{shapes:?}");
+        // 아래 벽 하나 + 창 있는 위 벽 둘(창대 아래·인방 위) + 바닥판 + 지붕판
+        assert_eq!(fills, 5, "{shapes:?}");
+        // 보는 쪽(−x) 의 x = 0 벽이 입면선으로 보인다
+        assert!(shapes.iter().any(|(l, _)| *l == "A-SECT-VIEW"));
         assert!(shapes.iter().any(|(l, _)| *l == "A-GLAZ"));
         assert!(
             shapes

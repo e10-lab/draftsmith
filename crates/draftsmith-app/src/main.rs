@@ -611,6 +611,12 @@ enum EditReq {
     },
     /// 레이어 검사 제안대로 고치기 (§40)
     FixLayers,
+    /// 지금 시트에 뷰포트 더하기 (§42)
+    AddViewport,
+    /// 지금 시트의 뷰포트 지우기
+    DeleteViewport {
+        index: usize,
+    },
     /// 도면 시트 만들기 (M4)
     AddSheet(sheet::SheetReq),
     /// 도면 시트 지우기
@@ -641,7 +647,11 @@ fn edit(req: EditReq, state: State<'_, AppState>) -> Result<DocState, String> {
     if open.sheet.is_some()
         && matches!(
             req,
-            EditReq::Viewport { .. } | EditReq::Undo | EditReq::Redo
+            EditReq::Viewport { .. }
+                | EditReq::AddViewport
+                | EditReq::DeleteViewport { .. }
+                | EditReq::Undo
+                | EditReq::Redo
         )
     {
         let i = open.sheet.unwrap_or(0);
@@ -649,6 +659,14 @@ fn edit(req: EditReq, state: State<'_, AppState>) -> Result<DocState, String> {
         match &req {
             EditReq::Viewport { index, edit } => {
                 let l = sheet::edit_viewport(&ed.d, i, *index, edit)?;
+                ed.set_layout(i, l);
+            }
+            EditReq::AddViewport => {
+                let l = sheet::add_viewport(&ed.d, i)?;
+                ed.set_layout(i, l);
+            }
+            EditReq::DeleteViewport { index } => {
+                let l = sheet::remove_viewport(&ed.d, i, *index)?;
                 ed.set_layout(i, l);
             }
             EditReq::Undo => {
@@ -842,7 +860,9 @@ fn edit(req: EditReq, state: State<'_, AppState>) -> Result<DocState, String> {
             EditReq::Hatch { .. } => {
                 added = ed.add_shapes(hatch.take().into_iter().collect()).collect()
             }
-            EditReq::Viewport { .. } => return Err("뷰포트는 시트에서 고칩니다".into()),
+            EditReq::Viewport { .. } | EditReq::AddViewport | EditReq::DeleteViewport { .. } => {
+                return Err("뷰포트는 시트에서 고칩니다".into());
+            }
             EditReq::FixLayers => {
                 if archgen::fix_layers(ed) == 0 {
                     return Err("고칠 레이어가 없습니다 (제안이 있는 것만 고칩니다)".into());

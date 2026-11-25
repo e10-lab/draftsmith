@@ -33,6 +33,7 @@ pub const LAYERS: &[(&str, [u8; 3])] = &[
     ("A-SECT-PATT", [128, 128, 128]),
     ("A-SECT-IDEN", [255, 255, 255]),
     ("A-SECT-MARK", [0, 255, 255]),
+    ("A-SECT-VIEW", [160, 160, 160]),
 ];
 
 /// 치수 글자: 세 자리마다 쉼표 (12,000)
@@ -317,6 +318,12 @@ pub fn with_arch(d: &Drawing) -> Option<Drawing> {
 
 /// [`with_arch`] 와 같고, 덧붙인 객체마다 주인 (종류, 번호) 도 함께. 블록 참조를 펼친 것은 ("block", 참조 객체 번호)
 pub fn with_arch_owned(d: &Drawing) -> Option<(Drawing, Vec<(String, u64)>)> {
+    with_arch_scaled(d, 100.0)
+}
+
+/// 축척별 표현 (§42): 글자·그리드 기호는 축척에 맞춰 (종이 위 2.5 mm 등), 1:200 보다 작으면 문 열림 호·창호 기호·
+/// 실 면적 글자를 뺀다
+pub fn with_arch_scaled(d: &Drawing, scale: f64) -> Option<(Drawing, Vec<(String, u64)>)> {
     let has_insert = d
         .entities
         .iter()
@@ -325,7 +332,7 @@ pub fn with_arch_owned(d: &Drawing) -> Option<(Drawing, Vec<(String, u64)>)> {
         return None;
     }
     let mut out = d.clone();
-    let made = generate(&mut out);
+    let made = generate_scaled(&mut out, scale);
     let owners = made
         .iter()
         .map(|(_, (k, id))| (k.to_string(), *id))
@@ -342,8 +349,15 @@ pub fn owner(d: &Drawing, k: usize) -> Option<(String, u64)> {
         .map(|(_, (kind, id))| (kind.to_string(), *id))
 }
 
-/// 생성 (레이어가 없으면 `d` 에 더한다)
+/// 생성 (레이어가 없으면 `d` 에 더한다) — 1:100 표현
 fn generate(d: &mut Drawing) -> Vec<(Entity, Owner)> {
+    generate_scaled(d, 100.0)
+}
+
+fn generate_scaled(d: &mut Drawing, scale: f64) -> Vec<(Entity, Owner)> {
+    let scale = if scale > 0.0 { scale } else { 100.0 };
+    let coarse = scale >= 200.0 - 1e-9;
+    let k = scale / 100.0;
     let m = d.arch.clone();
     // 블록 참조 펼치기 (§30)
     let mut blocks = Vec::new();
@@ -360,7 +374,7 @@ fn generate(d: &mut Drawing) -> Vec<(Entity, Owner)> {
     let level = m.active_level;
     let walls: Vec<&Wall> = m.walls.iter().filter(|w| w.level == level).collect();
     let marks = opening_marks(&m);
-    let text_h = 250.0;
+    let text_h = 250.0 * k;
 
     // 단면: 평면의 자르는 선과 단면도 (§38) — 층과 관계없이
     for sec in &m.sections {
@@ -390,7 +404,7 @@ fn generate(d: &mut Drawing) -> Vec<(Entity, Owner)> {
         let l = gr.a.dist(gr.b).max(1e-9);
         let u = mul(dir, 1.0 / l);
         g.line("A-GRID", gr.a, gr.b, own);
-        let r = 450.0;
+        let r = 450.0 * k;
         let c = sub(gr.a, mul(u, r));
         g.put(
             "A-GRID-IDEN",
@@ -400,7 +414,7 @@ fn generate(d: &mut Drawing) -> Vec<(Entity, Owner)> {
             },
             own,
         );
-        g.text("A-GRID-IDEN", c, 350.0, gr.label.clone(), own);
+        g.text("A-GRID-IDEN", c, 350.0 * k, gr.label.clone(), own);
     }
     // 실
     for room in m.rooms.iter().filter(|r| r.level == level) {
@@ -424,13 +438,15 @@ fn generate(d: &mut Drawing) -> Vec<(Entity, Owner)> {
             room.name.clone(),
             own,
         );
-        g.text(
-            "A-AREA-IDEN",
-            sub(c, Vec2::new(0.0, text_h * 0.8)),
-            text_h * 0.7,
-            format!("{m2:.2}㎡ ({:.1}평)", m2 / PYEONG_M2),
-            own,
-        );
+        if !coarse {
+            g.text(
+                "A-AREA-IDEN",
+                sub(c, Vec2::new(0.0, text_h * 0.8)),
+                text_h * 0.7,
+                format!("{m2:.2}㎡ ({:.1}평)", m2 / PYEONG_M2),
+                own,
+            );
+        }
     }
     // 벽·개구부
     for w in &walls {
@@ -538,20 +554,22 @@ fn generate(d: &mut Drawing) -> Vec<(Entity, Owner)> {
                     } else {
                         (a1, a0)
                     };
-                    g.put(
-                        layer,
-                        Shape::Arc {
-                            center: hinge,
-                            radius: wdt,
-                            start: s,
-                            end: e,
-                        },
-                        oown,
-                    );
+                    if !coarse {
+                        g.put(
+                            layer,
+                            Shape::Arc {
+                                center: hinge,
+                                radius: wdt,
+                                start: s,
+                                end: e,
+                            },
+                            oown,
+                        );
+                    }
                 }
             }
             // 창호 기호
-            if let Some((_, mark)) = marks.iter().find(|(id, _)| *id == o.id) {
+            if let Some((_, mark)) = marks.iter().find(|(id, _)| *id == o.id).filter(|_| !coarse) {
                 let mid = at((gs + ge) / 2.0, 0.0);
                 let off = mul(n, -(h + text_h * 1.6) * if o.flip { -1.0 } else { 1.0 });
                 g.text(layer, add(mid, off), text_h * 0.8, mark.clone(), oown);
@@ -3114,5 +3132,66 @@ mod tests {
                 "A-WALL".into()
             ]
         );
+    }
+
+    #[test]
+    fn coarse_scale_drops_detail() {
+        let mut ed = Editor::new(new_drawing());
+        apply(
+            &mut ed,
+            ArchReq::Walls {
+                points: vec![[0.0, 0.0], [6000.0, 0.0], [6000.0, 4000.0], [0.0, 4000.0]],
+                closed: true,
+                thickness: 200.0,
+                wall: WallKind::Exterior,
+            },
+        )
+        .unwrap();
+        apply(
+            &mut ed,
+            ArchReq::Opening {
+                at: [3000.0, 0.0],
+                opening: OpeningKind::Door,
+                width: 900.0,
+                height: 2100.0,
+                sill: 0.0,
+            },
+        )
+        .unwrap();
+        apply(
+            &mut ed,
+            ArchReq::RoomAt {
+                at: [3000.0, 2000.0],
+                name: "거실".into(),
+            },
+        )
+        .unwrap();
+        let count = |sc: f64, f: &dyn Fn(&Shape) -> bool| {
+            with_arch_scaled(&ed.d, sc)
+                .unwrap()
+                .0
+                .entities
+                .iter()
+                .filter(|e| f(&e.shape))
+                .count()
+        };
+        let arcs = |s: &Shape| matches!(s, Shape::Arc { .. });
+        let area = |s: &Shape| matches!(s, Shape::Text(t) if t.value.contains('㎡'));
+        assert_eq!((count(100.0, &arcs), count(100.0, &area)), (1, 1));
+        assert_eq!((count(200.0, &arcs), count(200.0, &area)), (0, 0));
+        // 1:200 이면 실 이름 글자가 두 배
+        let h = |sc: f64| {
+            with_arch_scaled(&ed.d, sc)
+                .unwrap()
+                .0
+                .entities
+                .iter()
+                .find_map(|e| match &e.shape {
+                    Shape::Text(t) if t.value == "거실" => Some(t.height),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        assert!((h(200.0) / h(100.0) - 2.0).abs() < 1e-9);
     }
 }

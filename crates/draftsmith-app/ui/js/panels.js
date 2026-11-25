@@ -139,11 +139,17 @@ export function renderViewports(app, doc) {
   const box = document.getElementById("vports");
   box.replaceChildren();
   const vps = doc.viewports ?? [];
-  box.hidden = doc.sheet == null || !vps.length;
+  box.hidden = doc.sheet == null;
   if (box.hidden) return;
   const r1 = (v) => String(Math.round(v * 10) / 10);
   const send = (index, edit) => app.apply({ kind: "viewport", index, ...edit });
-  box.append(el("h4", "", "뷰포트"));
+  const head = el("div", "side-head");
+  const add = el("button", "mini", "＋");
+  add.title = "뷰포트 더하기 (왼쪽 아래, 같은 축척)";
+  add.addEventListener("click", () => app.apply({ kind: "add_viewport" }));
+  head.append(el("h4", "", "뷰포트"), add);
+  box.append(head);
+  if (!vps.length) box.append(el("p", "muted small", "뷰포트가 없습니다 — ＋ 로 더하세요"));
   for (const v of vps) {
     const dl = el("dl", "props");
     const field = (label, value, on) => {
@@ -182,6 +188,10 @@ export function renderViewports(app, doc) {
     const fit = el("button", "", "모형에 맞춤");
     fit.title = "그 층 모형 전체가 들어오게 가운데와 표준 축척을 맞춥니다";
     fit.addEventListener("click", () => send(v.index, { fit: true }));
-    box.append(el("p", "muted small", `뷰포트 ${v.index + 1}`), dl, fit);
+    const del = el("button", "", "지우기");
+    del.addEventListener("click", () => app.apply({ kind: "delete_viewport", index: v.index }));
+    const row = el("div", "group");
+    row.append(fit, del);
+    box.append(el("p", "muted small", `뷰포트 ${v.index + 1}`), dl, row);
   }
 }

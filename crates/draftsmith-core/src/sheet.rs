@@ -59,19 +59,27 @@ pub fn today() -> String {
 
 /// 시트에 보일 모형: 그 층의 건축 객체를 펼친 도면
 pub fn model_for(d: &Drawing, level: Option<u64>) -> Drawing {
+    model_at_scale(d, level, 100.0)
+}
+
+/// 시트 축척에 맞춘 표현으로 (§42)
+pub fn model_at_scale(d: &Drawing, level: Option<u64>, scale: f64) -> Drawing {
     let mut m = d.clone();
     if let Some(l) = level
         && m.arch.levels.iter().any(|x| x.id == l)
     {
         m.arch.active_level = l;
     }
-    archgen::with_arch(&m).unwrap_or(m)
+    archgen::with_arch_scaled(&m, scale)
+        .map(|(v, _)| v)
+        .unwrap_or(m)
 }
 
 /// 배치 `i` 를 종이 도면으로 (층이 정해진 시트면 그 층으로 펼쳐서)
 pub fn compose(d: &Drawing, i: usize) -> Option<Drawing> {
     let lay = d.layouts.get(i)?;
-    let mut out = crate::layout::compose(&model_for(d, lay.level), i)?;
+    let scale = scale_of(lay).unwrap_or(100.0);
+    let mut out = crate::layout::compose(&model_at_scale(d, lay.level, scale), i)?;
     if lay.list {
         let frame = {
             let mut b = crate::geom::Bbox::EMPTY;
@@ -175,6 +183,56 @@ pub fn edit_viewport(d: &Drawing, i: usize, k: usize, e: &VpEdit) -> Result<Layo
             }
         }
     }
+    Ok(lay)
+}
+
+/// 뷰포트 하나 더하기 (§42): 종이 왼쪽 아래 1/3 크기, 첫 뷰포트와 같은 가운데·축척 (없으면 1:100)
+pub fn add_viewport(d: &Drawing, i: usize) -> Result<Layout, String> {
+    let mut lay = d.layouts.get(i).cloned().ok_or("시트가 없습니다")?;
+    if lay.list {
+        return Err("도면 목록 시트에는 뷰포트를 넣지 않습니다".into());
+    }
+    let mut frame = crate::geom::Bbox::EMPTY;
+    for e in &lay.paper {
+        frame.merge(&e.shape.bbox());
+    }
+    if frame.is_empty() {
+        return Err("시트 틀이 없습니다".into());
+    }
+    let (w, h) = (frame.width() / 3.0, frame.height() / 3.0);
+    let first = lay.viewports.first().cloned();
+    let scale = first
+        .as_ref()
+        .map(|v| v.view_height / v.height.max(1e-9))
+        .unwrap_or(100.0);
+    let view_center = first.as_ref().map(|v| v.view_center).unwrap_or_else(|| {
+        let bb = model_for(d, lay.level).bbox();
+        if bb.is_empty() {
+            Vec2::default()
+        } else {
+            bb.center()
+        }
+    });
+    lay.viewports.push(ViewportView {
+        center: Vec2::new(frame.min.x + 10.0 + w / 2.0, frame.min.y + 10.0 + h / 2.0),
+        width: w,
+        height: h,
+        view_center,
+        view_height: h * scale,
+        twist: 0.0,
+        target: Vec2::default(),
+        frozen: Vec::new(),
+    });
+    Ok(lay)
+}
+
+/// 뷰포트 지우기
+pub fn remove_viewport(d: &Drawing, i: usize, k: usize) -> Result<Layout, String> {
+    let mut lay = d.layouts.get(i).cloned().ok_or("시트가 없습니다")?;
+    if k >= lay.viewports.len() {
+        return Err("뷰포트가 없습니다".into());
+    }
+    lay.viewports.remove(k);
     Ok(lay)
 }
 
@@ -564,5 +622,26 @@ mod tests {
         )
         .unwrap();
         assert_eq!(scale_of(&l).unwrap(), 100.0);
+    }
+
+    #[test]
+    fn add_and_remove_viewport() {
+        let mut d = new_drawing();
+        let req = SheetReq {
+            title: "t".into(),
+            number: "A-1".into(),
+            paper: "A3".into(),
+            scale: 50.0,
+            level: None,
+            project: String::new(),
+            list: false,
+        };
+        let l = make(&mut d, &req).unwrap();
+        d.layouts.push(l);
+        let l = add_viewport(&d, 0).unwrap();
+        assert_eq!(l.viewports.len(), 2);
+        assert!((l.viewports[1].view_height / l.viewports[1].height - 50.0).abs() < 1e-9);
+        d.layouts[0] = l;
+        assert_eq!(remove_viewport(&d, 0, 0).unwrap().viewports.len(), 1);
     }
 }

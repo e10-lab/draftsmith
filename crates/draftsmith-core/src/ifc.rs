@@ -2,7 +2,7 @@
 //!
 //! 프로젝트 → 대지 → 건물 → 층(IfcBuildingStorey) 아래에 벽(IfcWall, 두께×길이 직사각형을 높이만큼 돌출),
 //! 바닥판(IfcSlab, 실 경계 150 두께), 실(IfcSpace, 이름·층고 돌출), 기둥(IfcColumn), 문·창(IfcDoor·IfcWindow, 벽 두께
-//! 상자 — 벽에 구멍(IfcOpeningElement)을 내는 것은 다음 단계). 단위는 mm. 한글 이름은 STEP 의 \X2\ 로 쓴다.
+//! 상자, 벽에 IfcOpeningElement 구멍을 내고 채움 관계로 잇는다 — §41). 단위는 mm. 한글 이름은 STEP 의 \X2\ 로 쓴다.
 
 use std::fmt::Write as _;
 
@@ -203,12 +203,13 @@ pub fn write(m: &ArchModel, project: &str) -> String {
             let prof = w.rect(length / 2.0, 0.0, length, wl.thickness);
             let shape = w.body(ctx, prof, wl.height.unwrap_or(l.height));
             let name = format!("{} {}", wl.kind.label(), wl.id);
-            items.push(w.add(format!(
+            let wall = w.add(format!(
                 "IFCWALL('{}',$,{},$,$,#{lp},#{shape},$,.STANDARD.)",
                 guid("wall", wl.id),
                 s(&name)
-            )));
-            // 문·창: 벽 안 상자
+            ));
+            items.push(wall);
+            // 문·창: 벽에 구멍(IfcOpeningElement, 벽 두께보다 조금 두껍게)을 내고 그 구멍을 문·창으로 채운다 (§41)
             for o in m.openings.iter().filter(|o| o.wall == wl.id) {
                 let (z, kind) = match o.kind {
                     OpeningKind::Door => (0.0, "door"),
@@ -218,6 +219,18 @@ pub fn write(m: &ArchModel, project: &str) -> String {
                     wl.a.x + wl.dir().x * o.offset,
                     wl.a.y + wl.dir().y * o.offset,
                 );
+                let ax = w.place3(at, z, wl.dir());
+                let hole_pl = w.local(Some(pl), ax);
+                let prof = w.rect(0.0, 0.0, o.width, wl.thickness + 20.0);
+                let shape = w.body(ctx, prof, o.height);
+                let hole = w.add(format!(
+                    "IFCOPENINGELEMENT('{}',$,$,$,$,#{hole_pl},#{shape},$,.OPENING.)",
+                    guid("hole", o.id)
+                ));
+                w.add(format!(
+                    "IFCRELVOIDSELEMENT('{}',$,$,$,#{wall},#{hole})",
+                    guid("voids", o.id)
+                ));
                 let ax = w.place3(at, z, wl.dir());
                 let lp = w.local(Some(pl), ax);
                 let prof = w.rect(0.0, 0.0, o.width, wl.thickness);
@@ -239,7 +252,12 @@ pub fn write(m: &ArchModel, project: &str) -> String {
                         f(o.width)
                     )
                 };
-                items.push(w.add(line));
+                let fill = w.add(line);
+                w.add(format!(
+                    "IFCRELFILLSELEMENT('{}',$,$,$,#{hole},#{fill})",
+                    guid("fills", o.id)
+                ));
+                items.push(fill);
             }
         }
         // 실·바닥판
@@ -364,6 +382,10 @@ mod tests {
         assert!(t.starts_with("ISO-10303-21;") && t.trim_end().ends_with("END-ISO-10303-21;"));
         assert_eq!(t.matches("IFCWALL(").count(), 4);
         assert_eq!(t.matches("IFCDOOR(").count(), 1);
+        // 문 자리 구멍과 그 관계
+        assert_eq!(t.matches("IFCOPENINGELEMENT(").count(), 1);
+        assert_eq!(t.matches("IFCRELVOIDSELEMENT(").count(), 1);
+        assert_eq!(t.matches("IFCRELFILLSELEMENT(").count(), 1);
         assert_eq!(t.matches("IFCSPACE(").count(), 1);
         assert!(t.contains("IFCBUILDINGSTOREY("));
         // 「거실」 = U+AC70 U+C2E4
