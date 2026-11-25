@@ -16,7 +16,6 @@ use std::time::Instant;
 use draftsmith_core::edit::{Editor, JOURNAL_EXT, Journal, Op};
 use draftsmith_core::pdf::{self, PdfOptions};
 use draftsmith_core::pick::{self, PickIndex};
-use draftsmith_core::snap::SnapIndex;
 use draftsmith_core::{
     Affine, Bbox, Drawing, Shape, Vec2, archgen, display, docfile, export, import, modify, sheet,
 };
@@ -38,7 +37,8 @@ struct Open {
     /// 저장 경로 (.dsmith). DWG·DXF 를 열었으면 처음 저장 때 묻는다
     save_path: Option<PathBuf>,
     /// 스냅 점 색인 (켜진 레이어만)
-    snaps: Option<SnapIndex>,
+    /// 스냅 색인 — 편집 뒤 바뀐 객체만 고친다 (§69)
+    snaps: draftsmith_core::snap::SnapCache,
     /// 객체 고르기 색인 (켜진 레이어만)
     picks: Option<PickIndex>,
     /// 변경 기록으로 이미 내보낸 작업 수 (M5)
@@ -66,11 +66,16 @@ impl Open {
                 v
             }),
         };
-        let (snaps, picks) = match self.shown() {
-            Some(d) => (Some(SnapIndex::build(d)), Some(PickIndex::build(d))),
-            None => (None, None),
+        let picks = match self.view.as_ref().or(self.ed.as_ref().map(|e| &e.d)) {
+            Some(d) => {
+                self.snaps.update(d);
+                Some(PickIndex::build(d))
+            }
+            None => {
+                self.snaps = Default::default();
+                None
+            }
         };
-        self.snaps = snaps;
         self.picks = picks;
     }
 
@@ -965,6 +970,7 @@ fn snap(x: f64, y: f64, r: f64, state: State<'_, AppState>) -> Result<Option<Sna
     let open = state.lock().map_err(err)?;
     Ok(open
         .snaps
+        .index()
         .as_ref()
         .and_then(|i| i.nearest(Vec2::new(x, y), r))
         .map(|s| SnapOut {

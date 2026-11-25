@@ -208,6 +208,18 @@ fn main() -> Result<()> {
                 ms(t4, t5),
                 cache.rebuilt
             );
+            // 스냅 색인 (§69): 새로 만들기와, 한 객체를 바꾼 뒤 고치기
+            let mut sc = draftsmith_core::snap::SnapCache::default();
+            let t6 = Instant::now();
+            let n = sc.update(&d).len();
+            let t7 = Instant::now();
+            let _ = sc.update(&d2);
+            let t8 = Instant::now();
+            println!(
+                "스냅 색인   {:8.1} ms (점 {n}) · 편집 뒤 {:.1} ms",
+                ms(t6, t7),
+                ms(t7, t8)
+            );
         }
         Cmd::Pdf {
             file,

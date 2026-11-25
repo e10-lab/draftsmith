@@ -550,6 +550,20 @@ impl Shape {
     }
 }
 
+/// 두 객체 목록의 같은 앞부분·뒷부분 길이 (겹치지 않게) — 편집 뒤 바뀐 가운데만 다시 셈하려고 (§69)
+pub fn align(old: &[Entity], new: &[Entity]) -> (usize, usize) {
+    let n = old.len().min(new.len());
+    let pre = old.iter().zip(new).take_while(|(a, b)| a == b).count();
+    let suf = old
+        .iter()
+        .rev()
+        .zip(new.iter().rev())
+        .take(n - pre)
+        .take_while(|(a, b)| a == b)
+        .count();
+    (pre, suf)
+}
+
 /// 폭 있는 폴리선을 채울 사각형들 (§65): 호는 꼭짓점으로 펼쳐 폭을 길이 비례로 잇고, 변마다 사각형 + 꺾인 곳은
 /// 바깥 면을 맞대는 마이터(너무 길면 빗면)로 틈을 메운다. 사각형 꼭짓점은 반시계 아니어도 된다
 pub fn wide_quads(
