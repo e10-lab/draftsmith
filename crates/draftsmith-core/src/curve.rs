@@ -6,13 +6,16 @@ use std::f64::consts::{PI, TAU};
 
 use crate::geom::Vec2;
 
-/// 원호를 나눌 조각 수: 화살 높이(현과 호 사이)가 `tol` 이하가 되게, 8–512 조각
+/// 원호를 나눌 조각 수: 화살 높이(현과 호 사이)가 `tol` 이하가 되게, 최대 512 조각.
+/// 최소는 45° 마다 한 조각 (온 원 8 · 반원 4 · 사분원 2) — 전에는 작은 호도 늘 8 조각이라 단열재 표시처럼 작은 호가
+/// 수백 개인 폴리선이 선분 수십만 개가 됐다 (구현 노트 §64)
 pub fn arc_steps(radius: f64, sweep: f64, tol: f64) -> usize {
+    let min = ((sweep.abs() / (PI / 4.0)).ceil() as usize).clamp(1, 8);
     if radius <= tol || tol <= 0.0 {
-        return 8;
+        return min;
     }
     let step = 2.0 * (1.0 - tol / radius).clamp(-1.0, 1.0).acos();
-    ((sweep.abs() / step.max(1e-6)).ceil() as usize).clamp(8, 512)
+    ((sweep.abs() / step.max(1e-6)).ceil() as usize).clamp(min, 512)
 }
 
 /// `center + u·cos t + v·sin t` 를 t = start 부터 start + sweep 까지 (sweep 이 음수면 시계 방향).

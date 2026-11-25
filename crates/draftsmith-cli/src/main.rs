@@ -160,9 +160,20 @@ fn main() -> Result<()> {
             println!("{} 에 약 {count} 개 객체 도면을 썼습니다", out.display());
         }
         Cmd::Bench { file } => {
+            // SHX 폴더 (환경 변수 DSMITH_SHX) — 앱과 같은 보이는 도면 단계를 재려고
+            if let Ok(dir) = std::env::var("DSMITH_SHX") {
+                draftsmith_core::shx::set_folder(Some(dir.into()));
+            }
             let t0 = Instant::now();
-            let d = shown(import::read_file(&file)?);
+            let model = import::read_file(&file)?;
+            let tr = Instant::now();
+            let d = shown(model.clone());
             let t1 = Instant::now();
+            // 편집 한 번마다 앱이 하는 일: 보이는 도면 다시 만들기 (평균 3 번)
+            for _ in 0..3 {
+                let _ = draftsmith_core::archgen::with_arch_owned(&model);
+            }
+            let tv = Instant::now();
             let s = display::segments(&d);
             let t2 = Instant::now();
             let bytes = s.to_bytes();
@@ -174,7 +185,12 @@ fn main() -> Result<()> {
                 s.len(),
                 bytes.len() as f64 / 1e6
             );
-            println!("읽기        {:8.1} ms", ms(t0, t1));
+            println!("읽기        {:8.1} ms", ms(t0, tr));
+            println!(
+                "보이는 도면 {:8.1} ms (편집마다 다시 — {:.1} ms)",
+                ms(tr, t1),
+                ms(t1, tv) / 3.0
+            );
             println!("선분 펼치기 {:8.1} ms", ms(t1, t2));
             println!("바이너리    {:8.1} ms", ms(t2, t3));
         }
