@@ -35,7 +35,7 @@
 use std::f64::consts::TAU;
 
 use crate::curve;
-use crate::drawing::{Drawing, Shape, VAlign};
+use crate::drawing::{Drawing, Entity, Shape, VAlign};
 use crate::fill;
 use crate::geom::{Bbox, Vec2};
 
@@ -157,106 +157,180 @@ pub fn segments(d: &Drawing) -> Segments {
     let mut pieces: Vec<Vec<Vec2>> = Vec::new();
 
     for e in &d.entities {
-        if d.layers.get(e.layer as usize).is_some_and(|l| !l.visible) {
-            continue;
+        emit(d, e, tol, &mut s, &mut pieces);
+    }
+    s
+}
+
+/// 객체 하나를 선분·삼각형으로 (§66 — 캐시와 함께 쓰려고 떼어 냄)
+fn emit(d: &Drawing, e: &Entity, tol: f64, s: &mut Segments, pieces: &mut Vec<Vec<Vec2>>) {
+    if d.layers.get(e.layer as usize).is_some_and(|l| !l.visible) {
+        return;
+    }
+    let [r, g, b] = d.color_of(e);
+    let col = [r, g, b, 255];
+    s.cur_w = e.weight.unwrap_or(0);
+    s.cur_aci = e.aci.unwrap_or(0);
+    let dash = e.linetype.and_then(|l| {
+        d.linetypes
+            .get(l.pattern as usize)
+            .map(|p| (p.dashes.as_slice(), l.scale))
+    });
+    pieces.clear();
+    match &e.shape {
+        Shape::Wide {
+            points,
+            closed,
+            widths,
+        } => {
+            for q in crate::drawing::wide_quads(points, *closed, widths, tol) {
+                s.tri(&[q[0], q[1], q[2]], col);
+                s.tri(&[q[0], q[2], q[3]], col);
+            }
+            return;
         }
-        let [r, g, b] = d.color_of(e);
-        let col = [r, g, b, 255];
-        s.cur_w = e.weight.unwrap_or(0);
-        s.cur_aci = e.aci.unwrap_or(0);
-        let dash = e.linetype.and_then(|l| {
-            d.linetypes
-                .get(l.pattern as usize)
-                .map(|p| (p.dashes.as_slice(), l.scale))
-        });
-        pieces.clear();
-        match &e.shape {
-            Shape::Wide {
-                points,
-                closed,
-                widths,
-            } => {
-                for q in crate::drawing::wide_quads(points, *closed, widths, tol) {
-                    s.tri(&[q[0], q[1], q[2]], col);
-                    s.tri(&[q[0], q[2], q[3]], col);
+        Shape::Wipeout { .. } => return,
+        Shape::Hatch { .. } => return,
+        Shape::Insert { .. } => return,
+        Shape::Line { a, b } => pieces.push(vec![*a, *b]),
+        Shape::Polyline { points, closed } => {
+            if dash.is_some() {
+                // 꼭짓점마다 무늬를 새로 시작
+                let n = points.len();
+                let last = if *closed { n } else { n.saturating_sub(1) };
+                for i in 0..last {
+                    let (p, g) = points[i];
+                    let q = points[(i + 1) % n].0;
+                    let mut piece = Vec::new();
+                    curve::bulge_points(p, q, g, tol, &mut piece);
+                    piece.push(q);
+                    pieces.push(piece);
                 }
-                continue;
-            }
-            Shape::Wipeout { .. } => continue,
-            Shape::Hatch { .. } => continue,
-            Shape::Insert { .. } => continue,
-            Shape::Line { a, b } => pieces.push(vec![*a, *b]),
-            Shape::Polyline { points, closed } => {
-                if dash.is_some() {
-                    // 꼭짓점마다 무늬를 새로 시작
-                    let n = points.len();
-                    let last = if *closed { n } else { n.saturating_sub(1) };
-                    for i in 0..last {
-                        let (p, g) = points[i];
-                        let q = points[(i + 1) % n].0;
-                        let mut piece = Vec::new();
-                        curve::bulge_points(p, q, g, tol, &mut piece);
-                        piece.push(q);
-                        pieces.push(piece);
-                    }
-                } else {
-                    let mut pts = curve::polyline_points(points, *closed, tol);
-                    if *closed && pts.len() > 2 {
-                        pts.push(pts[0]);
-                    }
-                    pieces.push(pts);
+            } else {
+                let mut pts = curve::polyline_points(points, *closed, tol);
+                if *closed && pts.len() > 2 {
+                    pts.push(pts[0]);
                 }
-            }
-            Shape::Circle { center, radius } => {
-                let mut pts = Vec::new();
-                let (u, v) = (Vec2::new(*radius, 0.0), Vec2::new(0.0, *radius));
-                curve::ellipse_points(*center, u, v, 0.0, TAU, tol, &mut pts);
                 pieces.push(pts);
             }
-            Shape::Arc {
-                center,
-                radius,
-                start,
-                end,
-            } => {
-                let mut pts = Vec::new();
-                let (u, v) = (Vec2::new(*radius, 0.0), Vec2::new(0.0, *radius));
-                let sweep = curve::ccw_sweep(*start, *end);
-                curve::ellipse_points(*center, u, v, *start, sweep, tol, &mut pts);
-                pieces.push(pts);
-            }
-            Shape::Ellipse {
-                center,
-                u,
-                v,
-                start,
-                end,
-            } => {
-                let mut pts = Vec::new();
-                let sweep = curve::ccw_sweep(*start, *end);
-                curve::ellipse_points(*center, *u, *v, *start, sweep, tol, &mut pts);
-                pieces.push(pts);
-            }
-            Shape::Fill { loops } => {
-                let t = fill::triangulate(loops);
-                for tri in t.as_chunks::<3>().0 {
-                    s.tri(tri, col);
-                }
-            }
-            Shape::Segments { lines } => {
-                for (a, b) in lines {
-                    s.push(*a, *b, col);
-                }
-            }
-            Shape::Text(_) => {}
         }
-        for piece in &pieces {
-            match dash {
-                Some((dashes, scale)) => dash_chain(&mut s, piece, dashes, scale, tol, col),
-                None => s.strip(piece, false, col),
+        Shape::Circle { center, radius } => {
+            let mut pts = Vec::new();
+            let (u, v) = (Vec2::new(*radius, 0.0), Vec2::new(0.0, *radius));
+            curve::ellipse_points(*center, u, v, 0.0, TAU, tol, &mut pts);
+            pieces.push(pts);
+        }
+        Shape::Arc {
+            center,
+            radius,
+            start,
+            end,
+        } => {
+            let mut pts = Vec::new();
+            let (u, v) = (Vec2::new(*radius, 0.0), Vec2::new(0.0, *radius));
+            let sweep = curve::ccw_sweep(*start, *end);
+            curve::ellipse_points(*center, u, v, *start, sweep, tol, &mut pts);
+            pieces.push(pts);
+        }
+        Shape::Ellipse {
+            center,
+            u,
+            v,
+            start,
+            end,
+        } => {
+            let mut pts = Vec::new();
+            let sweep = curve::ccw_sweep(*start, *end);
+            curve::ellipse_points(*center, *u, *v, *start, sweep, tol, &mut pts);
+            pieces.push(pts);
+        }
+        Shape::Fill { loops } => {
+            let t = fill::triangulate(loops);
+            for tri in t.as_chunks::<3>().0 {
+                s.tri(tri, col);
             }
+        }
+        Shape::Segments { lines } => {
+            for (a, b) in lines {
+                s.push(*a, *b, col);
+            }
+        }
+        Shape::Text(_) => {}
+    }
+    for piece in pieces.iter() {
+        match dash {
+            Some((dashes, scale)) => dash_chain(s, piece, dashes, scale, tol, col),
+            None => s.strip(piece, false, col),
         }
     }
+}
+
+/// 객체별 표시 데이터 캐시 (§66): 편집 뒤 바뀌지 않은 객체는 전에 펼친 것을 그대로 붙인다.
+/// 도면 범위(원점·허용 오차가 범위에서 나온다)·레이어·선 종류가 바뀌면 모두 다시.
+#[derive(Default)]
+pub struct SegCache {
+    key: Option<(
+        Bbox,
+        Vec<crate::drawing::Layer>,
+        Vec<crate::drawing::LinePattern>,
+    )>,
+    items: Vec<(Entity, Segments)>,
+    /// 마지막에 다시 펼친 객체 수 (측정용)
+    pub rebuilt: usize,
+}
+
+impl Segments {
+    fn append(&mut self, p: &Segments) {
+        self.coords.extend_from_slice(&p.coords);
+        self.colors.extend_from_slice(&p.colors);
+        self.tris.extend_from_slice(&p.tris);
+        self.tri_colors.extend_from_slice(&p.tri_colors);
+        self.weights.extend_from_slice(&p.weights);
+        self.acis.extend_from_slice(&p.acis);
+        self.tri_acis.extend_from_slice(&p.tri_acis);
+    }
+}
+
+/// [`segments`] 와 같은 결과를, 바뀌지 않은 객체는 캐시에서
+pub fn segments_cached(d: &Drawing, cache: &mut SegCache) -> Segments {
+    let bbox = d.bbox();
+    let diag = bbox.width().hypot(bbox.height()).max(1e-9);
+    let tol = diag / 20_000.0;
+    let origin = bbox.center();
+    let same = cache
+        .key
+        .as_ref()
+        .is_some_and(|(b, l, t)| *b == bbox && *l == d.layers && *t == d.linetypes);
+    if !same {
+        cache.items.clear();
+        cache.key = Some((bbox, d.layers.clone(), d.linetypes.clone()));
+    }
+    let mut s = Segments {
+        origin,
+        bbox,
+        ..Default::default()
+    };
+    let mut pieces: Vec<Vec<Vec2>> = Vec::new();
+    cache.rebuilt = 0;
+    for (i, e) in d.entities.iter().enumerate() {
+        let hit = cache.items.get(i).is_some_and(|(c, _)| c == e);
+        if !hit {
+            let mut p = Segments {
+                origin,
+                bbox,
+                ..Default::default()
+            };
+            emit(d, e, tol, &mut p, &mut pieces);
+            if i < cache.items.len() {
+                cache.items[i] = (e.clone(), p);
+            } else {
+                cache.items.push((e.clone(), p));
+            }
+            cache.rebuilt += 1;
+        }
+        s.append(&cache.items[i].1);
+    }
+    cache.items.truncate(d.entities.len());
     s
 }
 
@@ -475,5 +549,45 @@ mod tests {
             scale: 1e-6,
         });
         assert_eq!(segments(&d).len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    fn same(a: &Segments, b: &Segments) -> bool {
+        a.coords == b.coords
+            && a.colors == b.colors
+            && a.tris == b.tris
+            && a.tri_colors == b.tri_colors
+            && a.weights == b.weights
+    }
+
+    /// 캐시로 만든 표시 데이터가 늘 새로 만든 것과 같고, 바뀐 객체만 다시 펼친다 (§66)
+    #[test]
+    fn cached_matches_fresh() {
+        let d0 = crate::archgen::shown(&crate::demo::demo_building().unwrap());
+        let mut c = SegCache::default();
+        assert!(same(&segments_cached(&d0, &mut c), &segments(&d0)));
+        assert_eq!(c.rebuilt, d0.entities.len());
+        // 그대로면 하나도 다시 안 펼침
+        let _ = segments_cached(&d0, &mut c);
+        assert_eq!(c.rebuilt, 0);
+        // 범위 안에서 한 객체 색만 바꾸면 하나만
+        let mut d1 = d0.clone();
+        let i = d1
+            .entities
+            .iter()
+            .position(|e| matches!(e.shape, Shape::Line { .. }))
+            .unwrap();
+        d1.entities[i].color = Some([1, 2, 3]);
+        assert!(same(&segments_cached(&d1, &mut c), &segments(&d1)));
+        assert_eq!(c.rebuilt, 1);
+        // 레이어를 끄면 모두 다시
+        let mut d2 = d1.clone();
+        d2.layers[d2.entities[i].layer as usize].visible = false;
+        assert!(same(&segments_cached(&d2, &mut c), &segments(&d2)));
+        assert_eq!(c.rebuilt, d2.entities.len());
     }
 }

@@ -45,6 +45,8 @@ struct Open {
     journal_mark: usize,
     /// 모형 객체 뒤에 덧붙인 객체(블록 펼친 것·건축 객체 선)의 주인 (종류, 번호)
     owners: Vec<(String, u64)>,
+    /// 객체별 표시 데이터 캐시 — 편집 뒤 바뀐 객체만 다시 펼친다 (§66)
+    seg_cache: display::SegCache,
 }
 
 impl Open {
@@ -1438,9 +1440,16 @@ fn set_shx_folder(
 /// 표시 데이터 (바이너리, 형식은 `draftsmith_core::display`)
 #[tauri::command]
 fn display_data(state: State<'_, AppState>) -> Result<Response, String> {
-    let open = state.lock().map_err(err)?;
-    let d = open.shown().ok_or("열린 도면이 없습니다")?;
-    Ok(Response::new(display::segments(d).to_bytes()))
+    let mut open = state.lock().map_err(err)?;
+    let open = &mut *open;
+    let d = open
+        .view
+        .as_ref()
+        .or(open.ed.as_ref().map(|e| &e.d))
+        .ok_or("열린 도면이 없습니다")?;
+    Ok(Response::new(
+        display::segments_cached(d, &mut open.seg_cache).to_bytes(),
+    ))
 }
 
 /// 문자 표시 데이터 (바이너리, 형식은 `draftsmith_core::display::texts`)

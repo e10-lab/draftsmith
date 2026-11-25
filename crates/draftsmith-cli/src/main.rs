@@ -193,6 +193,21 @@ fn main() -> Result<()> {
             );
             println!("선분 펼치기 {:8.1} ms", ms(t1, t2));
             println!("바이너리    {:8.1} ms", ms(t2, t3));
+            // 캐시 (§66): 처음 한 번 채우고, 한 객체를 바꾼 뒤 다시
+            let mut cache = display::SegCache::default();
+            let _ = display::segments_cached(&d, &mut cache);
+            let mut d2 = d.clone();
+            if let Some(e) = d2.entities.first_mut() {
+                e.color = Some([1, 2, 3]);
+            }
+            let t4 = Instant::now();
+            let _ = display::segments_cached(&d2, &mut cache);
+            let t5 = Instant::now();
+            println!(
+                "편집 뒤 선분 (캐시) {:8.1} ms — 다시 펼친 객체 {}",
+                ms(t4, t5),
+                cache.rebuilt
+            );
         }
         Cmd::Pdf {
             file,
