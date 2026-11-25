@@ -86,7 +86,99 @@ pub fn compose(d: &Drawing, i: usize) -> Option<Drawing> {
     Some(out)
 }
 
-/// 배치의 축척 (첫 뷰포트에서). 없으면 None
+/// 뷰포트 고치기 (§35). 없는 값은 그대로
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct VpEdit {
+    /// 축척 분모 (100 → 1:100)
+    pub scale: Option<f64>,
+    /// 종이 위 가운데 (mm)
+    pub center: Option<[f64; 2]>,
+    /// 종이 위 폭·높이 (mm)
+    pub size: Option<[f64; 2]>,
+    /// 모형에서 보는 가운데
+    pub view_center: Option<[f64; 2]>,
+    /// 모형(그 층) 전체가 들어오게 가운데·축척을 맞춘다 (표준 축척으로)
+    pub fit: bool,
+}
+
+/// 표준 축척 (분모)
+pub const SCALES: [f64; 22] = [
+    1.0, 2.0, 5.0, 10.0, 20.0, 25.0, 30.0, 50.0, 100.0, 150.0, 200.0, 250.0, 300.0, 400.0, 500.0,
+    600.0, 1000.0, 1200.0, 1500.0, 2000.0, 3000.0, 5000.0,
+];
+
+/// 시트 `i` 의 뷰포트 `k` 를 고친 배치
+pub fn edit_viewport(d: &Drawing, i: usize, k: usize, e: &VpEdit) -> Result<Layout, String> {
+    let mut lay = d.layouts.get(i).cloned().ok_or("시트가 없습니다")?;
+    let level = lay.level;
+    let v = lay.viewports.get_mut(k).ok_or("뷰포트가 없습니다")?;
+    let scale_now = if v.height > 0.0 {
+        v.view_height / v.height
+    } else {
+        100.0
+    };
+    if let Some([w, h]) = e.size {
+        if w <= 1.0 || h <= 1.0 {
+            return Err("뷰포트가 너무 작습니다".into());
+        }
+        v.width = w;
+        v.height = h;
+        v.view_height = h * scale_now;
+    }
+    if let Some([x, y]) = e.center {
+        v.center = Vec2::new(x, y);
+    }
+    if let Some([x, y]) = e.view_center {
+        v.view_center = Vec2::new(x, y);
+    }
+    if let Some(s) = e.scale {
+        if s <= 0.0 {
+            return Err("축척은 0 보다 커야 합니다".into());
+        }
+        v.view_height = v.height * s;
+    }
+    if e.fit {
+        let bb = model_for(d, level).bbox();
+        if bb.is_empty() {
+            return Err("모형에 그린 것이 없습니다".into());
+        }
+        // 대상점·비틀기 없는 뷰포트 기준 (DraftSmith 시트)
+        v.view_center = Vec2::new(
+            (bb.min.x + bb.max.x) / 2.0 - v.target.x,
+            (bb.min.y + bb.max.y) / 2.0 - v.target.y,
+        );
+        let need = (bb.width() / v.width).max(bb.height() / v.height) / 0.92;
+        let s = SCALES
+            .iter()
+            .copied()
+            .find(|s| *s >= need)
+            .unwrap_or(need.ceil());
+        v.view_height = v.height * s;
+    }
+    // 첫 뷰포트 축척이 바뀌면 표제란의 「1:N」 글자도
+    let scale_new = lay
+        .viewports
+        .get(k)
+        .map(|v| v.view_height / v.height.max(1e-9))
+        .unwrap_or(scale_now);
+    if k == 0 && (scale_new - scale_now).abs() > 1e-9 {
+        let (old, new) = (
+            format!("1:{}", scale_now.round()),
+            format!("1:{}", scale_new.round()),
+        );
+        for e in &mut lay.paper {
+            if let Shape::Text(t) = &mut e.shape
+                && t.value == old
+            {
+                t.value = new.clone();
+            }
+        }
+    }
+    Ok(lay)
+}
+
+/// 배치의 축척 (첫 뷰포트에서)/// 배치의 축척 (첫 뷰포트에서). 없으면 None
 pub fn scale_of(l: &Layout) -> Option<f64> {
     let v = l.viewports.first()?;
     (v.height > 0.0).then(|| v.view_height / v.height)
@@ -416,5 +508,61 @@ mod tests {
         }
         // 목록 시트 자신은 축척 없음
         assert!(texts.iter().any(|t| t == "-"));
+    }
+
+    #[test]
+    fn viewport_scale_and_fit() {
+        let mut ed = Editor::new(new_drawing());
+        apply(
+            &mut ed,
+            ArchReq::Walls {
+                points: vec![[0.0, 0.0], [30000.0, 0.0], [30000.0, 20000.0]],
+                closed: false,
+                thickness: 200.0,
+                wall: WallKind::Exterior,
+            },
+        )
+        .unwrap();
+        let mut d = ed.d.clone();
+        let req = SheetReq {
+            title: "t".into(),
+            number: "A-1".into(),
+            paper: "A3".into(),
+            scale: 50.0,
+            level: None,
+            project: String::new(),
+            list: false,
+        };
+        let l = make(&mut d, &req).unwrap();
+        d.layouts.push(l);
+        let l = edit_viewport(
+            &d,
+            0,
+            0,
+            &VpEdit {
+                scale: Some(200.0),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!((scale_of(&l).unwrap() - 200.0).abs() < 1e-9);
+        // 표제란 축척 글자도 1:200
+        assert!(
+            l.paper
+                .iter()
+                .any(|e| matches!(&e.shape, Shape::Text(t) if t.value == "1:200"))
+        );
+        // A3 뷰포트 386×225 에 30 m×20 m: 20100/225/0.92 ≈ 97 → 표준 축척 1:100
+        let l = edit_viewport(
+            &d,
+            0,
+            0,
+            &VpEdit {
+                fit: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(scale_of(&l).unwrap(), 100.0);
     }
 }

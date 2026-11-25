@@ -126,3 +126,56 @@ export class TablesDrawer {
     this.body.append(table);
   }
 }
+
+/** 시트의 뷰포트 고치기 (§35): 축척·크기·가운데·보는 가운데, 모형에 맞춤 */
+const SCALES = [1, 2, 5, 10, 20, 25, 30, 50, 100, 150, 200, 250, 300, 400, 500, 600, 1000, 1200, 1500, 2000, 3000, 5000];
+export function renderViewports(app, doc) {
+  const box = document.getElementById("vports");
+  box.replaceChildren();
+  const vps = doc.viewports ?? [];
+  box.hidden = doc.sheet == null || !vps.length;
+  if (box.hidden) return;
+  const r1 = (v) => String(Math.round(v * 10) / 10);
+  const send = (index, edit) => app.apply({ kind: "viewport", index, ...edit });
+  box.append(el("h4", "", "뷰포트"));
+  for (const v of vps) {
+    const dl = el("dl", "props");
+    const field = (label, value, on) => {
+      const i = el("input");
+      i.value = value;
+      i.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") i.blur();
+        e.stopPropagation();
+      });
+      i.addEventListener("change", () => on(i.value));
+      dl.append(el("dt", "", label));
+      const dd = el("dd");
+      dd.append(i);
+      dl.append(dd);
+      return i;
+    };
+    const sc = field("축척 1:", r1(v.scale), (x) => Number(x) > 0 && send(v.index, { scale: Number(x) }));
+    const list = el("datalist");
+    list.id = `vp-scales-${v.index}`;
+    for (const k of SCALES) list.append(new Option(String(k)));
+    sc.setAttribute("list", list.id);
+    dl.append(list);
+    const num = (s) => s.split(/[,x×\s]+/).map(Number);
+    field("크기 (mm)", `${r1(v.size[0])} × ${r1(v.size[1])}`, (x) => {
+      const [w, h] = num(x);
+      if (w > 0 && h > 0) send(v.index, { size: [w, h] });
+    });
+    field("종이 위치", `${r1(v.center[0])}, ${r1(v.center[1])}`, (x) => {
+      const [a, b] = num(x);
+      if (Number.isFinite(a) && Number.isFinite(b)) send(v.index, { center: [a, b] });
+    });
+    field("보는 가운데", `${Math.round(v.view_center[0])}, ${Math.round(v.view_center[1])}`, (x) => {
+      const [a, b] = num(x);
+      if (Number.isFinite(a) && Number.isFinite(b)) send(v.index, { view_center: [a, b] });
+    });
+    const fit = el("button", "", "모형에 맞춤");
+    fit.title = "그 층 모형 전체가 들어오게 가운데와 표준 축척을 맞춥니다";
+    fit.addEventListener("click", () => send(v.index, { fit: true }));
+    box.append(el("p", "muted small", `뷰포트 ${v.index + 1}`), dl, fit);
+  }
+}

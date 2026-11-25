@@ -7,7 +7,7 @@ import { Snapper } from "./snapper.js";
 import { SelectTool } from "./select.js";
 import { TOOLS } from "./tools.js";
 import { COMMANDS, lookup, Palette } from "./commands.js";
-import { renderLayers, renderLevels, TablesDrawer } from "./panels.js";
+import { renderLayers, renderLevels, renderViewports, TablesDrawer } from "./panels.js";
 import { View3D } from "./view3d.js";
 
 const invoke = window.__TAURI__.core.invoke;
@@ -106,6 +106,16 @@ const host = {
   },
   dblclick() { return false; },
   paint(ctx, ts) {
+    // 시트에서는 뷰포트 테두리를 점선으로
+    for (const v of app.doc?.sheet != null ? app.doc.viewports ?? [] : []) {
+      const [ax, ay] = ts(v.center[0] - v.size[0] / 2, v.center[1] - v.size[1] / 2);
+      const [bx, by] = ts(v.center[0] + v.size[0] / 2, v.center[1] + v.size[1] / 2);
+      ctx.strokeStyle = "rgba(74,168,255,0.7)";
+      ctx.lineWidth = 1;
+      ctx.setLineDash([5, 4]);
+      ctx.strokeRect(Math.min(ax, bx), Math.min(ay, by), Math.abs(bx - ax), Math.abs(by - ay));
+      ctx.setLineDash([]);
+    }
     app.select.paint(ctx, ts);
     if (active) active.paint(ctx, ts);
     if (this.t.snaps) app.snap.paint(ctx, ts);
@@ -188,6 +198,7 @@ async function setDoc(st, keepView) {
   app.baseLayers = st.base_layers;
   renderLayers(app, st);
   renderLevels(app, st);
+  renderViewports(app, st);
   renderSpaces(st);
   $("undo").disabled = !st.can_undo;
   $("redo").disabled = !st.can_redo;

@@ -277,6 +277,8 @@ struct DocState {
     read_ms: f64,
     /// 편집으로 새로 생긴 객체 번호 (고르기 표시용)
     added: Vec<usize>,
+    /// 지금 시트의 뷰포트들 (모형이면 빈 목록)
+    viewports: Vec<VpInfo>,
 }
 
 fn state_of(open: &Open, read_ms: f64, added: Vec<usize>) -> Result<DocState, String> {
@@ -340,7 +342,38 @@ fn state_of(open: &Open, read_ms: f64, added: Vec<usize>) -> Result<DocState, St
         arch: archgen::summary(&d.arch),
         read_ms,
         added,
+        viewports: open
+            .sheet
+            .and_then(|i| d.layouts.get(i))
+            .map(|l| {
+                l.viewports
+                    .iter()
+                    .enumerate()
+                    .map(|(k, v)| VpInfo {
+                        index: k,
+                        center: [v.center.x, v.center.y],
+                        size: [v.width, v.height],
+                        view_center: [v.view_center.x, v.view_center.y],
+                        scale: if v.height > 0.0 {
+                            v.view_height / v.height
+                        } else {
+                            0.0
+                        },
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
     })
+}
+
+/// 시트의 뷰포트 (§35)
+#[derive(Serialize)]
+struct VpInfo {
+    index: usize,
+    center: [f64; 2],
+    size: [f64; 2],
+    view_center: [f64; 2],
+    scale: f64,
 }
 
 /// 새 도면 (기본 레이어)
@@ -570,6 +603,12 @@ enum EditReq {
     Explode {
         ids: Vec<usize>,
     },
+    /// 지금 시트의 뷰포트 고치기 (§35)
+    Viewport {
+        index: usize,
+        #[serde(flatten)]
+        edit: sheet::VpEdit,
+    },
     /// 도면 시트 만들기 (M4)
     AddSheet(sheet::SheetReq),
     /// 도면 시트 지우기
@@ -596,6 +635,34 @@ fn affine(m: [f64; 6]) -> Affine {
 fn edit(req: EditReq, state: State<'_, AppState>) -> Result<DocState, String> {
     let mut open = state.lock().map_err(err)?;
     let mut added = Vec::new();
+    // 시트에서도 되는 편집: 뷰포트 고치기, 되돌리기·다시 하기
+    if open.sheet.is_some()
+        && matches!(
+            req,
+            EditReq::Viewport { .. } | EditReq::Undo | EditReq::Redo
+        )
+    {
+        let i = open.sheet.unwrap_or(0);
+        let ed = open.ed.as_mut().ok_or("열린 도면이 없습니다")?;
+        match &req {
+            EditReq::Viewport { index, edit } => {
+                let l = sheet::edit_viewport(&ed.d, i, *index, edit)?;
+                ed.set_layout(i, l);
+            }
+            EditReq::Undo => {
+                ed.undo();
+            }
+            _ => {
+                ed.redo();
+            }
+        }
+        // 되돌리다 시트가 없어졌으면 모형으로
+        if open.ed.as_ref().is_some_and(|e| i >= e.d.layouts.len()) {
+            open.sheet = None;
+        }
+        open.refresh();
+        return state_of(&open, 0.0, Vec::new());
+    }
     // 화면에 보이는 도면(건축 객체 선 포함)을 경계로 쓰는 편집은 먼저 계산한다
     let (mut reshape, mut hatch) = (None, None);
     if matches!(
@@ -762,6 +829,7 @@ fn edit(req: EditReq, state: State<'_, AppState>) -> Result<DocState, String> {
             EditReq::Hatch { .. } => {
                 added = ed.add_shapes(hatch.take().into_iter().collect()).collect()
             }
+            EditReq::Viewport { .. } => return Err("뷰포트는 시트에서 고칩니다".into()),
             EditReq::Undo => {
                 ed.undo();
             }

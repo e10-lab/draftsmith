@@ -165,11 +165,29 @@ export class SelectTool {
   }
 
   drag(a, b, crossing) {
+    // 손잡이에서 끌기 시작하면 손잡이 옮기기 (§35)
+    if (!this.box && !this.grip) {
+      const g = this.gripAt(a);
+      if (g) {
+        this.grip = g;
+        this.dragGrip = true;
+      }
+    }
+    if (this.dragGrip) {
+      this.app.snap.update(b);
+      this.cur = this.app.snap.point(this.base(), b);
+      this.app.v.drawOverlay();
+      return;
+    }
     this.box = { a, b, crossing };
     this.app.v.drawOverlay();
   }
 
   async dragEnd(a, b, crossing, add) {
+    if (this.dragGrip) {
+      this.dragGrip = false;
+      return this.placeGrip(this.app.snap.point(this.base(), b));
+    }
     this.box = null;
     const rect = [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[0], b[0]), Math.max(a[1], b[1])];
     let found = [];

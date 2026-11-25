@@ -383,6 +383,17 @@ impl Editor {
         self.run(Op::Layouts { old, new });
     }
 
+    /// 배치 하나 바꾸기 (뷰포트 고치기 등)
+    pub fn set_layout(&mut self, i: usize, l: crate::layout::Layout) {
+        if i >= self.d.layouts.len() || self.d.layouts[i] == l {
+            return;
+        }
+        let old = self.d.layouts.clone();
+        let mut new = old.clone();
+        new[i] = l;
+        self.run(Op::Layouts { old, new });
+    }
+
     /// 배치 지우기
     pub fn remove_layout(&mut self, i: usize) {
         if i >= self.d.layouts.len() {
