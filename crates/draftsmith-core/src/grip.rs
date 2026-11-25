@@ -16,7 +16,7 @@ use crate::geom::{Affine, Vec2};
 /// 손잡이 점들
 pub fn grips(s: &Shape) -> Vec<Vec2> {
     match s {
-        Shape::Wide { points, .. } => points.first().map(|(p, _)| vec![*p]).unwrap_or_default(),
+        Shape::Wide { points, .. } => points.iter().map(|(p, _)| *p).collect(),
         Shape::Wipeout { .. } => Vec::new(),
         Shape::Line { a, b } => vec![*a, *b, a.lerp(*b, 0.5)],
         Shape::Polyline { points, .. } => points.iter().map(|(p, _)| *p).collect(),
@@ -69,6 +69,21 @@ pub fn arc3(a: Vec2, m: Vec2, e: Vec2) -> Option<Shape> {
 
 /// 손잡이 k 를 `to` 로 옮긴 모양 (못 옮기면 None)
 pub fn move_grip(s: &Shape, k: usize, to: Vec2) -> Option<Shape> {
+    // 폭 있는 폴리선: 꼭짓점 손잡이, 꼭짓점마다 폭은 그대로 (§67)
+    if let Shape::Wide {
+        points,
+        closed,
+        widths,
+    } = s
+    {
+        let mut p = points.clone();
+        p.get_mut(k)?.0 = to;
+        return Some(Shape::Wide {
+            points: p,
+            closed: *closed,
+            widths: widths.clone(),
+        });
+    }
     let g = grips(s);
     let from = *g.get(k)?;
     let shift = |s: &Shape| s.transformed(&Affine::translate(to.x - from.x, to.y - from.y));

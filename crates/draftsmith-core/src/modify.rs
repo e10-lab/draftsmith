@@ -181,6 +181,10 @@ fn on_piece(q: &Piece, p: Vec2) -> bool {
 
 /// 모양 → 조각들, 닫혔나
 fn pieces(s: &Shape) -> Option<(Vec<Piece>, bool)> {
+    // 폭 있는 폴리선은 가운데 선으로 (§67)
+    if let Some((thin, _)) = s.thin() {
+        return pieces(&thin);
+    }
     Some(match s {
         Shape::Line { a, b } => (vec![Piece::Seg(*a, *b)], false),
         Shape::Arc {
@@ -285,6 +289,19 @@ fn span(ps: &[Piece], t0: f64, t1: f64) -> Vec<Piece> {
 fn rebuild(orig: &Shape, ps: &[Piece]) -> Option<Shape> {
     if ps.is_empty() {
         return None;
+    }
+    // 폭 있는 폴리선: 폴리선으로 만들고 대표 폭을 되붙인다 (§67)
+    if let Some((thin, w)) = orig.thin() {
+        let r = rebuild(&thin, ps)?;
+        let r = match r {
+            Shape::Line { a, b } => Shape::Polyline {
+                points: vec![(a, 0.0), (b, 0.0)],
+                closed: false,
+            },
+            Shape::Arc { .. } => return Some(r),
+            other => other,
+        };
+        return Some(r.widen(w));
     }
     let arc_shape = |p: &Piece| match *p {
         Piece::Arc { c, r, s, sw } => {
@@ -773,6 +790,9 @@ pub enum Corner {
 
 /// 폴리선의 고른 점에서 가장 가까운 꼭짓점(앞뒤 변이 직선인 것)을 모깎기·모따기한 폴리선
 pub fn corner_polyline(s: &Shape, pick: Vec2, c: Corner) -> Result<Shape, String> {
+    if let Some((thin, w)) = s.thin() {
+        return corner_polyline(&thin, pick, c).map(|r| r.widen(w));
+    }
     let Shape::Polyline { points, closed } = s else {
         return Err("폴리선이 아닙니다".into());
     };
@@ -927,6 +947,69 @@ pub fn hatch_shape(ring: Vec<Vec2>, pattern: &str, spacing: f64) -> Result<Shape
         lines,
         name: pattern.to_string(),
     })
+}
+
+#[cfg(test)]
+mod wide_edit_tests {
+    use super::*;
+    use crate::drawing::Entity;
+
+    /// 폭 있는 폴리선도 자르기·연장·간격 띄우기·모서리 — 폭이 유지된다 (§67)
+    #[test]
+    fn trim_extend_offset_keep_width() {
+        let ent = |shape: Shape| Entity {
+            layer: 0,
+            color: None,
+            aci: None,
+            linetype: None,
+            weight: None,
+            shape,
+        };
+        let wide = Shape::Wide {
+            points: vec![(Vec2::new(0.0, 0.0), 0.0), (Vec2::new(1000.0, 0.0), 0.0)],
+            closed: false,
+            widths: vec![(50.0, 50.0); 2],
+        };
+        let mut d = crate::archgen::new_drawing();
+        d.entities = vec![
+            ent(wide.clone()),
+            ent(Shape::Line {
+                a: Vec2::new(500.0, -100.0),
+                b: Vec2::new(500.0, 100.0),
+            }),
+            ent(Shape::Line {
+                a: Vec2::new(1500.0, -100.0),
+                b: Vec2::new(1500.0, 100.0),
+            }),
+        ];
+        let t = trim(&d, 0, Vec2::new(800.0, 0.0)).unwrap();
+        assert_eq!(t.len(), 1);
+        match &t[0] {
+            Shape::Wide { points, widths, .. } => {
+                assert!(points[1].0.dist(Vec2::new(500.0, 0.0)) < 1e-9);
+                assert_eq!(widths[0], (50.0, 50.0));
+            }
+            s => panic!("{s:?}"),
+        }
+        match extend(&d, 0, Vec2::new(990.0, 0.0)).unwrap() {
+            Shape::Wide { points, .. } => assert!(points[1].0.dist(Vec2::new(1500.0, 0.0)) < 1e-9),
+            s => panic!("{s:?}"),
+        }
+        match crate::edit::offset_shape(&wide, 200.0, Vec2::new(0.0, 500.0)).unwrap() {
+            Shape::Wide { points, widths, .. } => {
+                assert!((points[0].0.y - 200.0).abs() < 1e-9);
+                assert_eq!(widths[0], (50.0, 50.0));
+            }
+            s => panic!("{s:?}"),
+        }
+        match crate::grip::move_grip(&wide, 1, Vec2::new(1000.0, 300.0)).unwrap() {
+            Shape::Wide { points, widths, .. } => {
+                assert_eq!(points[1].0, Vec2::new(1000.0, 300.0));
+                assert_eq!(widths.len(), 2);
+            }
+            s => panic!("{s:?}"),
+        }
+    }
 }
 
 #[cfg(test)]

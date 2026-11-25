@@ -808,6 +808,10 @@ pub fn offset_chain(pts: &[Vec2], closed: bool, dist: f64) -> Vec<Vec2> {
 
 /// 모양을 `side` 쪽으로 `dist` 만큼 평행 복사
 pub fn offset_shape(s: &Shape, dist: f64, side: Vec2) -> Option<Shape> {
+    // 폭 있는 폴리선은 가운데 선을 띄우고 폭을 되붙인다 (§67)
+    if let Some((thin, w)) = s.thin() {
+        return offset_shape(&thin, dist, side).map(|r| r.widen(w));
+    }
     match s {
         Shape::Line { a, b } => {
             let k = if side_of(*a, *b, side) >= 0.0 {

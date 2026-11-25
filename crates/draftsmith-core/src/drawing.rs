@@ -509,6 +509,46 @@ pub struct FontUse {
     pub ttf: String,
 }
 
+impl Shape {
+    /// 폭 있는 폴리선을 폭 없는 폴리선과 대표 폭(가장 흔한 시작 폭)으로 — 편집은 폴리선으로 하고 폭을 되붙인다 (§67)
+    pub fn thin(&self) -> Option<(Shape, f64)> {
+        let Shape::Wide {
+            points,
+            closed,
+            widths,
+        } = self
+        else {
+            return None;
+        };
+        let w = widths.first().map(|(a, _)| *a).unwrap_or(0.0);
+        Some((
+            Shape::Polyline {
+                points: points.clone(),
+                closed: *closed,
+            },
+            w,
+        ))
+    }
+
+    /// 폴리선(또는 선·호)에 고정 폭을 붙인다. 폭이 0 이면 그대로
+    pub fn widen(self, w: f64) -> Shape {
+        if w <= 0.0 {
+            return self;
+        }
+        let (points, closed) = match self {
+            Shape::Polyline { points, closed } => (points, closed),
+            Shape::Line { a, b } => (vec![(a, 0.0), (b, 0.0)], false),
+            other => return other,
+        };
+        let n = points.len();
+        Shape::Wide {
+            points,
+            closed,
+            widths: vec![(w, w); n],
+        }
+    }
+}
+
 /// 폭 있는 폴리선을 채울 사각형들 (§65): 호는 꼭짓점으로 펼쳐 폭을 길이 비례로 잇고, 변마다 사각형 + 꺾인 곳은
 /// 바깥 면을 맞대는 마이터(너무 길면 빗면)로 틈을 메운다. 사각형 꼭짓점은 반시계 아니어도 된다
 pub fn wide_quads(
