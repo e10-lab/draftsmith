@@ -784,7 +784,7 @@ window.addEventListener("keydown", (e) => {
 
 // 파일을 창에 끌어 놓으면 연다
 window.__TAURI__.event?.listen?.("tauri://drag-drop", (ev) => {
-  const p = ev.payload?.paths?.find((x) => /\.(dwg|dxf|dsmith|ifc)$/i.test(x));
+  const p = ev.payload?.paths?.find((x) => /\.(dwg|dxf|dsmith|ifc|shp)$/i.test(x));
   if (p) open(p);
 });
 

@@ -49,6 +49,13 @@ pub fn read_file(path: impl AsRef<Path>) -> Result<Drawing, ImportError> {
     if crate::docfile::is_dsmith(path) {
         return crate::docfile::load(path).map_err(ImportError::Cad);
     }
+    // 연속지적도 SHP (§58)
+    if path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("shp"))
+    {
+        return crate::shp::read(path).map_err(ImportError::Cad);
+    }
     // IFC 는 건축 객체로 (§47)
     if path
         .extension()

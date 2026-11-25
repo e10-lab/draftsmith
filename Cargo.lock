@@ -975,6 +975,7 @@ version = "0.1.0"
 dependencies = [
  "acadrust",
  "earcut",
+ "encoding_rs",
  "flate2",
  "krilla",
  "rstar",

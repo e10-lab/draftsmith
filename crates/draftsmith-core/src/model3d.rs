@@ -110,6 +110,7 @@ impl Mesh {
 const WALL_EXT: [u8; 4] = [214, 210, 202, 255];
 const WALL_INT: [u8; 4] = [236, 234, 230, 255];
 const SLAB: [u8; 4] = [196, 182, 160, 255];
+const CEILING: [u8; 4] = [244, 242, 236, 255];
 const GLASS: [u8; 4] = [120, 170, 210, 140];
 const DOOR: [u8; 4] = [150, 110, 80, 255];
 const COLUMN: [u8; 4] = [190, 186, 178, 255];
@@ -127,6 +128,16 @@ pub fn mesh(m: &ArchModel) -> Mesh {
         for r in m.rooms.iter().filter(|r| r.level == l.id) {
             let t = fill::triangulate(std::slice::from_ref(&r.boundary));
             for c in t.chunks(3) {
+                // 반자(천장): 아래를 보는 면 하나 (§55)
+                if let (3, Some(h)) = (c.len(), r.ceiling) {
+                    let z = z0 + h;
+                    out.tri(
+                        [c[2].x, c[2].y, z],
+                        [c[1].x, c[1].y, z],
+                        [c[0].x, c[0].y, z],
+                        CEILING,
+                    );
+                }
                 if c.len() == 3 {
                     out.tri(
                         [c[0].x, c[0].y, z0],

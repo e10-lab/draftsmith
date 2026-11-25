@@ -231,8 +231,10 @@ fn pick_drawing() -> Option<String> {
     rfd::FileDialog::new()
         .set_title("도면 열기")
         .add_filter(
-            "도면 (DraftSmith, DWG, DXF, IFC)",
-            &["dsmith", "dwg", "dxf", "ifc", "DSMITH", "DWG", "DXF", "IFC"],
+            "도면 (DraftSmith, DWG, DXF, IFC, 지적도 SHP)",
+            &[
+                "dsmith", "dwg", "dxf", "ifc", "shp", "DSMITH", "DWG", "DXF", "IFC", "SHP",
+            ],
         )
         .pick_file()
         .map(|p| p.display().to_string())

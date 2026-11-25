@@ -392,6 +392,23 @@ pub fn write(m: &ArchModel, project: &str) -> String {
                 s("보")
             )));
         }
+        // 반자 (§55): 실 경계를 두께 20 으로, 천장 높이에
+        for r in m
+            .rooms
+            .iter()
+            .filter(|x| x.level == l.id && x.boundary.len() >= 3)
+        {
+            let Some(h) = r.ceiling else { continue };
+            let ax = w.place3(Vec2::default(), h, Vec2::new(1.0, 0.0));
+            let lp = w.local(Some(pl), ax);
+            let prof = w.polygon(&r.boundary);
+            let shape = w.body(ctx, prof, 20.0);
+            items.push(w.add(format!(
+                "IFCCOVERING('{}',$,{},$,$,#{lp},#{shape},$,.CEILING.)",
+                guid("ceiling", r.id),
+                s(&format!("{} 천장", r.name))
+            )));
+        }
         // 기둥
         for c in m.columns.iter().filter(|x| x.level == l.id) {
             let ax = w.place3(c.at, 0.0, Vec2::new(c.angle.cos(), c.angle.sin()));
