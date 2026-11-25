@@ -23,6 +23,47 @@ pub enum Kind {
     Uni,
 }
 
+/// 큰 글꼴의 글자 코드 방식
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Enc {
+    /// 완성형·Shift-JIS·GBK 등 (encoding_rs)
+    Std(&'static encoding_rs::Encoding),
+    /// 한글 조합형 (KS X 1001 부속서 3) — encoding_rs 에 없어 직접
+    Johab,
+}
+
+impl Enc {
+    /// 글자 하나 → 2 바이트 코드 (없으면 None)
+    pub fn code(&self, ch: char) -> Option<u16> {
+        match self {
+            Enc::Johab => johab(ch),
+            Enc::Std(e) => {
+                let mut buf = [0u8; 4];
+                let (b, _, bad) = e.encode(ch.encode_utf8(&mut buf));
+                (!bad && b.len() == 2).then(|| (b[0] as u16) << 8 | b[1] as u16)
+            }
+        }
+    }
+}
+
+/// 한글 음절 → 조합형 코드: 1 · 초성 5 비트 · 중성 5 비트 · 종성 5 비트
+fn johab(ch: char) -> Option<u16> {
+    const V: [u16; 21] = [
+        3, 4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 18, 19, 20, 21, 22, 23, 26, 27, 28, 29,
+    ];
+    let s = (ch as u32).checked_sub(0xac00)?;
+    if s >= 11172 {
+        return None;
+    }
+    let (l, v, t) = (s / 588, (s % 588) / 28, s % 28);
+    let tc = match t {
+        0 => 1,
+        1..=16 => t + 1,
+        _ => t + 2,
+    };
+    Some(0x8000 | ((l as u16 + 2) << 10) | (V[v as usize] << 5) | tc as u16)
+}
+
 /// 읽은 SHX 글꼴
 #[derive(Debug, Clone)]
 pub struct Font {
@@ -36,7 +77,7 @@ pub struct Font {
     /// 큰 글꼴 앞 바이트 범위
     pub ranges: Vec<(u16, u16)>,
     /// 큰 글꼴의 글자 코드 인코딩 (모양 번호로 짐작 — 가나 「あ」 82A0 면 Shift-JIS, 「가」 B0A1 이면 CP949)
-    pub encoding: Option<&'static encoding_rs::Encoding>,
+    pub encoding: Option<Enc>,
     shapes: HashMap<u16, Vec<u8>>,
 }
 
@@ -154,15 +195,19 @@ impl Font {
         } else {
             0.0
         };
+        let has = |c: u16| shapes.contains_key(&c);
         let encoding = (kind == Kind::Big).then(|| {
-            if shapes.contains_key(&0x82a0) && shapes.contains_key(&0x8341) {
-                encoding_rs::SHIFT_JIS
-            } else if shapes.contains_key(&0xb0a1) && shapes.contains_key(&0xc7cf) {
-                encoding_rs::EUC_KR
-            } else if shapes.contains_key(&0xa4a2) {
-                encoding_rs::GBK
+            if has(0x8861) && has(0x8862) {
+                // 조합형: 「가」 8861 · 「각」 8862 (HGTXT 등)
+                Enc::Johab
+            } else if has(0x82a0) && has(0x8341) {
+                Enc::Std(encoding_rs::SHIFT_JIS)
+            } else if has(0xb0a1) && has(0xc7cf) {
+                Enc::Std(encoding_rs::EUC_KR)
+            } else if has(0xa4a2) {
+                Enc::Std(encoding_rs::GBK)
             } else {
-                encoding_rs::EUC_KR
+                Enc::Std(encoding_rs::EUC_KR)
             }
         });
         Ok(Font {
@@ -517,15 +562,11 @@ fn code_for(ch: char, main: Option<&Font>, big: Option<&Font>) -> Option<(bool, 
     if let Some(b) = big
         && let Some(enc) = b.encoding
         && !ch.is_ascii()
+        && let Some(code) = enc.code(ch)
+        && b.is_lead((code >> 8) as u8)
+        && b.has(code)
     {
-        let mut buf = [0u8; 4];
-        let (bytes, _, bad) = enc.encode(ch.encode_utf8(&mut buf));
-        if !bad && bytes.len() == 2 && b.is_lead(bytes[0]) {
-            let code = (bytes[0] as u16) << 8 | bytes[1] as u16;
-            if b.has(code) {
-                return Some((true, code));
-            }
-        }
+        return Some((true, code));
     }
     let m = main?;
     let code = match m.kind {
@@ -856,7 +897,7 @@ mod tests {
         );
         assert_eq!(g.advance, 8.0);
         let b = Font::parse(&big_font()).unwrap();
-        assert_eq!(b.encoding, Some(encoding_rs::SHIFT_JIS));
+        assert_eq!(b.encoding, Some(Enc::Std(encoding_rs::SHIFT_JIS)));
         assert!(b.is_lead(0x82) && !b.is_lead(0x41));
         // 부분 모양 상자 맞춤: 가로 5/10 배
         let g = b.glyph(0x82a0).unwrap();
@@ -905,13 +946,70 @@ mod tests {
         assert!(c.lines.iter().all(|(a, _)| a.x < 100.0 + 4.5));
     }
 
+    /// 조합형 코드 계산 (KS X 1001 부속서 3)
+    #[test]
+    fn johab_codes() {
+        assert_eq!(johab('가'), Some(0x8861));
+        assert_eq!(johab('각'), Some(0x8862));
+        assert_eq!(johab('힣'), Some(0xd3bd));
+        assert_eq!(johab('A'), None);
+    }
+
+    /// 실제 한글·영문 글꼴로 (폴더가 있을 때만): SHX_DIR=… cargo test — 파일 이름에 whgtxt·hgtxt·txt·romans
+    #[test]
+    fn real_korean_fonts_if_given() {
+        let Ok(dir) = std::env::var("SHX_DIR") else {
+            return;
+        };
+        let find = |key: &str| {
+            std::fs::read_dir(&dir)
+                .unwrap()
+                .flatten()
+                .map(|e| e.path())
+                .find(|p| {
+                    let n = p
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .to_ascii_lowercase();
+                    n.rsplit('-').next() == Some(format!("{key}.shx").as_str())
+                })
+        };
+        let ld = |key: &str| find(key).map(|p| Font::parse(&std::fs::read(p).unwrap()).unwrap());
+        let (wh, hg, txt, ro) = (ld("whgtxt"), ld("hgtxt"), ld("txt"), ld("romans"));
+        if let Some(f) = &wh {
+            assert_eq!(f.encoding, Some(Enc::Std(encoding_rs::EUC_KR)));
+        }
+        if let Some(f) = &hg {
+            assert_eq!(f.encoding, Some(Enc::Johab));
+        }
+        for big in [&wh, &hg].into_iter().flatten() {
+            for ch in "건축평면도층계단실면적".chars() {
+                let (is_big, code) =
+                    code_for(ch, None, Some(big)).unwrap_or_else(|| panic!("{ch}"));
+                assert!(
+                    is_big && !big.glyph(code).unwrap().strokes.is_empty(),
+                    "{ch}"
+                );
+            }
+            // KS 2350 자 밖은 없다 → 내장 글꼴
+            assert!(code_for('똠', None, Some(big)).is_none());
+        }
+        for m in [&txt, &ro].into_iter().flatten() {
+            assert_eq!(m.kind, Kind::Uni);
+            for ch in "A-101 (2,400)".chars().filter(|c| *c != ' ') {
+                assert!(code_for(ch, Some(m), None).is_some(), "{ch}");
+            }
+        }
+    }
+
     /// 올려 받은 실제 글꼴로 (경로가 있을 때만): SHX=…/extfont2.shx cargo test
     #[test]
     fn real_bigfont_if_given() {
         let Ok(p) = std::env::var("SHX") else { return };
         let f = Font::parse(&std::fs::read(p).unwrap()).unwrap();
         assert_eq!(f.kind, Kind::Big);
-        assert_eq!(f.encoding, Some(encoding_rs::SHIFT_JIS));
+        assert_eq!(f.encoding, Some(Enc::Std(encoding_rs::SHIFT_JIS)));
         for ch in "日本語東京漢字建築図面設計階段あいうアイウ".chars() {
             let (big, code) = code_for(ch, None, Some(&f)).unwrap_or_else(|| panic!("{ch}"));
             assert!(big);
