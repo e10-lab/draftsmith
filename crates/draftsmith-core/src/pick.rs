@@ -317,11 +317,16 @@ pub fn properties(d: &Drawing, i: usize) -> Vec<(String, String)> {
             at,
             scale,
             rotation,
+            attrs,
         } => {
             out.push(("블록".into(), block.clone()));
             out.push(("삽입점".into(), format!("{}, {}", f(at.x), f(at.y))));
             out.push(("배율".into(), format!("{} × {}", f(scale.x), f(scale.y))));
             out.push(("회전".into(), deg(*rotation)));
+            // 속성값은 속성 칸에서 바로 고친다 (§46)
+            for a in attrs {
+                out.push((format!("속성 {}:고침", a.tag), a.text.value.clone()));
+            }
         }
         Shape::Line { a, b } => {
             out.push(("길이".into(), f(a.dist(*b))));

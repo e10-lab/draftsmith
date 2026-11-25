@@ -194,6 +194,23 @@ impl Affine {
         (self.a + self.d).abs() <= tol && (self.b - self.c).abs() <= tol
     }
 
+    /// 역변환 (뒤집을 수 없으면 None)
+    pub fn inverse(&self) -> Option<Affine> {
+        let det = self.a * self.d - self.b * self.c;
+        if det.abs() < 1e-300 {
+            return None;
+        }
+        let (a, b, c, d) = (self.d / det, -self.b / det, -self.c / det, self.a / det);
+        Some(Affine {
+            a,
+            b,
+            c,
+            d,
+            e: -(a * self.e + c * self.f),
+            f: -(b * self.e + d * self.f),
+        })
+    }
+
     /// x 축이 향하는 각도
     pub fn angle(&self) -> f64 {
         self.b.atan2(self.a)

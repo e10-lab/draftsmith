@@ -49,6 +49,14 @@ pub fn read_file(path: impl AsRef<Path>) -> Result<Drawing, ImportError> {
     if crate::docfile::is_dsmith(path) {
         return crate::docfile::load(path).map_err(ImportError::Cad);
     }
+    // IFC 는 건축 객체로 (§47)
+    if path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("ifc"))
+    {
+        let bytes = std::fs::read(path).map_err(|e| ImportError::Cad(e.to_string()))?;
+        return crate::ifc_read::read(&String::from_utf8_lossy(&bytes)).map_err(ImportError::Cad);
+    }
     let dwg = is_dwg(path)?;
     let strict = if dwg {
         DwgReader::from_file(path).and_then(|mut r| r.read())
@@ -655,11 +663,32 @@ impl<'a> Converter<'a> {
         if n.x.abs() > 1e-9 || n.y.abs() > 1e-9 || n.z <= 0.0 {
             return false;
         }
-        if x.attributes
+        let shown: Vec<_> = x
+            .attributes
             .iter()
-            .any(|a| !a.flags.invisible && !a.common.invisible && !a.value.is_empty())
-        {
+            .filter(|a| !a.flags.invisible && !a.common.invisible && !a.value.is_empty())
+            .collect();
+        // 속성값이 있는 배열 블록은 펼친다 (속성은 첫 칸에만 붙으므로)
+        if !shown.is_empty() && x.is_array() {
             return false;
+        }
+        let scale = Vec2::new(x.x_scale(), x.y_scale());
+        // 속성값 → 블록 안 좌표 (§46)
+        let local = crate::drawing::Block::transform(
+            Vec2::new(x.insert_point.x, x.insert_point.y),
+            scale,
+            x.rotation,
+        )
+        .inverse();
+        let mut attrs = Vec::new();
+        for a in shown {
+            let Some(inv) = local else { return false };
+            if let Shape::Text(t) = Shape::Text(attrib_text(a)).transformed(&inv) {
+                attrs.push(crate::drawing::Attr {
+                    tag: a.tag.clone(),
+                    text: t,
+                });
+            }
         }
         let Some(block) = self.doc.block_records.get(&x.block_name) else {
             return false;
@@ -708,8 +737,9 @@ impl<'a> Converter<'a> {
                 shape: Shape::Insert {
                     block: x.block_name.clone(),
                     at: Vec2::new(p.x, p.y),
-                    scale: Vec2::new(x.x_scale(), x.y_scale()),
+                    scale,
                     rotation: x.rotation,
+                    attrs: attrs.clone(),
                 },
             });
         }
@@ -831,6 +861,46 @@ fn text_shape(x: &acadrust::entities::Text) -> Shape {
         valign,
         value: plain_text(&x.value),
     })
+}
+
+/// ATTRIB → 글자 (세계 좌표)
+fn attrib_text(x: &acadrust::entities::AttributeEntity) -> TextShape {
+    use acadrust::entities::{HorizontalAlignment as H, VerticalAlignment as V};
+    let (halign, mid) = match x.horizontal_alignment {
+        H::Center => (0.5, false),
+        H::Right => (1.0, false),
+        H::Middle => (0.5, true),
+        _ => (0.0, false),
+    };
+    let valign = if mid {
+        VAlign::Middle
+    } else {
+        match x.vertical_alignment {
+            V::Bottom => VAlign::Bottom,
+            V::Middle => VAlign::Middle,
+            V::Top => VAlign::Top,
+            _ => VAlign::Baseline,
+        }
+    };
+    let plain = matches!(x.horizontal_alignment, H::Left | H::Aligned | H::Fit)
+        && valign == VAlign::Baseline;
+    TextShape {
+        at: v2(if plain {
+            &x.insertion_point
+        } else {
+            &x.alignment_point
+        }),
+        height: x.height,
+        rotation: x.rotation,
+        width_factor: if x.width_factor > 0.0 {
+            x.width_factor
+        } else {
+            1.0
+        },
+        halign,
+        valign,
+        value: plain_text(&x.value),
+    }
 }
 
 /// SPLINE 위의 점들 (조정점이 없으면 맞춤점을 잇는다)

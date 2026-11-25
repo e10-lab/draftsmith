@@ -105,6 +105,8 @@ pub fn draw(m: &ArchModel, s: &Section) -> Vec<(&'static str, Shape)> {
     };
     // 보이는 벽: (보는 쪽 거리, 벽) — 층을 다 돈 뒤 가까운 것부터 그린다
     let mut seen: Vec<(f64, u64, f64, f64)> = Vec::new();
+    // 보이는 기둥·계단 줄기: (보는 쪽 거리, t0, t1, z0, z1, 계단 단 꼭짓점들 — 기둥이면 빔)  §46
+    let mut others: Vec<(f64, f64, f64, f64, f64, Vec<Vec2>)> = Vec::new();
     let top_level = m
         .levels
         .iter()
@@ -179,6 +181,30 @@ pub fn draw(m: &ArchModel, s: &Section) -> Vec<(&'static str, Shape)> {
                 }
             }
         }
+        // 기둥: 자르는 선이 지나면 자른 면, 보는 쪽에 있으면 보이는 외곽 (§46)
+        for c in m.columns.iter().filter(|c| c.level == l.id) {
+            let k = c.corners();
+            let top = z0 + l.height;
+            let ts: Vec<f64> = (0..4)
+                .filter_map(|i| cross(k[i], k[(i + 1) % 4]).map(|(t, _)| t))
+                .collect();
+            if ts.len() >= 2 {
+                let (t0, t1) = ts
+                    .iter()
+                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), t| {
+                        (a.min(*t), b.max(*t))
+                    });
+                cut(&mut out, t0, t1, z0, top);
+            } else if k.iter().all(|q| side(*q) > 0.0) {
+                let (t0, t1) = k
+                    .iter()
+                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), q| {
+                        (a.min(along(*q)), b.max(along(*q)))
+                    });
+                let depth = k.iter().map(|q| side(*q)).fold(f64::INFINITY, f64::min);
+                others.push((depth, t0, t1, z0, top, Vec::new()));
+            }
+        }
         // 계단
         for st in m.stairs.iter().filter(|x| x.level == l.id) {
             let Some((flights, _)) = st.flights() else {
@@ -191,6 +217,31 @@ pub fn draw(m: &ArchModel, s: &Section) -> Vec<(&'static str, Shape)> {
                 let w = Vec2::new(f.start.x - s.a.x, f.start.y - s.a.y);
                 let off = (w.x * -u.y + w.y * u.x).abs();
                 if par.abs() < 0.9 || off > st.width / 2.0 {
+                    // 자르지 않은 나란한 줄기가 보는 쪽에 있으면 입면 (단 모양)
+                    let sd = w.x * -u.y + w.y * u.x;
+                    if par.abs() >= 0.9 && sd - st.width / 2.0 > 0.0 {
+                        let t0 = w.x * u.x + w.y * u.y;
+                        let step = f.len / f.risers.max(1) as f64 * par.signum();
+                        let mut pts = vec![Vec2::new(t0, z0 + rise * f.first as f64)];
+                        for k in 0..f.risers {
+                            let z = z0 + rise * (f.first + k + 1) as f64;
+                            let ta = t0 + step * k as f64;
+                            pts.push(Vec2::new(ta, z));
+                            pts.push(Vec2::new(ta + step, z));
+                        }
+                        let (a, b) = (
+                            t0.min(t0 + step * f.risers as f64),
+                            t0.max(t0 + step * f.risers as f64),
+                        );
+                        others.push((
+                            sd - st.width / 2.0,
+                            a,
+                            b,
+                            z0 + rise * f.first as f64,
+                            z0 + rise * (f.first + f.risers) as f64,
+                            pts,
+                        ));
+                    }
                     continue;
                 }
                 let t0 = w.x * u.x + w.y * u.y;
@@ -206,6 +257,29 @@ pub fn draw(m: &ArchModel, s: &Section) -> Vec<(&'static str, Shape)> {
                     "A-SECT",
                     Shape::Polyline {
                         points: pts,
+                        closed: false,
+                    },
+                ));
+            }
+        }
+    }
+    // 보이는 기둥·계단 (벽보다 먼저 — 대개 벽 앞): 가까운 것부터, 기둥은 뒤를 가린다
+    others.sort_by(|a, b| a.0.total_cmp(&b.0));
+    for (_, t0, t1, z0, z1, steps) in others {
+        let snapshot = occ.borrow().clone();
+        if steps.is_empty() {
+            outline(&mut out, &snapshot, t0, t1, z0, z1);
+            occ.borrow_mut().push([t0, t1, z0, z1]);
+        } else {
+            // 계단 입면은 앞이 통째로 가리지 않을 때만 (단 모양 그대로)
+            let hidden = snapshot
+                .iter()
+                .any(|o| o[0] <= t0 && o[1] >= t1 && o[2] <= z0 && o[3] >= z1);
+            if !hidden {
+                out.push((
+                    "A-SECT-VIEW",
+                    Shape::Polyline {
+                        points: steps.into_iter().map(|q| (p(q.x, q.y), 0.0)).collect(),
                         closed: false,
                     },
                 ));
@@ -453,5 +527,40 @@ mod tests {
                 .any(|(a, b)| *a < 3000.0 && *b > 3000.0 && *b - *a > 5000.0),
             "{bottoms:?}"
         );
+    }
+
+    #[test]
+    fn columns_cut_and_seen() {
+        let mut ed = Editor::new(new_drawing());
+        apply(
+            &mut ed,
+            ArchReq::Column {
+                at: [1000.0, 0.0],
+                width: 400.0,
+                depth: 400.0,
+            },
+        )
+        .unwrap();
+        apply(
+            &mut ed,
+            ArchReq::Column {
+                at: [3000.0, 3000.0],
+                width: 400.0,
+                depth: 400.0,
+            },
+        )
+        .unwrap();
+        let s = Section {
+            id: 1,
+            name: "A".into(),
+            a: Vec2::new(0.0, 0.0),
+            b: Vec2::new(5000.0, 0.0),
+            at: Vec2::default(),
+        };
+        let shapes = draw(&ed.d.arch, &s);
+        // 첫 기둥은 잘림 (800~1200), 둘째는 보이는 외곽 (2800~3200)
+        assert!(shapes.iter().any(|(l, s)| *l == "A-SECT-PATT"
+            && matches!(s, Shape::Fill { loops } if (loops[0][0].x - 800.0).abs() < 1e-6)));
+        assert!(shapes.iter().any(|(l, s)| *l == "A-SECT-VIEW" && matches!(s, Shape::Line { a, b } if (a.x - 2800.0).abs() < 1e-6 && (b.x - 3200.0).abs() < 1e-6)));
     }
 }

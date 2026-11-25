@@ -308,6 +308,7 @@ impl Editor {
                 at: base,
                 scale: Vec2::new(1.0, 1.0),
                 rotation: 0.0,
+                attrs: Vec::new(),
             },
         };
         self.run(Op::Batch(vec![
@@ -338,8 +339,70 @@ impl Editor {
             at,
             scale: Vec2::new(k, k),
             rotation,
+            attrs: Vec::new(),
         }]);
         Ok(r.start)
+    }
+
+    /// 블록 참조의 속성값 고치기 (§46)
+    pub fn set_attr(&mut self, i: usize, tag: &str, value: &str) -> Result<(), String> {
+        let e = self.d.entities.get(i).cloned().ok_or("객체가 없습니다")?;
+        let mut n = e.clone();
+        let Shape::Insert { attrs, .. } = &mut n.shape else {
+            return Err("블록 참조가 아닙니다".into());
+        };
+        let mut hit = false;
+        for a in attrs.iter_mut().filter(|a| a.tag == tag) {
+            a.text.value = value.to_string();
+            hit = true;
+        }
+        if !hit {
+            return Err(format!("속성 「{tag}」 이 없습니다"));
+        }
+        self.run(Op::Replace {
+            items: vec![(i, e, n)],
+        });
+        Ok(())
+    }
+
+    /// 블록 참조에 속성 더하기: 블록 아래쪽에 줄지어 놓는다 (글자 높이 `height` 는 도면 단위, §46)
+    pub fn add_attr(
+        &mut self,
+        i: usize,
+        tag: &str,
+        value: &str,
+        height: f64,
+    ) -> Result<(), String> {
+        let tag = tag.trim().to_uppercase();
+        if tag.is_empty() || tag.contains(char::is_whitespace) {
+            return Err("태그는 빈칸 없이 씁니다".into());
+        }
+        let e = self.d.entities.get(i).cloned().ok_or("객체가 없습니다")?;
+        let mut n = e.clone();
+        let Shape::Insert { attrs, scale, .. } = &mut n.shape else {
+            return Err("블록 참조가 아닙니다".into());
+        };
+        if attrs.iter().any(|a| a.tag == tag) {
+            return Err(format!("속성 「{tag}」 이 이미 있습니다"));
+        }
+        let k = scale.y.abs().max(1e-9);
+        let h = height / k;
+        attrs.push(crate::drawing::Attr {
+            text: crate::drawing::TextShape {
+                at: Vec2::new(0.0, -h * 1.6 * (attrs.len() + 1) as f64),
+                height: h,
+                rotation: 0.0,
+                width_factor: 1.0,
+                halign: 0.5,
+                valign: crate::drawing::VAlign::Middle,
+                value: value.to_string(),
+            },
+            tag,
+        });
+        self.run(Op::Replace {
+            items: vec![(i, e, n)],
+        });
+        Ok(())
     }
 
     /// 블록 참조 펼치기 (안의 객체로 바꾼다)

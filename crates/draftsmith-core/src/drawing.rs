@@ -135,6 +135,9 @@ pub enum Shape {
         /// x·y 배율 (y 가 음수면 대칭)
         scale: Vec2,
         rotation: f64,
+        /// 속성값 (§46) — 글자는 블록 안 좌표 (참조와 함께 옮겨지고 돈다)
+        #[serde(default)]
+        attrs: Vec<Attr>,
     },
 }
 
@@ -195,6 +198,7 @@ impl Shape {
                 at,
                 scale,
                 rotation,
+                attrs,
             } => {
                 // 대칭이면 y 배율을 뒤집고 각도는 거울 쪽으로 (구현 노트 §30)
                 let k = t.scale_x();
@@ -208,6 +212,7 @@ impl Shape {
                     at: t.apply(*at),
                     scale: Vec2::new(scale.x * k, sy * k),
                     rotation: rot,
+                    attrs: attrs.clone(),
                 }
             }
             Shape::Line { a, b } => Shape::Line {
@@ -423,6 +428,13 @@ pub struct Drawing {
     pub arch: crate::arch::ArchModel,
     /// 블록 정의 (DraftSmith 에서 만든 것 — 가져온 DWG 블록은 펼쳐서 들어온다)
     pub blocks: Vec<Block>,
+}
+
+/// 블록 참조의 속성값 하나: 태그와 글자 (값은 `text.value`, 위치는 블록 안 좌표)
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Attr {
+    pub tag: String,
+    pub text: TextShape,
 }
 
 /// 블록 정의: 기준점(0,0) 기준 객체들

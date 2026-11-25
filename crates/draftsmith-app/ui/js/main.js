@@ -28,6 +28,7 @@ function prompt(text) {
 // ── 앱 상태 (도구들이 함께 씀) ─────────────────────────────────────────────────
 const app = {
   invoke,
+  ask: (title, fields) => ask(title, fields),
   doc: null,
   baseLayers: 0,
   textHeight: 250,
@@ -707,7 +708,7 @@ window.addEventListener("keydown", (e) => {
 
 // 파일을 창에 끌어 놓으면 연다
 window.__TAURI__.event?.listen?.("tauri://drag-drop", (ev) => {
-  const p = ev.payload?.paths?.find((x) => /\.(dwg|dxf|dsmith)$/i.test(x));
+  const p = ev.payload?.paths?.find((x) => /\.(dwg|dxf|dsmith|ifc)$/i.test(x));
   if (p) open(p);
 });
 

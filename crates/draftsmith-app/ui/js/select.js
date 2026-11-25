@@ -247,12 +247,15 @@ export class SelectTool {
     dl.className = "props";
     for (const [k, v] of this.info.props) {
       if (k.startsWith("_")) continue;
-      const editable = this.arch && k.endsWith(":고침");
+      // 블록 참조의 속성값도 바로 고친다 (§46)
+      const attr = !this.arch && this.ids.length === 1 && k.startsWith("속성 ") && k.endsWith(":고침");
+      const editable = (this.arch || attr) && k.endsWith(":고침");
       const key = editable ? k.slice(0, -3) : k;
       const dt = document.createElement("dt");
       dt.textContent = key;
       const dd = document.createElement("dd");
-      if (editable) dd.append(this.field(key, v));
+      if (attr) dd.append(this.attrField(key.slice(3), v));
+      else if (editable) dd.append(this.field(key, v));
       else {
         dd.textContent = v;
         dd.title = v;
@@ -261,6 +264,18 @@ export class SelectTool {
     }
     p.append(h, dl);
     if (this.ids.length) p.append(this.modelControls());
+    if (this.ids.length === 1 && this.info.props.some(([k]) => k === "블록")) {
+      const add = document.createElement("button");
+      add.textContent = "속성 더하기…";
+      add.title = "블록 참조에 태그·값 글자를 붙입니다 (참조와 함께 움직임, DWG 에서는 ATTRIB)";
+      add.addEventListener("click", async () => {
+        const v = await this.app.ask("속성 더하기", [["tag", "태그 (예: NO)", ""], ["value", "값", ""], ["height", "글자 높이", String(this.app.textHeight)]]);
+        if (!v) return;
+        await this.app.apply({ kind: "add_attr", id: this.ids[0], tag: v.tag, value: v.value, height: Number(v.height) || this.app.textHeight });
+        await this.update();
+      });
+      p.append(add);
+    }
     if (this.arch) {
       const del = document.createElement("button");
       del.textContent = "지우기";
@@ -297,6 +312,26 @@ export class SelectTool {
       e.stopPropagation();
     });
     i.addEventListener("change", () => send(i.value));
+    return i;
+  }
+
+  /** 블록 참조 속성값 칸 */
+  attrField(tag, value) {
+    const i = document.createElement("input");
+    i.value = value;
+    i.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") i.blur();
+      if (e.key === "Escape") {
+        i.value = value;
+        i.blur();
+      }
+      e.stopPropagation();
+    });
+    i.addEventListener("change", async () => {
+      if (i.value === value) return;
+      await this.app.apply({ kind: "set_attr", id: this.ids[0], tag, value: i.value });
+      await this.update();
+    });
     return i;
   }
 

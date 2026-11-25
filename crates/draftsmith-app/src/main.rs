@@ -231,8 +231,8 @@ fn pick_drawing() -> Option<String> {
     rfd::FileDialog::new()
         .set_title("도면 열기")
         .add_filter(
-            "도면 (DraftSmith, DWG, DXF)",
-            &["dsmith", "dwg", "dxf", "DSMITH", "DWG", "DXF"],
+            "도면 (DraftSmith, DWG, DXF, IFC)",
+            &["dsmith", "dwg", "dxf", "ifc", "DSMITH", "DWG", "DXF", "IFC"],
         )
         .pick_file()
         .map(|p| p.display().to_string())
@@ -620,6 +620,19 @@ enum EditReq {
     Explode {
         ids: Vec<usize>,
     },
+    /// 블록 참조에 속성 더하기 (§46)
+    AddAttr {
+        id: usize,
+        tag: String,
+        value: String,
+        height: f64,
+    },
+    /// 블록 참조의 속성값 고치기
+    SetAttr {
+        id: usize,
+        tag: String,
+        value: String,
+    },
     /// 지금 시트의 뷰포트 고치기 (§35)
     Viewport {
         index: usize,
@@ -873,6 +886,13 @@ fn edit(req: EditReq, state: State<'_, AppState>) -> Result<DocState, String> {
                     ed.explode(i);
                 }
             }
+            EditReq::AddAttr {
+                id,
+                tag,
+                value,
+                height,
+            } => ed.add_attr(id, &tag, &value, height)?,
+            EditReq::SetAttr { id, tag, value } => ed.set_attr(id, &tag, &value)?,
             EditReq::Trim { .. }
             | EditReq::Extend { .. }
             | EditReq::Fillet { .. }

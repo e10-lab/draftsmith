@@ -7,10 +7,10 @@
 use std::path::Path;
 
 use acadrust::entities::{
-    Arc, BoundaryEdge, BoundaryPath, Circle, Dimension, DimensionAligned, DimensionAngular3Pt,
-    DimensionDiameter, DimensionLinear, DimensionRadius, Ellipse, Hatch, HatchPattern,
-    HatchPatternLine, Insert, Line, LwPolyline, LwVertex, MText, PolylineEdge, Text,
-    TextHorizontalAlignment, TextVerticalAlignment,
+    Arc, AttributeEntity, BoundaryEdge, BoundaryPath, Circle, Dimension, DimensionAligned,
+    DimensionAngular3Pt, DimensionDiameter, DimensionLinear, DimensionRadius, Ellipse, Hatch,
+    HatchPattern, HatchPatternLine, HorizontalAlignment, Insert, Line, LwPolyline, LwVertex, MText,
+    PolylineEdge, Text, TextHorizontalAlignment, TextVerticalAlignment, VerticalAlignment,
 };
 use acadrust::tables::{BlockRecord, Layer as CadLayer, LineType, LineTypeElement};
 use acadrust::types::{Color, LineWeight, Vector2, Vector3};
@@ -93,11 +93,20 @@ fn to_cad(e: &Entity) -> Vec<EntityType> {
             at,
             scale,
             rotation,
-        } => vec![EntityType::Insert(
-            Insert::new(block.clone(), v3(*at))
+            attrs,
+        } => {
+            let mut x = Insert::new(block.clone(), v3(*at))
                 .with_scale(scale.x, scale.y, 1.0)
-                .with_rotation(*rotation),
-        )],
+                .with_rotation(*rotation);
+            // 속성값은 ATTRIB 로 (세계 좌표, §46)
+            let t = crate::drawing::Block::transform(*at, *scale, *rotation);
+            for a in attrs {
+                if let Shape::Text(tx) = Shape::Text(a.text.clone()).transformed(&t) {
+                    x.attributes.push(attrib(&a.tag, &tx));
+                }
+            }
+            vec![EntityType::Insert(x)]
+        }
         Shape::Line { a, b } => vec![EntityType::Line(Line::from_coords(
             a.x, a.y, 0.0, b.x, b.y, 0.0,
         ))],
@@ -572,6 +581,31 @@ pub fn write(d: &Drawing, path: &Path) -> Result<(), String> {
     }
 }
 
+/// 속성값 글자 → ATTRIB (맞춤이 왼쪽·기준선이 아니면 맞춤점도 둔다)
+fn attrib(tag: &str, t: &crate::drawing::TextShape) -> AttributeEntity {
+    use crate::drawing::VAlign;
+    let mut a = AttributeEntity::new(tag.to_string(), t.value.clone());
+    a.insertion_point = v3(t.at);
+    a.alignment_point = v3(t.at);
+    a.height = t.height;
+    a.rotation = t.rotation;
+    a.width_factor = t.width_factor;
+    a.horizontal_alignment = if t.halign > 0.75 {
+        HorizontalAlignment::Right
+    } else if t.halign > 0.25 {
+        HorizontalAlignment::Center
+    } else {
+        HorizontalAlignment::Left
+    };
+    a.vertical_alignment = match t.valign {
+        VAlign::Bottom => VerticalAlignment::Bottom,
+        VAlign::Middle => VerticalAlignment::Middle,
+        VAlign::Top => VerticalAlignment::Top,
+        _ => VerticalAlignment::Baseline,
+    };
+    a
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -625,8 +659,11 @@ mod tests {
             },
         ]);
         ed.make_block("의자", &[0, 1], Vec2::default()).unwrap();
-        ed.insert_block("의자", Vec2::new(2000.0, 0.0), 1.0, 1.0)
+        let j = ed
+            .insert_block("의자", Vec2::new(2000.0, 0.0), 1.0, 1.0)
             .unwrap();
+        ed.add_attr(j, "NO", "A-01", 200.0).unwrap();
+        let want = ed.d.entities[j].shape.clone();
         apply(
             &mut ed,
             ArchReq::Dim {
@@ -661,6 +698,30 @@ mod tests {
             // 치수는 치수 객체로 돌아온다 (§32)
             assert_eq!(back.arch.dims.len(), 1, "{ext}");
             assert_eq!(back.arch.dims[0].rotation, None, "{ext}");
+            // 속성값은 블록 안 좌표로 돌아온다 (§46)
+            let got = back.entities.iter().find_map(|e| match &e.shape {
+                Shape::Insert { attrs, .. } if !attrs.is_empty() => Some(attrs.clone()),
+                _ => None,
+            });
+            let Shape::Insert { attrs: w, .. } = &want else {
+                unreachable!()
+            };
+            let got = got.unwrap_or_else(|| panic!("{ext}: 속성 없음"));
+            assert_eq!(
+                (got[0].tag.as_str(), got[0].text.value.as_str()),
+                ("NO", "A-01"),
+                "{ext}"
+            );
+            assert!(
+                got[0].text.at.dist(w[0].text.at) < 1e-6,
+                "{ext} {:?} {:?}",
+                got[0].text.at,
+                w[0].text.at
+            );
+            assert!(
+                (got[0].text.height - w[0].text.height).abs() < 1e-6,
+                "{ext}"
+            );
             let back = crate::archgen::shown(&back);
             assert!(back.blocks.iter().any(|b| b.name == "의자"), "{ext}");
             assert_eq!(

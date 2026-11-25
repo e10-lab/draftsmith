@@ -22,6 +22,7 @@ fn expand_into(d: &Drawing, e: &Entity, depth: usize, out: &mut Vec<Entity>) {
         at,
         scale,
         rotation,
+        attrs,
     } = &e.shape
     else {
         out.push(e.clone());
@@ -34,6 +35,17 @@ fn expand_into(d: &Drawing, e: &Entity, depth: usize, out: &mut Vec<Entity>) {
         return;
     };
     let t = Block::transform(*at, *scale, *rotation);
+    // 속성값 글자 (참조의 레이어·색으로, §46)
+    for a in attrs {
+        out.push(Entity {
+            layer: e.layer,
+            color: e.color,
+            aci: e.aci,
+            linetype: None,
+            weight: None,
+            shape: Shape::Text(a.text.clone()).transformed(&t),
+        });
+    }
     let zero = d
         .layers
         .iter()
@@ -163,6 +175,24 @@ mod tests {
         // 펼치기: 선 하나 + 참조 둘 → 참조 하나가 선 둘로
         ed.explode(j);
         assert_eq!(ed.d.entities.len(), 4);
+        assert!(ed.undo());
+        // 속성: 더하고 고치면 펼친 글자가 참조와 함께 돈다 (§46)
+        ed.add_attr(j, "no", "1", 250.0).unwrap();
+        assert!(ed.add_attr(j, "NO", "2", 250.0).is_err());
+        ed.set_attr(j, "NO", "A-01").unwrap();
+        let tx: Vec<_> = expand(&ed.d, &ed.d.entities[j])
+            .into_iter()
+            .filter_map(|e| match e.shape {
+                Shape::Text(t) => Some(t),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tx.len(), 1);
+        assert_eq!(tx[0].value, "A-01");
+        assert!((tx[0].height - 250.0).abs() < 1e-9, "{}", tx[0].height);
+        // 다시 펼치기 (위 되돌리기 앞 상태와 같은 개수 + 속성 글자 하나)
+        ed.explode(j);
+        assert_eq!(ed.d.entities.len(), 5);
         assert!(ed.undo());
         assert_eq!(ed.d.entities.len(), 3);
         assert!(ed.make_block("의자", &[0], Vec2::default()).is_err());

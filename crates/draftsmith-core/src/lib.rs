@@ -22,6 +22,7 @@ pub mod fill;
 pub mod geom;
 pub mod grip;
 pub mod ifc;
+pub mod ifc_read;
 pub mod import;
 pub mod layout;
 pub mod model3d;
