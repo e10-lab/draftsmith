@@ -1149,6 +1149,29 @@ class DimAngleTool extends Tool {
   }
 }
 
+// ── 단면 (§38) ───────────────────────────────────────────────────────────────
+class SectionTool extends Tool {
+  start() { this.say("단면: 자르는 선 첫 점 (보는 쪽은 선의 왼쪽)"); }
+  async take(p) {
+    this.pts.push(p);
+    if (this.pts.length === 1) return this.say("단면: 자르는 선 끝점");
+    if (this.pts.length === 2) return this.say("단면: 단면도를 놓을 곳 (단면도 왼쪽 아래 = 자르는 선 첫 점, 높이 0)");
+    const [a, b, at] = this.pts;
+    await this.app.apply({ kind: "arch", op: { kind: "section", a, b, at, name: "" } });
+    this.app.report("단면도를 만들었습니다 — 벽·창·바닥을 고치면 단면도도 따라 바뀝니다");
+    this.app.done();
+  }
+  paint(ctx, ts) {
+    if (!this.cur) return;
+    if (this.pts.length === 1) strokePath(ctx, ts, [this.pts[0], this.cur], false, true);
+    if (this.pts.length === 2) {
+      strokePath(ctx, ts, this.pts, false, true);
+      const L = dist(this.pts[0], this.pts[1]), c = this.cur;
+      strokePath(ctx, ts, [c, [c[0] + L, c[1]], [c[0] + L, c[1] + 3000], [c[0], c[1] + 3000]], true, true);
+    }
+  }
+}
+
 export const TOOLS = {
   line: LineTool,
   pline: PlineTool,
@@ -1185,4 +1208,5 @@ export const TOOLS = {
   block: BlockTool,
   insert: InsertTool,
   explode: ExplodeTool,
+  section: SectionTool,
 };

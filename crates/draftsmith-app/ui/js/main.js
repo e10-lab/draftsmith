@@ -313,7 +313,7 @@ async function save(saveAs = false) {
 async function exportCad(format) {
   if (!app.doc) return;
   try {
-    const p = await invoke("export_cad", { format });
+    const p = await invoke(format === "ifc" ? "export_ifc" : "export_cad", { format });
     status(p ? `${format.toUpperCase()} 내보내기: ${p}` : "내보내기를 취소했습니다");
   } catch (e) {
     status(`내보내지 못했습니다: ${e}`);
@@ -494,7 +494,8 @@ async function run(id) {
     case "save": return save(false);
     case "saveas": return save(true);
     case "dxf":
-    case "dwg": return exportCad(id);
+    case "dwg":
+    case "ifc": return exportCad(id);
     case "pdf": return togglePdf(true);
     case "sheetspdf":
       $("pdf-what").value = "sheets";

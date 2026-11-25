@@ -4,6 +4,7 @@
 //! - `dsmith sample 개수 출력.dxf` : M0 측정용 격자 평면 도면 만들기
 //! - `dsmith bench 도면.dxf|dwg` : 읽기·표시 데이터 만들기 시간 (M0 ①·②)
 //! - `dsmith display 도면 출력.bin` : 표시 데이터를 파일로 (화면 시험용)
+//! - `dsmith ifc 도면.dsmith 출력.ifc` : 건축 객체를 IFC4 로
 //! - `dsmith pdf 도면 출력.pdf [--paper A3] [--portrait] [--scale 100] [--mono] [--layout 이름]` : PDF 출력
 
 use std::path::PathBuf;
@@ -39,6 +40,8 @@ enum Cmd {
     Bench { file: PathBuf },
     /// 표시 데이터(바이너리)를 파일로 쓰기 — 화면 시험·디버깅용
     Display { file: PathBuf, out: PathBuf },
+    /// 건축 객체를 IFC4 로 (.dsmith)
+    Ifc { file: PathBuf, out: PathBuf },
     /// PDF 로 출력
     Pdf {
         file: PathBuf,
@@ -180,6 +183,21 @@ fn main() -> Result<()> {
         Cmd::Display { file, out } => {
             let d = shown(import::read_file(&file)?);
             std::fs::write(&out, display::segments(&d).to_bytes())?;
+        }
+        Cmd::Ifc { file, out } => {
+            let d = import::read_file(&file)?;
+            let name = file
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            std::fs::write(&out, draftsmith_core::ifc::write(&d.arch, &name))?;
+            println!(
+                "{} 에 썼습니다 (벽 {} · 실 {} · 기둥 {})",
+                out.display(),
+                d.arch.walls.len(),
+                d.arch.rooms.len(),
+                d.arch.columns.len()
+            );
         }
     }
     Ok(())

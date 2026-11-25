@@ -470,6 +470,16 @@ impl Stair {
     }
 }
 
+/// 단면 (§38): 평면에 자르는 선 a→b (보는 방향은 왼쪽), 단면도는 모형 공간 `at` 에 (자르는 선 길이 방향이 x, 높이가 y)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Section {
+    pub id: u64,
+    pub name: String,
+    pub a: Vec2,
+    pub b: Vec2,
+    pub at: Vec2,
+}
+
 /// 건축 객체 전체
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -483,6 +493,8 @@ pub struct ArchModel {
     pub dims: Vec<Dim>,
     pub columns: Vec<Column>,
     pub stairs: Vec<Stair>,
+    /// 단면 (§38)
+    pub sections: Vec<Section>,
     /// 지금 그리는 층
     pub active_level: u64,
     /// 다음 객체 번호
@@ -612,5 +624,6 @@ impl ArchModel {
             && self.dims.is_empty()
             && self.columns.is_empty()
             && self.stairs.is_empty()
+            && self.sections.is_empty()
     }
 }

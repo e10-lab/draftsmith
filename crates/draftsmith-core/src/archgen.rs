@@ -29,6 +29,10 @@ pub const LAYERS: &[(&str, [u8; 3])] = &[
     ("A-COLS-PATT", [128, 128, 128]),
     ("A-STRS", [255, 255, 255]),
     ("A-ANNO-DIMS", [0, 255, 0]),
+    ("A-SECT", [255, 255, 255]),
+    ("A-SECT-PATT", [128, 128, 128]),
+    ("A-SECT-IDEN", [255, 255, 255]),
+    ("A-SECT-MARK", [0, 255, 255]),
 ];
 
 /// 치수 글자: 세 자리마다 쉼표 (12,000)
@@ -358,6 +362,16 @@ fn generate(d: &mut Drawing) -> Vec<(Entity, Owner)> {
     let marks = opening_marks(&m);
     let text_h = 250.0;
 
+    // 단면: 평면의 자르는 선과 단면도 (§38) — 층과 관계없이
+    for sec in &m.sections {
+        let own = ("section", sec.id);
+        for (layer, shape) in crate::section::mark(sec)
+            .into_iter()
+            .chain(crate::section::draw(&m, sec))
+        {
+            g.put(layer, shape, own);
+        }
+    }
     // 대지
     if m.site.boundary.len() >= 3 {
         g.put(
@@ -924,6 +938,14 @@ pub enum ArchReq {
         #[serde(default)]
         mid: Option<[f64; 2]>,
     },
+    /// 단면 (§38): 자르는 선 a→b, 단면도 자리 at, 이름 (비면 A, B, …)
+    Section {
+        a: [f64; 2],
+        b: [f64; 2],
+        at: [f64; 2],
+        #[serde(default)]
+        name: String,
+    },
     /// 그립 옮기기 (§33): 객체의 손잡이 k 를 to 로
     Grip {
         what: String,
@@ -988,6 +1010,12 @@ pub fn arch_grips(m: &ArchModel, what: &str, id: u64) -> Vec<Vec2> {
             .map(|r| r.boundary.clone())
             .unwrap_or_default(),
         "site" => m.site.boundary.clone(),
+        "section" => m
+            .sections
+            .iter()
+            .find(|x| x.id == id)
+            .map(|x| vec![x.a, x.b, x.at])
+            .unwrap_or_default(),
         "door" | "window" => m
             .openings
             .iter()
@@ -1089,6 +1117,18 @@ fn grip_arch(m: &mut ArchModel, what: &str, id: u64, k: usize, to: Vec2) -> Resu
                     }
                 }
                 _ => x.offset += dot(d, geo.n),
+            }
+        }
+        "section" => {
+            let x = m
+                .sections
+                .iter_mut()
+                .find(|x| x.id == id)
+                .ok_or("단면이 없습니다")?;
+            match k {
+                0 => x.a = to,
+                1 => x.b = to,
+                _ => x.at = to,
             }
         }
         "room" | "site" => {
@@ -1258,6 +1298,16 @@ fn set_field(m: &mut ArchModel, what: &str, id: u64, k: &str, v: &str) -> Result
                 "벽 마감" => r.finish_wall = v.trim().to_string(),
                 "천장 마감" => r.finish_ceiling = v.trim().to_string(),
                 _ => {}
+            }
+        }
+        "section" => {
+            let x = m
+                .sections
+                .iter_mut()
+                .find(|x| x.id == id)
+                .ok_or("단면이 없습니다")?;
+            if k == "이름" && !v.trim().is_empty() {
+                x.name = v.trim().to_string();
             }
         }
         "grid" => {
@@ -1629,6 +1679,7 @@ pub fn apply(ed: &mut Editor, req: ArchReq) -> Result<(), String> {
             "dim" => m.dims.retain(|x| x.id != id),
             "column" => m.columns.retain(|x| x.id != id),
             "stair" => m.stairs.retain(|x| x.id != id),
+            "section" => m.sections.retain(|x| x.id != id),
             "site" => m.site.boundary.clear(),
             "level" => {
                 if m.levels.len() <= 1 {
@@ -1719,8 +1770,35 @@ pub fn apply(ed: &mut Editor, req: ArchReq) -> Result<(), String> {
                         x.mid = x.mid.map(|c| add(c, d));
                     }
                 }
+                "section" => {
+                    if let Some(x) = m.sections.iter_mut().find(|x| x.id == id) {
+                        x.at = add(x.at, d);
+                    }
+                }
                 _ => {}
             }
+        }
+        ArchReq::Section { a, b, at, name } => {
+            if p2(a).dist(p2(b)) < 1e-6 {
+                return Err("자르는 선 길이가 0 입니다".into());
+            }
+            let name = if name.trim().is_empty() {
+                // 쓰지 않은 첫 글자
+                ('A'..='Z')
+                    .map(|c| c.to_string())
+                    .find(|c| !m.sections.iter().any(|x| &x.name == c))
+                    .unwrap_or_else(|| "S".into())
+            } else {
+                name.trim().to_string()
+            };
+            let id = m.new_id();
+            m.sections.push(crate::arch::Section {
+                id,
+                name,
+                a: p2(a),
+                b: p2(b),
+                at: p2(at),
+            });
         }
         ArchReq::Grip { what, id, k, to } => grip_arch(&mut m, &what, id, k, p2(to))?,
         ArchReq::CopyLevel { name } => {
@@ -1911,6 +1989,14 @@ pub fn properties(m: &ArchModel, what: &str, id: u64) -> Vec<(String, String)> {
                 out.push(("천장 마감:고침".into(), r.finish_ceiling.clone()));
             }
         }
+        "section" => {
+            if let Some(x) = m.sections.iter().find(|x| x.id == id) {
+                out.push(("종류".into(), "단면".into()));
+                out.push(("이름:고침".into(), x.name.clone()));
+                out.push(("자르는 선 길이".into(), f(x.a.dist(x.b))));
+                out.push(("손잡이".into(), "자르는 선 두 끝 · 단면도 자리".into()));
+            }
+        }
         "grid" => {
             if let Some(g) = m.grids.iter().find(|g| g.id == id) {
                 out.push(("종류".into(), "그리드".into()));
@@ -2057,6 +2143,157 @@ pub struct Table {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Tables {
     pub tables: Vec<Table>,
+}
+
+/// 레이어 이름이 표준 꼴인가: 분야 글자(A 건축, S 구조, M 기계, E 전기, P 위생, C 토목, L 조경, G 일반, F 소방, T 통신, I 실내)
+/// - 주 그룹(영문 대문자·숫자 2~6 자) [- 부 그룹 …] (KS·AIA CAD 레이어 지침과 같은 꼴)
+pub fn layer_name_ok(name: &str) -> bool {
+    let mut parts = name.split('-');
+    let Some(d) = parts.next() else { return false };
+    if d.len() != 1 || !"ASMEPCLGFTI".contains(d) {
+        return false;
+    }
+    let rest: Vec<&str> = parts.collect();
+    !rest.is_empty()
+        && rest.iter().all(|p| {
+            (2..=6).contains(&p.len())
+                && p.chars()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+        })
+}
+
+/// 흔한 이름 → 표준 레이어 제안
+pub fn layer_suggest(name: &str) -> Option<&'static str> {
+    let n = name.to_uppercase();
+    let has = |keys: &[&str]| keys.iter().any(|k| n.contains(k));
+    Some(if has(&["DIM", "치수"]) {
+        "A-ANNO-DIMS"
+    } else if has(&["TEXT", "TXT", "문자", "글자"]) {
+        "A-ANNO-TEXT"
+    } else if has(&["WALL", "벽"]) {
+        "A-WALL"
+    } else if has(&["DOOR", "문"]) {
+        "A-DOOR"
+    } else if has(&["WIN", "GLAZ", "창"]) {
+        "A-GLAZ"
+    } else if has(&["GRID", "CEN", "중심", "통심"]) {
+        "A-GRID"
+    } else if has(&["HAT", "PATT", "해치"]) {
+        "A-PATT"
+    } else if has(&["COL", "기둥"]) {
+        "A-COLS"
+    } else if has(&["STAIR", "STR", "계단"]) {
+        "A-STRS"
+    } else if has(&["FURN", "가구"]) {
+        "A-FURN"
+    } else if has(&["ROOM", "AREA", "실명", "면적"]) {
+        "A-AREA"
+    } else if has(&["TITLE", "TTLB", "도곽", "표제"]) {
+        "A-ANNO-TTLB"
+    } else {
+        return None;
+    })
+}
+
+/// 레이어 검사 제안대로 고치기: 제안 이름 레이어가 없으면 이름을 바꾸고, 있으면 객체를 그 레이어로 옮긴다
+/// (한 묶음 — 되돌리기 한 단계). 고친 레이어 수
+pub fn fix_layers(ed: &mut Editor) -> usize {
+    let d = &ed.d;
+    let mut layers = d.layers.clone();
+    let mut moves: Vec<(u32, u32)> = Vec::new();
+    let mut n = 0;
+    for i in 0..d.layers.len() {
+        let name = d.layers[i].name.clone();
+        if name == "0" || name.eq_ignore_ascii_case("Defpoints") || layer_name_ok(&name) {
+            continue;
+        }
+        let Some(to) = layer_suggest(&name) else {
+            continue;
+        };
+        match layers.iter().position(|l| l.name == to) {
+            Some(j) => moves.push((i as u32, j as u32)),
+            None => layers[i].name = to.to_string(),
+        }
+        n += 1;
+    }
+    if n == 0 {
+        return 0;
+    }
+    let mut ops = Vec::new();
+    if layers != d.layers {
+        ops.push(Op::Layers {
+            old: d.layers.clone(),
+            new: layers,
+        });
+    }
+    let items: Vec<(usize, Entity, Entity)> = d
+        .entities
+        .iter()
+        .enumerate()
+        .filter_map(|(k, e)| {
+            moves.iter().find(|(a, _)| *a == e.layer).map(|(_, b)| {
+                (
+                    k,
+                    e.clone(),
+                    Entity {
+                        layer: *b,
+                        ..e.clone()
+                    },
+                )
+            })
+        })
+        .collect();
+    if !items.is_empty() {
+        ops.push(Op::Replace { items });
+    }
+    if !ops.is_empty() {
+        ed.run(Op::Batch(ops));
+    }
+    n
+}
+
+fn layer_check(d: &Drawing) -> Table {
+    let mut counts = vec![0usize; d.layers.len()];
+    for e in &d.entities {
+        if let Some(c) = counts.get_mut(e.layer as usize) {
+            *c += 1;
+        }
+    }
+    let mut t = Table {
+        name: "레이어검사".into(),
+        title: "레이어 검사".into(),
+        head: vec![
+            "레이어".into(),
+            "객체 수".into(),
+            "판정".into(),
+            "제안".into(),
+        ],
+        rows: Vec::new(),
+    };
+    for (l, n) in d.layers.iter().zip(counts) {
+        let (verdict, hint) = if l.name == "0" || l.name.eq_ignore_ascii_case("Defpoints") {
+            if n == 0 {
+                continue;
+            } else {
+                (
+                    "0 레이어에 객체".to_string(),
+                    "알맞은 레이어로 옮기기".to_string(),
+                )
+            }
+        } else if layer_name_ok(&l.name) {
+            continue;
+        } else {
+            (
+                "표준 꼴 아님".to_string(),
+                layer_suggest(&l.name)
+                    .map(String::from)
+                    .unwrap_or_else(|| "분야 글자-주 그룹 (예: A-WALL)".into()),
+            )
+        };
+        t.rows
+            .push(vec![l.name.clone(), n.to_string(), verdict, hint]);
+    }
+    t
 }
 
 /// 층 바닥면적 (㎡): 그 층 실 면적의 합 — 벽 두께 중심선 면적이 아닌 안목 면적 합이라 법정 바닥면적보다 작다
@@ -2320,6 +2557,8 @@ pub fn tables(d: &Drawing) -> Tables {
             ],
         ],
     });
+    // 레이어 검사 (§40): 건축 도면 레이어 이름 표준(분야 글자-주 4 자 내외[-부])과 「0」 레이어 객체
+    out.push(layer_check(d));
     // 도면 목록 (배치 순서)
     let mut list = Table {
         name: "도면목록".into(),
@@ -2837,5 +3076,43 @@ mod tests {
         assert_eq!(st.turns().len(), 2);
         let p = properties(&ed.d.arch, "stair", st.id);
         assert!(p.iter().any(|(_, v)| v == "U자 계단"), "{p:?}");
+    }
+
+    #[test]
+    fn layer_check_rules() {
+        assert!(layer_name_ok("A-WALL") && layer_name_ok("A-ANNO-DIMS") && layer_name_ok("C-PROP"));
+        assert!(
+            !layer_name_ok("WALL")
+                && !layer_name_ok("벽체")
+                && !layer_name_ok("A-wall")
+                && !layer_name_ok("X-WALL")
+        );
+        assert_eq!(layer_suggest("벽체"), Some("A-WALL"));
+        assert_eq!(layer_suggest("dim_1"), Some("A-ANNO-DIMS"));
+        let mut d = new_drawing();
+        let i = d.layer_index("벽체");
+        d.entities.push(Entity {
+            layer: i,
+            color: None,
+            aci: None,
+            linetype: None,
+            weight: None,
+            shape: Shape::Line {
+                a: Vec2::new(0.0, 0.0),
+                b: Vec2::new(1.0, 0.0),
+            },
+        });
+        let t = tables(&d);
+        let lc = t.tables.iter().find(|x| x.name == "레이어검사").unwrap();
+        assert_eq!(lc.rows.len(), 1);
+        assert_eq!(
+            lc.rows[0],
+            vec![
+                "벽체".to_string(),
+                "1".into(),
+                "표준 꼴 아님".into(),
+                "A-WALL".into()
+            ]
+        );
     }
 }

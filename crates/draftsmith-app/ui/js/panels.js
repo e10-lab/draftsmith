@@ -70,6 +70,11 @@ export class TablesDrawer {
     this.body = root.querySelector(".tb-body");
     this.cur = null;
     root.querySelector(".tb-close").addEventListener("click", () => this.hide());
+    this.fix = root.querySelector(".tb-fix");
+    this.fix.addEventListener("click", async () => {
+      const st = await app.apply({ kind: "fix_layers" });
+      if (st) app.report("레이어를 표준 이름으로 고쳤습니다 — 되돌리기로 돌릴 수 있습니다");
+    });
     root.querySelector(".tb-csv").addEventListener("click", async () => {
       if (!this.cur) return;
       try {
@@ -108,6 +113,7 @@ export class TablesDrawer {
       }),
     );
     const tb = list.find((x) => x.name === this.cur);
+    this.fix.hidden = !(tb && tb.name === "레이어검사" && tb.rows.some((r) => /^[A-Z]-/.test(r[3])));
     this.body.replaceChildren();
     if (!tb) return;
     if (!tb.rows.length) {

@@ -609,6 +609,8 @@ enum EditReq {
         #[serde(flatten)]
         edit: sheet::VpEdit,
     },
+    /// 레이어 검사 제안대로 고치기 (§40)
+    FixLayers,
     /// 도면 시트 만들기 (M4)
     AddSheet(sheet::SheetReq),
     /// 도면 시트 지우기
@@ -841,6 +843,11 @@ fn edit(req: EditReq, state: State<'_, AppState>) -> Result<DocState, String> {
                 added = ed.add_shapes(hatch.take().into_iter().collect()).collect()
             }
             EditReq::Viewport { .. } => return Err("뷰포트는 시트에서 고칩니다".into()),
+            EditReq::FixLayers => {
+                if archgen::fix_layers(ed) == 0 {
+                    return Err("고칠 레이어가 없습니다 (제안이 있는 것만 고칩니다)".into());
+                }
+            }
             EditReq::Undo => {
                 ed.undo();
             }
@@ -1349,6 +1356,35 @@ fn merge_journal(state: State<'_, AppState>) -> Result<Option<MergeOut>, String>
     }))
 }
 
+/// IFC 내보내기 (§39). 취소하면 null
+#[tauri::command]
+fn export_ifc(state: State<'_, AppState>) -> Result<Option<String>, String> {
+    let open = state.lock().map_err(err)?;
+    let ed = open.ed.as_ref().ok_or("열린 도면이 없습니다")?;
+    if ed.d.arch.walls.is_empty() && ed.d.arch.rooms.is_empty() && ed.d.arch.columns.is_empty() {
+        return Err("IFC 로 쓸 건축 객체(벽·실·기둥)가 없습니다".into());
+    }
+    let stem = open
+        .path
+        .as_ref()
+        .and_then(|p| p.file_stem())
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "도면".into());
+    let text = draftsmith_core::ifc::write(&ed.d.arch, &stem);
+    let mut dlg = rfd::FileDialog::new()
+        .set_title("IFC 로 내보내기")
+        .add_filter("IFC", &["ifc"])
+        .set_file_name(format!("{stem}.ifc"));
+    if let Some(dir) = open.path.as_ref().and_then(|p| p.parent()) {
+        dlg = dlg.set_directory(dir);
+    }
+    let Some(path) = dlg.save_file() else {
+        return Ok(None);
+    };
+    std::fs::write(&path, text).map_err(err)?;
+    Ok(Some(path.display().to_string()))
+}
+
 /// 저장하지 않은 변경이 있으면 버려도 되는지 묻는다. 변경이 없으면 묻지 않고 참
 fn ask_discard(open: &Open) -> bool {
     if !open.ed.as_ref().is_some_and(|e| e.dirty) {
@@ -1402,6 +1438,7 @@ fn main() {
             pick_box,
             grips,
             shape_at,
+            export_ifc,
             selection_info,
             export_pdf,
             export_sheets_pdf,
