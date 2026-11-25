@@ -1296,11 +1296,15 @@ pub fn nearest_wall(m: &ArchModel, p: Vec2) -> Option<(u64, f64, f64)> {
         .min_by(|a, b| a.2.total_cmp(&b.2))
 }
 
-/// 점을 둘러싼 실 경계 찾기: 지금 층 벽의 안쪽 면을 선분으로 모아, 점에서 사방으로 쏜 반직선이 처음 닿는
-/// 면들로 다각형을 만든다 (직교 평면에서 잘 맞는 단순한 방법 — 구현 노트 §19)
+/// 점을 둘러싼 실 경계 찾기 (구현 노트 §19·§48): 지금 층 벽의 두 면을 두께만큼 늘린 선분으로 모아 서로 만나는 곳에서
+/// 쪼갠 평면 그래프를 만들고, 막다른 가지(늘린 끝)를 걷어 낸 뒤, 점 오른쪽으로 쏜 반직선이 처음 닿는 변에서 시작해
+/// 점을 왼쪽에 두고 면을 한 바퀴 돈다. 사선 벽·오목한(ㄱ자) 실도 꼭짓점이 정확히 면의 교점이 된다.
 pub fn find_room(m: &ArchModel, p: Vec2) -> Option<Vec<Vec2>> {
     let mut faces: Vec<(Vec2, Vec2)> = Vec::new();
     for w in m.walls.iter().filter(|w| w.level == m.active_level) {
+        if w.length() < 1e-9 {
+            continue;
+        }
         let d = w.dir();
         let n = Vec2::new(-d.y, d.x);
         let h = w.thickness / 2.0;
@@ -1314,42 +1318,134 @@ pub fn find_room(m: &ArchModel, p: Vec2) -> Option<Vec<Vec2>> {
     if faces.is_empty() {
         return None;
     }
-    // 360 방향으로 쏴서 가장 가까운 면까지
-    let rays = 720;
-    let mut pts = Vec::with_capacity(rays);
-    for i in 0..rays {
-        let ang = std::f64::consts::TAU * i as f64 / rays as f64;
-        let dir = Vec2::new(ang.cos(), ang.sin());
-        let mut best = f64::INFINITY;
-        for (a, b) in &faces {
-            let e = sub(*b, *a);
-            if let (Some(t), Some(s)) = (line_t(p, dir, *a, e), line_t(*a, e, p, dir))
-                && t > 0.0
-                && (0.0..=1.0).contains(&s)
+    let poly = face_around(&faces, p)?;
+    (poly.len() >= 3).then_some(poly)
+}
+
+/// 선분들이 이루는 평면 그래프에서 점 p 를 둘러싼 면 (반시계, 일직선 꼭짓점은 뺌)
+pub fn face_around(segs: &[(Vec2, Vec2)], p: Vec2) -> Option<Vec<Vec2>> {
+    use std::collections::HashMap;
+    // 꼭짓점: 0.01 mm 로 묶는다
+    let mut verts: Vec<Vec2> = Vec::new();
+    let mut index: HashMap<(i64, i64), usize> = HashMap::new();
+    let mut vid = |q: Vec2| -> usize {
+        let key = ((q.x * 100.0).round() as i64, (q.y * 100.0).round() as i64);
+        *index.entry(key).or_insert_with(|| {
+            verts.push(q);
+            verts.len() - 1
+        })
+    };
+    let mut edges: Vec<(usize, usize)> = Vec::new();
+    for (i, (a, b)) in segs.iter().enumerate() {
+        let e = sub(*b, *a);
+        let mut ts = vec![0.0, 1.0];
+        for (j, (c, d)) in segs.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            let f = sub(*d, *c);
+            if let (Some(t), Some(s)) = (line_t(*a, e, *c, f), line_t(*c, f, *a, e))
+                && (-1e-9..=1.0 + 1e-9).contains(&t)
+                && (-1e-9..=1.0 + 1e-9).contains(&s)
             {
-                best = best.min(t);
+                ts.push(t.clamp(0.0, 1.0));
             }
         }
-        if !best.is_finite() {
-            return None; // 열린 곳이 있으면 실이 아니다
-        }
-        pts.push(add(p, mul(dir, best)));
-    }
-    // 같은 면 위에 이어진 점들을 줄여 꼭짓점만 남긴다
-    let mut poly: Vec<Vec2> = Vec::new();
-    let n = pts.len();
-    for i in 0..n {
-        let (a, b, c) = (pts[(i + n - 1) % n], pts[i], pts[(i + 1) % n]);
-        let cross = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
-        let scale = a.dist(b).max(1e-9) * b.dist(c).max(1e-9);
-        if (cross / scale).abs() > 0.02 {
-            poly.push(b);
+        ts.sort_by(f64::total_cmp);
+        let ids: Vec<usize> = ts.iter().map(|t| vid(add(*a, mul(e, *t)))).collect();
+        for w in ids.windows(2) {
+            if w[0] != w[1] {
+                edges.push((w[0].min(w[1]), w[0].max(w[1])));
+            }
         }
     }
-    if poly.len() < 3 {
+    edges.sort_unstable();
+    edges.dedup();
+    let nv = verts.len();
+    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); nv];
+    for &(u, v) in &edges {
+        adj[u].push(v);
+        adj[v].push(u);
+    }
+    // 막다른 가지 걷어 내기
+    let mut stack: Vec<usize> = (0..nv).filter(|&v| adj[v].len() == 1).collect();
+    while let Some(v) = stack.pop() {
+        if adj[v].len() != 1 {
+            continue;
+        }
+        let u = adj[v][0];
+        adj[v].clear();
+        adj[u].retain(|&x| x != v);
+        if adj[u].len() == 1 {
+            stack.push(u);
+        }
+    }
+    let ang = |u: usize, v: usize| (verts[v].y - verts[u].y).atan2(verts[v].x - verts[u].x);
+    for (u, a) in adj.iter_mut().enumerate() {
+        a.sort_by(|&x, &y| ang(u, x).total_cmp(&ang(u, y)));
+    }
+    // 시작 변: 꼭짓점을 비껴가게 살짝 기운 반직선이 처음 닿는 변
+    let dir = Vec2::new(0.999_923_8, 0.012_341_8);
+    let mut start: Option<(f64, usize, usize)> = None;
+    for (u, nb) in adj.iter().enumerate() {
+        for &v in nb {
+            if v < u {
+                continue;
+            }
+            let e = sub(verts[v], verts[u]);
+            if let (Some(t), Some(s)) = (line_t(p, dir, verts[u], e), line_t(verts[u], e, p, dir))
+                && t > 0.0
+                && (0.0..=1.0).contains(&s)
+                && start.is_none_or(|b| t < b.0)
+            {
+                start = Some((t, u, v));
+            }
+        }
+    }
+    let (_, mut u, mut v) = start?;
+    let left = |u: usize, v: usize| {
+        let (a, b) = (verts[u], verts[v]);
+        (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x) > 0.0
+    };
+    if !left(u, v) {
+        std::mem::swap(&mut u, &mut v);
+    }
+    let first = (u, v);
+    let mut ring = Vec::new();
+    for _ in 0..=edges.len() * 2 {
+        ring.push(verts[u]);
+        // v 에서 들어온 변(v→u)의 시계 방향 바로 다음 변으로 (면을 왼쪽에 두고 돈다)
+        let a = &adj[v];
+        let k = a.iter().position(|&x| x == u)?;
+        let w = a[(k + a.len() - 1) % a.len()];
+        (u, v) = (v, w);
+        if (u, v) == first {
+            break;
+        }
+    }
+    if (u, v) != first || ring.len() < 3 {
         return None;
     }
-    // 모서리 근처 점을 면 교점으로 다듬기는 생략 — 반직선 720 개라 모서리 오차는 작다
+    // 반시계(넓이 양수)이고 점을 품어야 실 — 아니면 바깥(열린 곳)이다
+    let area: f64 = (0..ring.len())
+        .map(|i| {
+            let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
+            a.x * b.y - b.x * a.y
+        })
+        .sum();
+    if area <= 0.0 || !crate::fill::inside(p, &ring) {
+        return None;
+    }
+    // 일직선 위 꼭짓점 빼기
+    let n = ring.len();
+    let poly: Vec<Vec2> = (0..n)
+        .filter(|&i| {
+            let (a, b, c) = (ring[(i + n - 1) % n], ring[i], ring[(i + 1) % n]);
+            let cross = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+            (cross / (a.dist(b).max(1e-9) * b.dist(c).max(1e-9))).abs() > 1e-6
+        })
+        .map(|i| ring[i])
+        .collect();
     Some(poly)
 }
 
@@ -2732,6 +2828,72 @@ pub fn table_csv(t: &Tables, name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn walls(ed: &mut Editor, pts: &[[f64; 2]], closed: bool) {
+        apply(
+            ed,
+            ArchReq::Walls {
+                points: pts.to_vec(),
+                closed,
+                thickness: 200.0,
+                wall: WallKind::Exterior,
+            },
+        )
+        .unwrap();
+    }
+
+    /// 사선 벽·ㄱ자 실·열린 실 (§48)
+    #[test]
+    fn rooms_with_slanted_and_concave_walls() {
+        // ㄱ자: 안쪽 모서리가 반직선에서 가려지는 오목한 실
+        let mut ed = Editor::new(new_drawing());
+        walls(
+            &mut ed,
+            &[
+                [0.0, 0.0],
+                [8000.0, 0.0],
+                [8000.0, 3000.0],
+                [3000.0, 3000.0],
+                [3000.0, 8000.0],
+                [0.0, 8000.0],
+            ],
+            true,
+        );
+        let r = find_room(&ed.d.arch, Vec2::new(1000.0, 1000.0)).unwrap();
+        assert_eq!(r.len(), 6, "{r:?}");
+        let area = Room {
+            id: 0,
+            level: 0,
+            name: String::new(),
+            boundary: r,
+            finish_floor: String::new(),
+            finish_wall: String::new(),
+            finish_ceiling: String::new(),
+        }
+        .area();
+        // 안쪽 치수: 7800×2800 + 2800×5000
+        assert!(
+            (area - (7800.0 * 2800.0 + 2800.0 * 5000.0)).abs() < 1.0,
+            "{area}"
+        );
+        // 사선 벽 삼각형: 꼭짓점 셋, 안쪽 면 교점
+        let mut ed = Editor::new(new_drawing());
+        walls(&mut ed, &[[0.0, 0.0], [6000.0, 0.0], [0.0, 6000.0]], true);
+        let r = find_room(&ed.d.arch, Vec2::new(1000.0, 1000.0)).unwrap();
+        assert_eq!(r.len(), 3, "{r:?}");
+        assert!(
+            r.iter().any(|q| q.dist(Vec2::new(100.0, 100.0)) < 1e-6),
+            "{r:?}"
+        );
+        // 열린 실은 없다
+        let mut ed = Editor::new(new_drawing());
+        walls(
+            &mut ed,
+            &[[0.0, 0.0], [6000.0, 0.0], [6000.0, 6000.0], [0.0, 6000.0]],
+            false,
+        );
+        assert!(find_room(&ed.d.arch, Vec2::new(1000.0, 1000.0)).is_none());
+    }
 
     fn house() -> Editor {
         let mut ed = Editor::new(new_drawing());

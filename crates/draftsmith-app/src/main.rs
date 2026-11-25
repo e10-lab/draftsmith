@@ -627,6 +627,10 @@ enum EditReq {
         value: String,
         height: f64,
     },
+    /// 블록 참조의 속성을 블록 정의의 속성 정의로 (§49)
+    DefineAttrs {
+        id: usize,
+    },
     /// 블록 참조의 속성값 고치기
     SetAttr {
         id: usize,
@@ -893,6 +897,9 @@ fn edit(req: EditReq, state: State<'_, AppState>) -> Result<DocState, String> {
                 height,
             } => ed.add_attr(id, &tag, &value, height)?,
             EditReq::SetAttr { id, tag, value } => ed.set_attr(id, &tag, &value)?,
+            EditReq::DefineAttrs { id } => {
+                ed.define_attrs(id)?;
+            }
             EditReq::Trim { .. }
             | EditReq::Extend { .. }
             | EditReq::Fillet { .. }

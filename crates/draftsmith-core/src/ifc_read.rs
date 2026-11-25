@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 
-use crate::arch::{Column, Grid, Level, Opening, OpeningKind, Room, Wall, WallKind};
+use crate::arch::{Column, Grid, Level, Opening, OpeningKind, Room, Stair, Wall, WallKind};
 use crate::drawing::Drawing;
 use crate::geom::Vec2;
 
@@ -669,6 +669,76 @@ fn join_corners(walls: &mut [Wall]) {
     }
 }
 
+/// 계단 줄기 하나: 중심선 아래 끝·위 끝, 폭, 단 수(있으면), 높이
+struct Run {
+    start: Vec2,
+    end: Vec2,
+    width: f64,
+    risers: Option<u32>,
+    height: f64,
+}
+
+impl Run {
+    fn dir(&self) -> Vec2 {
+        let l = self.start.dist(self.end).max(1e-12);
+        Vec2::new(
+            (self.end.x - self.start.x) / l,
+            (self.end.y - self.start.y) / l,
+        )
+    }
+}
+
+/// 줄기(또는 줄기 없는 계단)의 바닥 모양에서: 오르는 방향은 놓인 자리의 x 축(폭이 길이보다 훨씬 길면 긴 변),
+/// 아래 끝은 놓인 원점에 가까운 쪽
+fn run(r: &mut Reader, args: &[V]) -> Option<Run> {
+    let (ring, h, pl) = r.body(args)?;
+    let span = |u: Vec2| {
+        let v = Vec2::new(-u.y, u.x);
+        let dot = |p: Vec2, d: Vec2| p.x * d.x + p.y * d.y;
+        let (mut s0, mut s1, mut t0, mut t1) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
+        for &p in &ring {
+            s0 = s0.min(dot(p, u));
+            s1 = s1.max(dot(p, u));
+            t0 = t0.min(dot(p, v));
+            t1 = t1.max(dot(p, v));
+        }
+        let tm = (t0 + t1) / 2.0;
+        let at = |s: f64| Vec2::new(u.x * s + v.x * tm, u.y * s + v.y * tm);
+        (at(s0), at(s1), t1 - t0)
+    };
+    let (mut a, mut b, mut w) = span(pl.x);
+    if w > a.dist(b) * 1.5
+        && let Some((_, u, ..)) = oriented(&ring)
+    {
+        (a, b, w) = span(u);
+    }
+    if pl.o.dist(b) < pl.o.dist(a) {
+        std::mem::swap(&mut a, &mut b);
+    }
+    let risers = args
+        .get(8)
+        .and_then(V::n)
+        .filter(|n| *n >= 1.0)
+        .map(|n| n.round() as u32);
+    (a.dist(b) > 1.0 && w > 1.0).then_some(Run {
+        start: a,
+        end: b,
+        width: w,
+        risers,
+        height: h,
+    })
+}
+
+/// 두 직선 (점 + 방향) 의 교점
+fn line_x(p: Vec2, d: Vec2, q: Vec2, e: Vec2) -> Option<Vec2> {
+    let den = d.x * e.y - d.y * e.x;
+    if den.abs() < 1e-9 {
+        return None;
+    }
+    let t = ((q.x - p.x) * e.y - (q.y - p.y) * e.x) / den;
+    Some(Vec2::new(p.x + d.x * t, p.y + d.y * t))
+}
+
 /// 길이 단위 → mm 배율
 fn unit_scale(st: &Step) -> f64 {
     for (_, a) in st.of(&["IFCSIUNIT"]) {
@@ -1052,6 +1122,144 @@ pub fn read(text: &str) -> Result<Drawing, String> {
         });
     }
 
+    // 계단 (§50): IfcStair 가 모은 줄기 1 개 → 곧은, 2 개 → 꺾인(나란히 거꾸로면 U자). 그 밖은 줄기마다 곧은 계단
+    let mut children: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (_, a) in r.st.of(&["IFCRELAGGREGATES"]) {
+        if let Some(s) = a.get(4).and_then(V::r) {
+            for e in a.get(5).map(V::list).unwrap_or(&[]) {
+                if let Some(e) = e.r() {
+                    children.entry(s).or_default().push(e);
+                }
+            }
+        }
+    }
+    let stairs: Vec<(usize, Vec<V>)> =
+        r.st.of(&["IFCSTAIR"])
+            .map(|(i, a)| (i, a.to_vec()))
+            .collect();
+    let mut used = std::collections::HashSet::new();
+    let mut runs: Vec<(usize, Vec<Run>)> = Vec::new();
+    for (i, a) in &stairs {
+        if a.get(8).and_then(V::e) == Some("SPIRAL_STAIR") {
+            continue;
+        }
+        let mut fl: Vec<(f64, Run)> = Vec::new();
+        for c in children.get(i).cloned().unwrap_or_default() {
+            let Some(("IFCSTAIRFLIGHT", ca)) = r.st.get(c).map(|(n, a)| (n, a.to_vec())) else {
+                continue;
+            };
+            used.insert(c);
+            if let Some(f) = run(&mut r, &ca) {
+                fl.push((r.product_place(&ca).z, f));
+            }
+        }
+        fl.sort_by(|x, y| x.0.total_cmp(&y.0));
+        let mut fl: Vec<Run> = fl.into_iter().map(|x| x.1).collect();
+        if fl.is_empty()
+            && let Some(f) = run(&mut r, a)
+        {
+            fl.push(f);
+        }
+        runs.push((*i, fl));
+    }
+    let loose: Vec<(usize, Vec<V>)> =
+        r.st.of(&["IFCSTAIRFLIGHT"])
+            .filter(|(i, _)| !used.contains(i))
+            .map(|(i, a)| (i, a.to_vec()))
+            .collect();
+    for (i, a) in &loose {
+        if let Some(f) = run(&mut r, a) {
+            runs.push((*i, vec![f]));
+        }
+    }
+    for (i, fl) in runs {
+        let args = r.st.get(i).map(|(_, a)| a.to_vec()).unwrap_or_default();
+        let level = level_for(&mut r, i, &args);
+        let lh = m
+            .levels
+            .iter()
+            .find(|l| l.id == level)
+            .map(|l| l.height)
+            .unwrap_or(3000.0);
+        let risers_of = |fl: &[Run]| -> u32 {
+            let n: u32 = fl.iter().filter_map(|f| f.risers).sum();
+            if n > 0 && fl.iter().all(|f| f.risers.is_some()) {
+                n
+            } else {
+                let h: f64 = fl.iter().map(|f| f.height).sum::<f64>();
+                ((if h > 1.0 { h } else { lh }) / 175.0).round().max(2.0) as u32
+            }
+        };
+        let add = |m: &mut crate::arch::ArchModel,
+                   a: Vec2,
+                   b: Vec2,
+                   mid: Option<Vec2>,
+                   width: f64,
+                   risers: u32| {
+            let id = m.new_id();
+            m.stairs.push(Stair {
+                id,
+                level,
+                a,
+                b,
+                width,
+                risers,
+                mid,
+                spiral: None,
+            });
+        };
+        match fl.as_slice() {
+            [f] => add(m, f.start, f.end, None, f.width, risers_of(&fl)),
+            [f1, f2] => {
+                let (u1, u2) = (f1.dir(), f2.dir());
+                let mid = if u1.x * u2.x + u1.y * u2.y < -0.5 {
+                    // U자: 참 가운데는 첫 줄기 끝에서 반 폭 더
+                    Some(Vec2::new(
+                        f1.end.x + u1.x * f1.width / 2.0,
+                        f1.end.y + u1.y * f1.width / 2.0,
+                    ))
+                } else {
+                    // 꺾인: 두 중심선의 교점
+                    line_x(f1.start, u1, f2.start, u2)
+                };
+                match mid {
+                    Some(c) => add(
+                        m,
+                        f1.start,
+                        f2.end,
+                        Some(c),
+                        f1.width.max(f2.width),
+                        risers_of(&fl),
+                    ),
+                    None => {
+                        for f in &fl {
+                            add(
+                                m,
+                                f.start,
+                                f.end,
+                                None,
+                                f.width,
+                                risers_of(std::slice::from_ref(f)),
+                            );
+                        }
+                    }
+                }
+            }
+            _ => {
+                for f in &fl {
+                    add(
+                        m,
+                        f.start,
+                        f.end,
+                        None,
+                        f.width,
+                        risers_of(std::slice::from_ref(f)),
+                    );
+                }
+            }
+        }
+    }
+
     // 그리드: IfcGridAxis 의 선
     let grids: Vec<(usize, Vec<V>)> =
         r.st.of(&["IFCGRID"])
@@ -1198,6 +1406,53 @@ mod tests {
             c.at.dist(Vec2::new(3000.0, 2000.0)) < 1e-6 && (c.width - 500.0).abs() < 1e-6,
             "{c:?}"
         );
+    }
+
+    /// 계단 왕복: 곧은·꺾인·U자 (§50)
+    #[test]
+    fn stairs_round_trip() {
+        let mut d = crate::archgen::new_drawing();
+        let m = &mut d.arch;
+        let lv = m.ensure_level();
+        let mk = |id: u64, a: [f64; 2], b: [f64; 2], mid: Option<[f64; 2]>| Stair {
+            id,
+            level: lv,
+            a: Vec2::new(a[0], a[1]),
+            b: Vec2::new(b[0], b[1]),
+            width: 1200.0,
+            risers: 18,
+            mid: mid.map(|c| Vec2::new(c[0], c[1])),
+            spiral: None,
+        };
+        m.stairs = vec![
+            mk(100, [0.0, 0.0], [4000.0, 0.0], None),
+            mk(101, [0.0, 5000.0], [6000.0, 8000.0], Some([3000.0, 5000.0])),
+            // U자: 위로 올라가 참, 옆 1.4 m 줄기로 내려옴
+            mk(102, [10000.0, 0.0], [11400.0, 0.0], Some([10000.0, 3600.0])),
+        ];
+        assert!(m.stairs[2].u_turn().is_some());
+        // 벽 하나 (읽을 거리가 있게)
+        let wid = m.new_id();
+        m.walls.push(Wall {
+            id: wid,
+            level: lv,
+            a: Vec2::new(-5000.0, -2000.0),
+            b: Vec2::new(15000.0, -2000.0),
+            thickness: 200.0,
+            height: None,
+            kind: WallKind::Exterior,
+        });
+        let back = read(&crate::ifc::write(&d.arch, "계단")).unwrap();
+        assert_eq!(back.arch.stairs.len(), 3);
+        for (x, y) in d.arch.stairs.iter().zip(&back.arch.stairs) {
+            assert!(x.a.dist(y.a) < 1e-3 && x.b.dist(y.b) < 1e-3, "{x:?}\n{y:?}");
+            assert_eq!(x.mid.is_some(), y.mid.is_some());
+            if let (Some(p), Some(q)) = (x.mid, y.mid) {
+                assert!(p.dist(q) < 1e-3, "{p:?} {q:?}");
+            }
+            assert!((x.width - y.width).abs() < 1e-3);
+            assert_eq!(x.risers, y.risers);
+        }
     }
 
     /// 미터 단위 + 축선 없는 벽 (바닥 사각형만)

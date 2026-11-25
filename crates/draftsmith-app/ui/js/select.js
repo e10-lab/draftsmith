@@ -275,6 +275,16 @@ export class SelectTool {
         await this.update();
       });
       p.append(add);
+      if (this.info.props.some(([k]) => k.startsWith("속성 "))) {
+        const def = document.createElement("button");
+        def.textContent = "블록 기본 속성으로";
+        def.title = "이 참조의 속성(태그·위치·값)을 블록 정의에 저장합니다 — 이 블록을 새로 넣으면 기본값으로 붙고, DWG 에는 ATTDEF 로 나갑니다";
+        def.addEventListener("click", async () => {
+          await this.app.apply({ kind: "define_attrs", id: this.ids[0] });
+          this.app.status?.("블록 속성 정의를 저장했습니다");
+        });
+        p.append(def);
+      }
     }
     if (this.arch) {
       const del = document.createElement("button");

@@ -77,6 +77,7 @@ pub fn define(name: &str, items: &[Entity], base: Vec2) -> Block {
                 ..e.clone()
             })
             .collect(),
+        attdefs: Vec::new(),
     }
 }
 
@@ -190,6 +191,16 @@ mod tests {
         assert_eq!(tx.len(), 1);
         assert_eq!(tx[0].value, "A-01");
         assert!((tx[0].height - 250.0).abs() < 1e-9, "{}", tx[0].height);
+        // 속성 정의로 저장하면 새 참조에 기본값으로 붙는다 (§49)
+        assert_eq!(ed.define_attrs(j).unwrap(), 1);
+        let k = ed
+            .insert_block("의자", Vec2::new(0.0, 5000.0), 1.0, 0.0)
+            .unwrap();
+        match &ed.d.entities[k].shape {
+            Shape::Insert { attrs, .. } => assert_eq!(attrs[0].text.value, "A-01"),
+            s => panic!("{s:?}"),
+        }
+        assert!(ed.undo() && ed.undo());
         // 다시 펼치기 (위 되돌리기 앞 상태와 같은 개수 + 속성 글자 하나)
         ed.explode(j);
         assert_eq!(ed.d.entities.len(), 5);

@@ -286,6 +286,87 @@ pub fn write(m: &ArchModel, project: &str) -> String {
                 s("바닥판")
             )));
         }
+        // 계단 (§50): IfcStair 가 줄기(IfcStairFlight, 단 수·단 높이)와 참(IfcSlab .LANDING.)을 모은다.
+        // 줄기 자리는 시작점(아래 끝)·오르는 방향, 몸체는 길이×폭 사각을 그 줄기 높이만큼
+        for st in m.stairs.iter().filter(|x| x.level == l.id) {
+            let riser = l.height / st.risers.max(1) as f64;
+            let sp = {
+                let a = w.place3(Vec2::default(), 0.0, Vec2::new(1.0, 0.0));
+                w.local(Some(pl), a)
+            };
+            let mut parts = Vec::new();
+            if let Some((ro, ..)) = st.spiral_steps().map(|(ri, ro, s)| (ro, ri, s)) {
+                // 돌음 계단: 바깥 원 몸체만
+                let ring: Vec<Vec2> = (0..24)
+                    .map(|k| {
+                        let t = k as f64 * std::f64::consts::TAU / 24.0;
+                        Vec2::new(st.a.x + ro * t.cos(), st.a.y + ro * t.sin())
+                    })
+                    .collect();
+                let prof = w.polygon(&ring);
+                let shape = w.body(ctx, prof, l.height);
+                items.push(w.add(format!(
+                    "IFCSTAIR('{}',$,{},$,$,#{sp},#{shape},$,.SPIRAL_STAIR.)",
+                    guid("stair", st.id),
+                    s("돌음 계단")
+                )));
+                continue;
+            }
+            let Some((flights, landing)) = st.flights() else {
+                continue;
+            };
+            for (k, fl) in flights.iter().enumerate() {
+                let ax = w.place3(fl.start, riser * fl.first as f64, fl.u);
+                let lp = w.local(Some(sp), ax);
+                let prof = w.rect(fl.len / 2.0, 0.0, fl.len, st.width);
+                let shape = w.body(ctx, prof, riser * fl.risers as f64);
+                let tread = fl.len / fl.risers.max(1) as f64;
+                parts.push(w.add(format!(
+                    "IFCSTAIRFLIGHT('{}',$,{},$,$,#{lp},#{shape},$,{},{},{},{},.STRAIGHT.)",
+                    guid("flight", st.id * 16 + k as u64),
+                    s(&format!("계단 줄기 {}", k + 1)),
+                    fl.risers,
+                    fl.risers.saturating_sub(1),
+                    f(riser),
+                    f(tread)
+                )));
+            }
+            if let Some(q) = landing {
+                let z = flights
+                    .first()
+                    .map(|f| riser * f.risers as f64)
+                    .unwrap_or(0.0);
+                let ax = w.place3(Vec2::default(), z - 150.0, Vec2::new(1.0, 0.0));
+                let lp = w.local(Some(sp), ax);
+                let prof = w.polygon(&q);
+                let shape = w.body(ctx, prof, 150.0);
+                parts.push(w.add(format!(
+                    "IFCSLAB('{}',$,{},$,$,#{lp},#{shape},$,.LANDING.)",
+                    guid("landing", st.id),
+                    s("계단참")
+                )));
+            }
+            let kind = match (flights.len(), st.u_turn()) {
+                (1, _) => ".STRAIGHT_RUN_STAIR.",
+                (_, Some(_)) => ".HALF_TURN_STAIR.",
+                _ => ".QUARTER_TURN_STAIR.",
+            };
+            let stair = w.add(format!(
+                "IFCSTAIR('{}',$,{},$,$,#{sp},$,$,{kind})",
+                guid("stair", st.id),
+                s("계단")
+            ));
+            items.push(stair);
+            let list = parts
+                .iter()
+                .map(|i| format!("#{i}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            w.add(format!(
+                "IFCRELAGGREGATES('{}',$,$,$,#{stair},({list}))",
+                guid("agg-stair", st.id)
+            ));
+        }
         // 기둥
         for c in m.columns.iter().filter(|x| x.level == l.id) {
             let ax = w.place3(c.at, 0.0, Vec2::new(c.angle.cos(), c.angle.sin()));

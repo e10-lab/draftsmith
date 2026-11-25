@@ -330,18 +330,53 @@ impl Editor {
         scale: f64,
         rotation: f64,
     ) -> Result<usize, String> {
-        if !self.d.blocks.iter().any(|b| b.name == name) {
+        let Some(b) = self.d.blocks.iter().find(|b| b.name == name) else {
             return Err(format!("「{name}」 블록이 없습니다"));
-        }
+        };
+        // 속성 정의가 있으면 기본값으로 붙인다 (§49)
+        let attrs = b
+            .attdefs
+            .iter()
+            .map(|a| crate::drawing::Attr {
+                tag: a.tag.clone(),
+                text: a.text.clone(),
+            })
+            .collect();
         let k = if scale.abs() < 1e-12 { 1.0 } else { scale };
         let r = self.add_shapes(vec![Shape::Insert {
             block: name.to_string(),
             at,
             scale: Vec2::new(k, k),
             rotation,
-            attrs: Vec::new(),
+            attrs,
         }]);
         Ok(r.start)
+    }
+
+    /// 블록 참조의 속성들을 그 블록의 속성 정의로 (새로 넣는 참조에 기본값으로 붙는다, §49).
+    /// 이미 있는 참조는 그대로 둔다. 바꾼 정의 개수
+    pub fn define_attrs(&mut self, i: usize) -> Result<usize, String> {
+        let e = self.d.entities.get(i).ok_or("객체가 없습니다")?;
+        let Shape::Insert { block, attrs, .. } = &e.shape else {
+            return Err("블록 참조가 아닙니다".into());
+        };
+        let old = self.d.blocks.clone();
+        let mut new = old.clone();
+        let b = new
+            .iter_mut()
+            .find(|b| &b.name == block)
+            .ok_or("블록 정의가 없습니다")?;
+        b.attdefs = attrs
+            .iter()
+            .map(|a| crate::drawing::AttDef {
+                tag: a.tag.clone(),
+                prompt: a.tag.clone(),
+                text: a.text.clone(),
+            })
+            .collect();
+        let n = b.attdefs.len();
+        self.run(Op::Blocks { old, new });
+        Ok(n)
     }
 
     /// 블록 참조의 속성값 고치기 (§46)

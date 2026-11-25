@@ -437,11 +437,23 @@ pub struct Attr {
     pub text: TextShape,
 }
 
+/// 블록 정의의 속성 정의 (ATTDEF): 넣을 때 참조마다 이 글자를 기본값으로 붙인다 (§49)
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AttDef {
+    pub tag: String,
+    /// 넣을 때 묻는 말
+    pub prompt: String,
+    /// 기본값 글자 (블록 안 좌표, 값은 `text.value`)
+    pub text: TextShape,
+}
+
 /// 블록 정의: 기준점(0,0) 기준 객체들
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Block {
     pub name: String,
     pub entities: Vec<Entity>,
+    #[serde(default)]
+    pub attdefs: Vec<AttDef>,
 }
 
 impl Block {

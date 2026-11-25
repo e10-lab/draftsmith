@@ -392,6 +392,8 @@ impl<'a> Converter<'a> {
                 return;
             }
             EntityType::Insert(x) => return self.insert(x, layer, color, t),
+            // 블록 안 속성 정의는 그리지 않는다 (AutoCAD 와 같게) — 블록 참조로 살리면 속성 정의로 남는다 (§49)
+            EntityType::AttributeDefinition(_) if !self.stack.is_empty() => return,
             other => {
                 self.skip(other.as_entity().entity_type());
                 return;
@@ -711,9 +713,24 @@ impl<'a> Converter<'a> {
             );
             let entities = std::mem::replace(&mut self.d.entities, saved);
             self.d.inserts = saved_inserts;
+            // 속성 정의 (보이는 것, 기준점이 원점이 되게)
+            let to_local = Affine::translate(-base.x, -base.y);
+            let attdefs = doc_attdefs(self.doc, &x.block_name)
+                .filter_map(
+                    |a| match Shape::Text(attdef_text(a)).transformed(&to_local) {
+                        Shape::Text(text) => Some(crate::drawing::AttDef {
+                            tag: a.tag.clone(),
+                            prompt: a.prompt.clone(),
+                            text,
+                        }),
+                        _ => None,
+                    },
+                )
+                .collect();
             self.d.blocks.push(crate::drawing::Block {
                 name: x.block_name.clone(),
                 entities,
+                attdefs,
             });
         }
         let (layer, color) = self.style(&x.common, None);
@@ -863,9 +880,82 @@ fn text_shape(x: &acadrust::entities::Text) -> Shape {
     })
 }
 
+/// 블록 안의 보이는(상수 아닌) 속성 정의
+fn doc_attdefs<'a>(
+    doc: &'a CadDocument,
+    block: &str,
+) -> impl Iterator<Item = &'a acadrust::entities::AttributeDefinition> + 'a {
+    doc.entities_in_block(block)
+        .filter_map(|e| match e {
+            EntityType::AttributeDefinition(a) if !a.flags.invisible && !a.flags.constant => {
+                Some(a)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+}
+
+/// ATTDEF → 기본값 글자 (블록 안 좌표)
+fn attdef_text(x: &acadrust::entities::AttributeDefinition) -> TextShape {
+    att_text(
+        x.horizontal_alignment,
+        x.vertical_alignment,
+        &x.insertion_point,
+        &x.alignment_point,
+        x.height,
+        x.rotation,
+        x.width_factor,
+        &x.default_value,
+    )
+}
+
 /// ATTRIB → 글자 (세계 좌표)
 fn attrib_text(x: &acadrust::entities::AttributeEntity) -> TextShape {
+    att_text(
+        x.horizontal_alignment,
+        x.vertical_alignment,
+        &x.insertion_point,
+        &x.alignment_point,
+        x.height,
+        x.rotation,
+        x.width_factor,
+        &x.value,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn att_text(
+    h: acadrust::entities::HorizontalAlignment,
+    v: acadrust::entities::VerticalAlignment,
+    insertion_point: &Vector3,
+    alignment_point: &Vector3,
+    height: f64,
+    rotation: f64,
+    width_factor: f64,
+    value: &str,
+) -> TextShape {
     use acadrust::entities::{HorizontalAlignment as H, VerticalAlignment as V};
+    struct X<'a> {
+        horizontal_alignment: H,
+        vertical_alignment: V,
+        insertion_point: &'a Vector3,
+        alignment_point: &'a Vector3,
+        height: f64,
+        rotation: f64,
+        width_factor: f64,
+        value: &'a str,
+    }
+    let x = X {
+        horizontal_alignment: h,
+        vertical_alignment: v,
+        insertion_point,
+        alignment_point,
+        height,
+        rotation,
+        width_factor,
+        value,
+    };
     let (halign, mid) = match x.horizontal_alignment {
         H::Center => (0.5, false),
         H::Right => (1.0, false),
@@ -886,9 +976,9 @@ fn attrib_text(x: &acadrust::entities::AttributeEntity) -> TextShape {
         && valign == VAlign::Baseline;
     TextShape {
         at: v2(if plain {
-            &x.insertion_point
+            x.insertion_point
         } else {
-            &x.alignment_point
+            x.alignment_point
         }),
         height: x.height,
         rotation: x.rotation,
@@ -899,7 +989,7 @@ fn attrib_text(x: &acadrust::entities::AttributeEntity) -> TextShape {
         },
         halign,
         valign,
-        value: plain_text(&x.value),
+        value: plain_text(x.value),
     }
 }
 

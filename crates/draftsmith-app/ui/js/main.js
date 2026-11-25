@@ -29,6 +29,7 @@ function prompt(text) {
 const app = {
   invoke,
   ask: (title, fields) => ask(title, fields),
+  status: (t) => status(t),
   doc: null,
   baseLayers: 0,
   textHeight: 250,

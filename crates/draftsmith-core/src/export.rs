@@ -7,10 +7,11 @@
 use std::path::Path;
 
 use acadrust::entities::{
-    Arc, AttributeEntity, BoundaryEdge, BoundaryPath, Circle, Dimension, DimensionAligned,
-    DimensionAngular3Pt, DimensionDiameter, DimensionLinear, DimensionRadius, Ellipse, Hatch,
-    HatchPattern, HatchPatternLine, HorizontalAlignment, Insert, Line, LwPolyline, LwVertex, MText,
-    PolylineEdge, Text, TextHorizontalAlignment, TextVerticalAlignment, VerticalAlignment,
+    Arc, AttributeDefinition, AttributeEntity, BoundaryEdge, BoundaryPath, Circle, Dimension,
+    DimensionAligned, DimensionAngular3Pt, DimensionDiameter, DimensionLinear, DimensionRadius,
+    Ellipse, Hatch, HatchPattern, HatchPatternLine, HorizontalAlignment, Insert, Line, LwPolyline,
+    LwVertex, MText, PolylineEdge, Text, TextHorizontalAlignment, TextVerticalAlignment,
+    VerticalAlignment,
 };
 use acadrust::tables::{BlockRecord, Layer as CadLayer, LineType, LineTypeElement};
 use acadrust::types::{Color, LineWeight, Vector2, Vector3};
@@ -314,6 +315,20 @@ pub fn to_document(model: &Drawing) -> CadDocument {
         for e in &b.entities {
             put(&mut doc, &d, e, Some(h));
         }
+        // 속성 정의 ATTDEF (§49)
+        for a in &b.attdefs {
+            let mut x =
+                AttributeDefinition::new(a.tag.clone(), a.prompt.clone(), a.text.value.clone());
+            x.insertion_point = v3(a.text.at);
+            x.alignment_point = v3(a.text.at);
+            x.height = a.text.height;
+            x.rotation = a.text.rotation;
+            x.width_factor = a.text.width_factor;
+            (x.horizontal_alignment, x.vertical_alignment) = align(&a.text);
+            x.common.layer = "0".into();
+            x.common.owner_handle = h;
+            let _ = doc.add_entity(EntityType::AttributeDefinition(x));
+        }
     }
     // 모형 객체 (블록 참조는 INSERT 로)
     // 모형 객체는 모형에서 (무늬 해치를 HATCH 그대로, §45)
@@ -583,27 +598,33 @@ pub fn write(d: &Drawing, path: &Path) -> Result<(), String> {
 
 /// 속성값 글자 → ATTRIB (맞춤이 왼쪽·기준선이 아니면 맞춤점도 둔다)
 fn attrib(tag: &str, t: &crate::drawing::TextShape) -> AttributeEntity {
-    use crate::drawing::VAlign;
     let mut a = AttributeEntity::new(tag.to_string(), t.value.clone());
     a.insertion_point = v3(t.at);
     a.alignment_point = v3(t.at);
     a.height = t.height;
     a.rotation = t.rotation;
     a.width_factor = t.width_factor;
-    a.horizontal_alignment = if t.halign > 0.75 {
+    (a.horizontal_alignment, a.vertical_alignment) = align(t);
+    a
+}
+
+/// 글자 맞춤 → ATTRIB·ATTDEF 맞춤
+fn align(t: &crate::drawing::TextShape) -> (HorizontalAlignment, VerticalAlignment) {
+    use crate::drawing::VAlign;
+    let h = if t.halign > 0.75 {
         HorizontalAlignment::Right
     } else if t.halign > 0.25 {
         HorizontalAlignment::Center
     } else {
         HorizontalAlignment::Left
     };
-    a.vertical_alignment = match t.valign {
+    let v = match t.valign {
         VAlign::Bottom => VerticalAlignment::Bottom,
         VAlign::Middle => VerticalAlignment::Middle,
         VAlign::Top => VerticalAlignment::Top,
         _ => VerticalAlignment::Baseline,
     };
-    a
+    (h, v)
 }
 
 #[cfg(test)]
@@ -663,6 +684,7 @@ mod tests {
             .insert_block("의자", Vec2::new(2000.0, 0.0), 1.0, 1.0)
             .unwrap();
         ed.add_attr(j, "NO", "A-01", 200.0).unwrap();
+        ed.define_attrs(j).unwrap();
         let want = ed.d.entities[j].shape.clone();
         apply(
             &mut ed,
@@ -722,6 +744,11 @@ mod tests {
                 (got[0].text.height - w[0].text.height).abs() < 1e-6,
                 "{ext}"
             );
+            // 블록의 속성 정의도 돌아온다 (§49)
+            let bd = back.blocks.iter().find(|b| b.name == "의자").unwrap();
+            assert_eq!(bd.attdefs.len(), 1, "{ext}");
+            assert_eq!(bd.attdefs[0].tag, "NO", "{ext}");
+            assert!(bd.attdefs[0].text.at.dist(w[0].text.at) < 1e-6, "{ext}");
             let back = crate::archgen::shown(&back);
             assert!(back.blocks.iter().any(|b| b.name == "의자"), "{ext}");
             assert_eq!(
