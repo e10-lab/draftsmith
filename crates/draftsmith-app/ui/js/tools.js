@@ -953,6 +953,40 @@ class ColumnTool extends Tool {
   }
 }
 
+/** 보: 점을 이어 누르면 앞 점에서 이어진 보들 (Enter·Esc 로 끝). 「300x600」 처럼 치면 폭×춤 (§52) */
+class BeamTool extends Tool {
+  start() { this.say(`보 (폭×춤 ${fmt(this.app.beamW)}×${fmt(this.app.beamD)}): 첫 점 — 「300x600」 처럼 치면 크기`); }
+  input(t) {
+    const m = t.trim().match(/^([\d.]+)\s*[x×*]\s*([\d.]+)$/i);
+    if (m) {
+      this.app.beamW = Number(m[1]);
+      this.app.beamD = Number(m[2]);
+      if (this.pts.length) this.say(`보 (${fmt(this.app.beamW)}×${fmt(this.app.beamD)}): 다음 점`);
+      else this.start();
+      return true;
+    }
+    return super.input(t);
+  }
+  async take(p) {
+    const a = this.pts[this.pts.length - 1];
+    this.pts = [p];
+    if (!a) return this.say("보: 다음 점 (Enter 로 끝)");
+    await this.app.apply({ kind: "arch", op: { kind: "beam", a, b: p, width: this.app.beamW, depth: this.app.beamD } });
+    this.say("보: 다음 점 (Enter 로 끝)");
+  }
+  enter() { this.app.done(); }
+  paint(ctx, ts) {
+    const a = this.pts[0], b = this.cur;
+    if (!a || !b) return;
+    const l = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    if (l < 1e-9) return;
+    const w = this.app.beamW / 2, nx = -(b[1] - a[1]) / l * w, ny = (b[0] - a[0]) / l * w;
+    ctx.setLineDash([6, 4]);
+    strokePath(ctx, ts, [[a[0] + nx, a[1] + ny], [b[0] + nx, b[1] + ny], [b[0] - nx, b[1] - ny], [a[0] - nx, a[1] - ny]], true);
+    ctx.setLineDash([]);
+  }
+}
+
 class StairTool extends Tool {
   start() {
     this.spiral = false;
@@ -1221,6 +1255,7 @@ export const TOOLS = {
   chamfer: ChamferTool,
   hatch: HatchTool,
   column: ColumnTool,
+  beam: BeamTool,
   stair: StairTool,
   block: BlockTool,
   insert: InsertTool,

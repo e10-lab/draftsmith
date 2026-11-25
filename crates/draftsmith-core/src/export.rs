@@ -521,6 +521,14 @@ pub fn all_levels_model(d: &Drawing) -> Drawing {
                 ..c.clone()
             });
         }
+        for x in m.beams.iter().filter(|x| x.level == l.id) {
+            a.beams.push(crate::arch::Beam {
+                level: first,
+                a: sh(x.a, dx),
+                b: sh(x.b, dx),
+                ..x.clone()
+            });
+        }
         for st in m.stairs.iter().filter(|s| s.level == l.id) {
             a.stairs.push(crate::arch::Stair {
                 level: first,

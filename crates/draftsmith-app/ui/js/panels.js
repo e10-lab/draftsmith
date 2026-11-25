@@ -57,7 +57,7 @@ export function renderLevels(app, doc) {
     ul.append(li);
   }
   document.getElementById("arch-sum").textContent =
-    `벽 ${a.walls} · 문·창 ${a.openings} · 실 ${a.rooms} · 그리드 ${a.grids} · 기둥 ${a.columns} · 계단 ${a.stairs} · 치수 ${a.dims}` +
+    `벽 ${a.walls} · 문·창 ${a.openings} · 실 ${a.rooms} · 그리드 ${a.grids} · 기둥 ${a.columns} · 보 ${a.beams ?? 0} · 계단 ${a.stairs} · 치수 ${a.dims}` +
     (a.has_site ? " · 대지" : "");
 }
 

@@ -103,12 +103,13 @@ fn main() -> Result<()> {
             if !d.arch.is_empty() {
                 let a = draftsmith_core::archgen::summary(&d.arch);
                 println!(
-                    "건축 객체 층 {} · 벽 {} · 문·창 {} · 실 {} · 기둥 {} · 계단 {} · 치수 {} · 그리드 {}",
+                    "건축 객체 층 {} · 벽 {} · 문·창 {} · 실 {} · 기둥 {} · 보 {} · 계단 {} · 치수 {} · 그리드 {}",
                     a.levels.len(),
                     a.walls,
                     a.openings,
                     a.rooms,
                     a.columns,
+                    a.beams,
                     a.stairs,
                     a.dims,
                     a.grids

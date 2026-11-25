@@ -413,8 +413,10 @@ export class Viewer {
     };
     cv.addEventListener("pointerdown", (e) => {
       const pan = e.button === 1 || (e.button === 0 && this.spaceDown);
-      const box = !pan && e.button === 0 && !!this.tool?.drag;
-      down = { x: e.clientX, y: e.clientY, c: [...this.center], moved: false, button: e.button, pan, box, start: model(e), shift: e.shiftKey };
+      // 도구가 잡는 것(시트의 뷰포트 테두리 등)이 있으면 끌기를 넘긴다
+      const grab = !pan && e.button === 0 ? this.tool?.grab?.(model(e), e) : null;
+      const box = !grab && !pan && e.button === 0 && !!this.tool?.drag;
+      down = { x: e.clientX, y: e.clientY, c: [...this.center], moved: false, button: e.button, pan, box, grab, start: model(e), shift: e.shiftKey };
       cv.setPointerCapture(e.pointerId);
       if (e.button === 1) e.preventDefault();
     });
@@ -426,6 +428,11 @@ export class Viewer {
         const dx = e.clientX - down.x, dy = e.clientY - down.y;
         if (!down.moved && Math.hypot(dx, dy) < 4) return;
         down.moved = true;
+        if (down.grab) {
+          down.grab.move(m);
+          this.drawOverlay();
+          return;
+        }
         if (down.box) {
           this.tool.drag(down.start, m, e.clientX < down.x);
           return;
@@ -443,6 +450,12 @@ export class Viewer {
       const d = down;
       down = null;
       if (!d) return;
+      if (d.grab) {
+        if (d.moved) d.grab.end(model(e));
+        else d.grab.cancel?.();
+        this.drawOverlay();
+        if (d.moved) return;
+      }
       if (d.box && d.moved) {
         this.tool.dragEnd?.(d.start, model(e), e.clientX < d.x, d.shift || e.shiftKey);
         return;

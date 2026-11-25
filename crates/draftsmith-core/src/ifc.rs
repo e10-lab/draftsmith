@@ -86,7 +86,12 @@ impl W {
         self.add(format!("IFCCARTESIANPOINT(({},{}))", f(x), f(y)))
     }
     fn dir3(&mut self, x: f64, y: f64, z: f64) -> usize {
-        self.add(format!("IFCDIRECTION(({},{},{}))", f(x), f(y), f(z)))
+        // 방향은 길이가 긴 사선 객체에서도 끝이 맞게 12 자리
+        let g = |v: f64| {
+            let t = format!("{v:.12}");
+            t.trim_end_matches('0').to_string()
+        };
+        self.add(format!("IFCDIRECTION(({},{},{}))", g(x), g(y), g(z)))
     }
     /// 원점 p, x 축 방향 (평면)
     fn place3(&mut self, p: Vec2, z: f64, xdir: Vec2) -> usize {
@@ -366,6 +371,23 @@ pub fn write(m: &ArchModel, project: &str) -> String {
                 "IFCRELAGGREGATES('{}',$,$,$,#{stair},({list}))",
                 guid("agg-stair", st.id)
             ));
+        }
+        // 보 (§52): 자리는 a 끝·보 방향, 천장에서 춤만큼 아래. 몸체는 길이×폭 사각을 춤만큼 위로
+        for x in m.beams.iter().filter(|x| x.level == l.id) {
+            let len = x.a.dist(x.b);
+            if len < 1e-6 {
+                continue;
+            }
+            let u = Vec2::new((x.b.x - x.a.x) / len, (x.b.y - x.a.y) / len);
+            let ax = w.place3(x.a, l.height - x.depth, u);
+            let lp = w.local(Some(pl), ax);
+            let prof = w.rect(len / 2.0, 0.0, len, x.width);
+            let shape = w.body(ctx, prof, x.depth);
+            items.push(w.add(format!(
+                "IFCBEAM('{}',$,{},$,$,#{lp},#{shape},$,.BEAM.)",
+                guid("beam", x.id),
+                s("보")
+            )));
         }
         // 기둥
         for c in m.columns.iter().filter(|x| x.level == l.id) {

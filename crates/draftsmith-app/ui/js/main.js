@@ -46,6 +46,8 @@ const app = {
   hatchSpacing: 200,
   colW: 600,
   colD: 600,
+  beamW: 300,
+  beamD: 600,
   stairWidth: 1200,
   stairRisers: 18,
   report: status,
@@ -78,6 +80,28 @@ const view3d = new View3D($("view3d"), invoke, toBuffer);
 
 // ── 도구 ─────────────────────────────────────────────────────────────────────
 let active = null;      // 지금 도구 (없으면 고르기)
+let vpDrag = null;      // 끄는 중인 뷰포트 (미리보기)
+
+/** 시트 뷰포트 맞추기: 모서리(크기) > 테두리(옮기기) > Alt 면 안쪽(보는 곳). 위 뷰포트(뒤 번호)부터 */
+function vpHit(m, alt) {
+  const tol = 8 / viewer.ppu;
+  const vps = [...(app.doc?.viewports ?? [])].reverse();
+  for (const v of vps) {
+    const hw = v.size[0] / 2, hh = v.size[1] / 2;
+    const dx = m[0] - v.center[0], dy = m[1] - v.center[1];
+    for (const sx of [-1, 1]) for (const sy of [-1, 1]) {
+      if (Math.hypot(dx - sx * hw, dy - sy * hh) < tol * 1.5) return { v, kind: "size", corner: [sx, sy] };
+    }
+  }
+  for (const v of vps) {
+    const hw = v.size[0] / 2, hh = v.size[1] / 2;
+    const ax = Math.abs(m[0] - v.center[0]), ay = Math.abs(m[1] - v.center[1]);
+    const inside = ax <= hw + tol && ay <= hh + tol;
+    if (inside && (Math.abs(ax - hw) < tol || Math.abs(ay - hh) < tol)) return { v, kind: "move" };
+    if (alt && ax < hw && ay < hh) return { v, kind: "view" };
+  }
+  return null;
+}
 let activeId = null;
 let lastCmd = null;
 
@@ -89,7 +113,49 @@ const host = {
     return t.drag ? (a, b, c) => t.drag(a, b, c) : undefined;
   },
   dragEnd(a, b, c, s) { this.t.dragEnd?.(a, b, c, s); },
+  /** 시트에서 도구 없이 뷰포트를 누르면: 모서리 → 크기, 테두리 → 옮기기, Alt+안쪽 → 보는 곳 옮기기 (구현 노트 §51) */
+  grab(m, e) {
+    if (active || app.doc?.sheet == null) return null;
+    const hit = vpHit(m, e?.altKey);
+    if (!hit) return null;
+    const { v, kind, corner } = hit;
+    const r1 = (x) => Math.round(x);
+    const at = { center: [...v.center], size: [...v.size], view_center: [...v.view_center] };
+    vpDrag = { index: v.index, ...at };
+    return {
+      move(p) {
+        const dx = p[0] - m[0], dy = p[1] - m[1];
+        if (kind === "move") {
+          vpDrag.center = [r1(at.center[0] + dx), r1(at.center[1] + dy)];
+        } else if (kind === "view") {
+          vpDrag.view_center = [at.view_center[0] - dx * v.scale, at.view_center[1] - dy * v.scale];
+        } else {
+          // 맞은편 모서리는 그대로, 모형 내용도 종이 위에 그대로 (보는 가운데를 함께 옮김)
+          const [sx, sy] = corner;
+          const fx = at.center[0] - sx * at.size[0] / 2, fy = at.center[1] - sy * at.size[1] / 2;
+          const gx = r1(at.center[0] + sx * at.size[0] / 2 + dx), gy = r1(at.center[1] + sy * at.size[1] / 2 + dy);
+          const w = Math.max(10, Math.abs(gx - fx)), h = Math.max(10, Math.abs(gy - fy));
+          const cx = fx + Math.sign(gx - fx || sx) * w / 2, cy = fy + Math.sign(gy - fy || sy) * h / 2;
+          vpDrag.size = [w, h];
+          vpDrag.center = [cx, cy];
+          vpDrag.view_center = [at.view_center[0] + (cx - at.center[0]) * v.scale, at.view_center[1] + (cy - at.center[1]) * v.scale];
+        }
+      },
+      async end() {
+        const d = vpDrag;
+        vpDrag = null;
+        const edit = kind === "move" ? { center: d.center } : kind === "view" ? { view_center: d.view_center } : { size: d.size, center: d.center, view_center: d.view_center };
+        await app.apply({ kind: "viewport", index: v.index, ...edit });
+      },
+      cancel() { vpDrag = null; },
+    };
+  },
   move(m, e) {
+    // 시트: 뷰포트 테두리 위면 손 모양으로 알려 준다
+    if (!active && app.doc?.sheet != null) {
+      const hit = vpHit(m, e?.altKey);
+      viewer.cv.style.cursor = !hit ? "" : hit.kind === "move" ? "move" : hit.kind === "view" ? "grab" : hit.corner[0] * hit.corner[1] > 0 ? "nesw-resize" : "nwse-resize";
+    }
     app.snap.ortho = orthoOn || !!e?.shiftKey;
     if (this.t.snaps) app.snap.update(m);
     else app.snap.snap = null;
@@ -111,14 +177,23 @@ const host = {
   dblclick() { return false; },
   paint(ctx, ts) {
     // 시트에서는 뷰포트 테두리를 점선으로
-    for (const v of app.doc?.sheet != null ? app.doc.viewports ?? [] : []) {
+    for (const v0 of app.doc?.sheet != null ? app.doc.viewports ?? [] : []) {
+      const v = vpDrag?.index === v0.index ? vpDrag : v0;
       const [ax, ay] = ts(v.center[0] - v.size[0] / 2, v.center[1] - v.size[1] / 2);
       const [bx, by] = ts(v.center[0] + v.size[0] / 2, v.center[1] + v.size[1] / 2);
-      ctx.strokeStyle = "rgba(74,168,255,0.7)";
-      ctx.lineWidth = 1;
+      ctx.strokeStyle = v === vpDrag ? "rgba(74,168,255,1)" : "rgba(74,168,255,0.7)";
+      ctx.lineWidth = v === vpDrag ? 2 : 1;
       ctx.setLineDash([5, 4]);
       ctx.strokeRect(Math.min(ax, bx), Math.min(ay, by), Math.abs(bx - ax), Math.abs(by - ay));
       ctx.setLineDash([]);
+      // 모서리 손잡이
+      ctx.fillStyle = "rgba(74,168,255,0.9)";
+      for (const [x, y] of [[ax, ay], [bx, ay], [bx, by], [ax, by]]) ctx.fillRect(x - 3, y - 3, 6, 6);
+      if (v === vpDrag) {
+        ctx.fillStyle = "rgba(74,168,255,1)";
+        ctx.font = "12px sans-serif";
+        ctx.fillText(`${Math.round(v.size[0])} × ${Math.round(v.size[1])} mm`, Math.min(ax, bx) + 4, Math.min(ay, by) - 6);
+      }
     }
     app.select.paint(ctx, ts);
     if (active) active.paint(ctx, ts);

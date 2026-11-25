@@ -28,6 +28,7 @@ pub const LAYERS: &[(&str, [u8; 3])] = &[
     ("A-COLS", [255, 127, 0]),
     ("A-COLS-PATT", [128, 128, 128]),
     ("A-STRS", [255, 255, 255]),
+    ("S-BEAM", [0, 191, 255]),
     ("A-ANNO-DIMS", [0, 255, 0]),
     ("A-SECT", [255, 255, 255]),
     ("A-SECT-PATT", [128, 128, 128]),
@@ -137,18 +138,33 @@ impl Gen<'_> {
 
     fn put(&mut self, layer: &str, shape: Shape, owner: Owner) {
         let layer = self.layer(layer);
-        let linetype = if self.d.layers[layer as usize].name == "A-GRID" {
-            self.d
+        // 그리드는 1점 쇄선, 보는 숨은선 (위에 있음, §52)
+        let pattern = match self.d.layers[layer as usize].name.as_str() {
+            "A-GRID" => Some(("CENTER", vec![1200.0, -300.0, 300.0, -300.0])),
+            "S-BEAM" => Some(("HIDDEN", vec![300.0, -150.0])),
+            _ => None,
+        };
+        let linetype = pattern.map(|(name, dashes)| {
+            let i = match self
+                .d
                 .linetypes
                 .iter()
-                .position(|p| p.name.eq_ignore_ascii_case("CENTER"))
-                .map(|i| crate::drawing::LineStyle {
-                    pattern: i as u16,
-                    scale: 1.0,
-                })
-        } else {
-            None
-        };
+                .position(|p| p.name.eq_ignore_ascii_case(name))
+            {
+                Some(i) => i,
+                None => {
+                    self.d.linetypes.push(crate::drawing::LinePattern {
+                        name: name.into(),
+                        dashes,
+                    });
+                    self.d.linetypes.len() - 1
+                }
+            };
+            crate::drawing::LineStyle {
+                pattern: i as u16,
+                scale: 1.0,
+            }
+        });
         let weight = match self.d.layers[layer as usize].name.as_str() {
             "A-WALL" => Some(50),
             "A-DOOR" | "A-GLAZ" => Some(25),
@@ -790,6 +806,18 @@ fn generate_scaled(d: &mut Drawing, scale: f64) -> Vec<(Entity, Owner)> {
             own,
         );
     }
+    // 보: 숨은선 외곽 (§52)
+    for x in m.beams.iter().filter(|x| x.level == level) {
+        let k = x.corners();
+        g.put(
+            "S-BEAM",
+            Shape::Polyline {
+                points: k.iter().map(|p| (*p, 0.0)).collect(),
+                closed: true,
+            },
+            ("beam", x.id),
+        );
+    }
     // 계단: 줄기마다 외곽·디딤판 선, 참 외곽, 중심선을 따라 오름 화살표 (§34)
     for st in m.stairs.iter().filter(|x| x.level == level) {
         let own = ("stair", st.id);
@@ -1041,6 +1069,13 @@ pub enum ArchReq {
         width: f64,
         depth: f64,
     },
+    /// 보 (중심선 a→b, 폭·춤, §52)
+    Beam {
+        a: [f64; 2],
+        b: [f64; 2],
+        width: f64,
+        depth: f64,
+    },
     /// 곧은 계단 (a 에서 b 로 오름)
     Stair {
         a: [f64; 2],
@@ -1103,6 +1138,12 @@ pub fn arch_grips(m: &ArchModel, what: &str, id: u64) -> Vec<Vec2> {
             .iter()
             .find(|x| x.id == id)
             .map(|x| [x.a, x.b].into_iter().chain(x.mid).collect())
+            .unwrap_or_default(),
+        "beam" => m
+            .beams
+            .iter()
+            .find(|x| x.id == id)
+            .map(|x| vec![x.a, x.b, x.a.lerp(x.b, 0.5)])
             .unwrap_or_default(),
         "dim" => m
             .dims
@@ -1182,6 +1223,26 @@ fn grip_arch(m: &mut ArchModel, what: &str, id: u64, k: usize, to: Vec2) -> Resu
                 .find(|x| x.id == id)
                 .ok_or("기둥이 없습니다")?;
             x.at = to;
+        }
+        "beam" => {
+            let x = m
+                .beams
+                .iter_mut()
+                .find(|x| x.id == id)
+                .ok_or("보가 없습니다")?;
+            match k {
+                0 => x.a = to,
+                1 => x.b = to,
+                _ => {
+                    let c = x.a.lerp(x.b, 0.5);
+                    let d = sub(to, c);
+                    x.a = add(x.a, d);
+                    x.b = add(x.b, d);
+                }
+            }
+            if x.a.dist(x.b) < 1.0 {
+                return Err("보가 너무 짧습니다".into());
+            }
         }
         "stair" => {
             let x = m
@@ -1548,6 +1609,18 @@ fn set_field(m: &mut ArchModel, what: &str, id: u64, k: &str, v: &str) -> Result
                 _ => {}
             }
         }
+        "beam" => {
+            let x = m
+                .beams
+                .iter_mut()
+                .find(|x| x.id == id)
+                .ok_or("보가 없습니다")?;
+            match k {
+                "폭" => x.width = num()?.max(1.0),
+                "춤" => x.depth = num()?.max(1.0),
+                _ => {}
+            }
+        }
         "column" => {
             let x = m
                 .columns
@@ -1792,6 +1865,20 @@ pub fn apply(ed: &mut Editor, req: ArchReq) -> Result<(), String> {
                 angle: 0.0,
             });
         }
+        ArchReq::Beam { a, b, width, depth } => {
+            if p2(a).dist(p2(b)) < 1.0 {
+                return Err("보가 너무 짧습니다".into());
+            }
+            let id = m.new_id();
+            m.beams.push(crate::arch::Beam {
+                id,
+                level,
+                a: p2(a),
+                b: p2(b),
+                width: width.max(1.0),
+                depth: depth.max(1.0),
+            });
+        }
         ArchReq::Stair {
             a,
             b,
@@ -1895,6 +1982,7 @@ pub fn apply(ed: &mut Editor, req: ArchReq) -> Result<(), String> {
             "grid" => m.grids.retain(|g| g.id != id),
             "dim" => m.dims.retain(|x| x.id != id),
             "column" => m.columns.retain(|x| x.id != id),
+            "beam" => m.beams.retain(|x| x.id != id),
             "stair" => m.stairs.retain(|x| x.id != id),
             "section" => m.sections.retain(|x| x.id != id),
             "site" => m.site.boundary.clear(),
@@ -1914,6 +2002,7 @@ pub fn apply(ed: &mut Editor, req: ArchReq) -> Result<(), String> {
                 m.rooms.retain(|r| r.level != id);
                 m.dims.retain(|x| x.level != id);
                 m.columns.retain(|x| x.level != id);
+                m.beams.retain(|x| x.level != id);
                 m.stairs.retain(|x| x.level != id);
                 m.ensure_level();
             }
@@ -1978,6 +2067,12 @@ pub fn apply(ed: &mut Editor, req: ArchReq) -> Result<(), String> {
                 "column" => {
                     if let Some(x) = m.columns.iter_mut().find(|x| x.id == id) {
                         x.at = add(x.at, d);
+                    }
+                }
+                "beam" => {
+                    if let Some(x) = m.beams.iter_mut().find(|x| x.id == id) {
+                        x.a = add(x.a, d);
+                        x.b = add(x.b, d);
                     }
                 }
                 "stair" => {
@@ -2077,6 +2172,15 @@ pub fn apply(ed: &mut Editor, req: ArchReq) -> Result<(), String> {
                     ..c
                 });
             }
+            let beams: Vec<_> = m.beams.iter().filter(|x| x.level == src).cloned().collect();
+            for x in beams {
+                let id = m.new_id();
+                m.beams.push(crate::arch::Beam {
+                    id,
+                    level: new_level,
+                    ..x
+                });
+            }
             let stairs: Vec<_> = m
                 .stairs
                 .iter()
@@ -2118,6 +2222,8 @@ pub struct ArchSummary {
     pub has_site: bool,
     pub columns: usize,
     pub stairs: usize,
+    #[serde(default)]
+    pub beams: usize,
     pub dims: usize,
 }
 
@@ -2132,6 +2238,7 @@ pub fn summary(m: &ArchModel) -> ArchSummary {
         has_site: m.site.boundary.len() >= 3,
         columns: m.columns.len(),
         stairs: m.stairs.len(),
+        beams: m.beams.len(),
         dims: m.dims.len(),
     }
 }
@@ -2275,6 +2382,16 @@ pub fn properties(m: &ArchModel, what: &str, id: u64) -> Vec<(String, String)> {
                     if x.plain { "아니오" } else { "예" }.into(),
                 ));
                 out.push(("소수 자리:고침".into(), x.precision.to_string()));
+            }
+        }
+        "beam" => {
+            if let Some(x) = m.beams.iter().find(|x| x.id == id) {
+                let top = m.level(x.level).map(|l| l.height).unwrap_or(3000.0);
+                out.push(("종류".into(), "보".into()));
+                out.push(("길이".into(), f(x.a.dist(x.b))));
+                out.push(("폭:고침".into(), f(x.width)));
+                out.push(("춤:고침".into(), f(x.depth)));
+                out.push(("밑면 높이 (층 바닥에서)".into(), f(top - x.depth)));
             }
         }
         "column" => {
@@ -2840,6 +2957,75 @@ mod tests {
             },
         )
         .unwrap();
+    }
+
+    /// 보: 숨은선 외곽, 속성 고치기, 3D·단면 (§52)
+    #[test]
+    fn beam_plan_props_3d_section() {
+        let mut ed = Editor::new(new_drawing());
+        walls(
+            &mut ed,
+            &[[0.0, 0.0], [6000.0, 0.0], [6000.0, 4000.0], [0.0, 4000.0]],
+            true,
+        );
+        apply(
+            &mut ed,
+            ArchReq::Beam {
+                a: [0.0, 2000.0],
+                b: [6000.0, 2000.0],
+                width: 300.0,
+                depth: 600.0,
+            },
+        )
+        .unwrap();
+        let id = ed.d.arch.beams[0].id;
+        let v = with_arch(&ed.d).unwrap();
+        let lt = v
+            .entities
+            .iter()
+            .find(|e| v.layers[e.layer as usize].name == "S-BEAM")
+            .and_then(|e| e.linetype)
+            .expect("보 선");
+        assert_eq!(v.linetypes[lt.pattern as usize].name, "HIDDEN");
+        apply(
+            &mut ed,
+            ArchReq::Set {
+                what: "beam".into(),
+                id,
+                fields: vec![("춤".into(), "700".into())],
+            },
+        )
+        .unwrap();
+        assert_eq!(ed.d.arch.beams[0].depth, 700.0);
+        // 3D 에 상자 하나 더, 단면(세로로 자름)에 보 자른 면
+        let before = {
+            let mut m = ed.d.arch.clone();
+            m.beams.clear();
+            crate::model3d::mesh(&m)
+        };
+        let after = crate::model3d::mesh(&ed.d.arch);
+        assert!(after.tris.len() > before.tris.len());
+        let sec = crate::section::draw(
+            &ed.d.arch,
+            &crate::arch::Section {
+                id: 0,
+                a: Vec2::new(3000.0, -1000.0),
+                b: Vec2::new(3000.0, 5000.0),
+                name: "A".into(),
+                at: Vec2::new(10000.0, 0.0),
+            },
+        );
+        let top = ed.d.arch.levels[0].height;
+        let mut want = crate::geom::Bbox::EMPTY;
+        want.add(Vec2::new(12850.0, top - 700.0));
+        want.add(Vec2::new(13150.0, top));
+        assert!(
+            sec.iter().any(|(l, s)| *l == "A-SECT-PATT" && {
+                let b = s.bbox();
+                b.min.dist(want.min) < 1e-6 && b.max.dist(want.max) < 1e-6
+            }),
+            "보 자른 면이 없다"
+        );
     }
 
     /// 사선 벽·ㄱ자 실·열린 실 (§48)

@@ -40,6 +40,7 @@ export const COMMANDS = [
   ["grid", "그리드", ["GR", "GRID", "그리드", "통심"], "건축"],
   ["gridset", "그리드 세트", ["GRS", "GRIDSET", "그리드세트"], "건축"],
   ["column", "기둥", ["COL", "COLUMN", "기둥"], "건축"],
+  ["beam", "보", ["BM", "BEAM", "보"], "건축"],
   ["stair", "계단", ["ST", "STAIR", "계단"], "건축"],
   ["site", "대지 경계", ["SITE", "대지"], "건축"],
   ["level", "층 더하기", ["LV", "LEVEL", "층추가", "층"], "건축"],

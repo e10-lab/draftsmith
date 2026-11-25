@@ -144,6 +144,11 @@ pub fn mesh(m: &ArchModel) -> Mesh {
         for c in m.columns.iter().filter(|c| c.level == l.id) {
             out.prism(c.corners(), z0, z0 + l.height, COLUMN);
         }
+        // 보 (윗면이 천장, §52)
+        for x in m.beams.iter().filter(|x| x.level == l.id) {
+            let top = z0 + l.height;
+            out.prism(x.corners(), top - x.depth, top, COLUMN);
+        }
         // 계단: 단마다 바닥에서 그 단 높이까지 상자, 참은 첫 줄기 끝 높이까지 (§34)
         for st in m.stairs.iter().filter(|s| s.level == l.id) {
             // 돌음 계단: 단마다 부채꼴(네 모서리) 상자 (§43)

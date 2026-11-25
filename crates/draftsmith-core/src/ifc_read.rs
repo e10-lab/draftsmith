@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 
-use crate::arch::{Column, Grid, Level, Opening, OpeningKind, Room, Stair, Wall, WallKind};
+use crate::arch::{Beam, Column, Grid, Level, Opening, OpeningKind, Room, Stair, Wall, WallKind};
 use crate::drawing::Drawing;
 use crate::geom::Vec2;
 
@@ -1122,6 +1122,39 @@ pub fn read(text: &str) -> Result<Drawing, String> {
         });
     }
 
+    // 보 (§52): 바닥 모양의 긴 쪽이 중심선, 짧은 쪽이 폭, 몸체 높이가 춤
+    let beams: Vec<(usize, Vec<V>)> =
+        r.st.of(&["IFCBEAM", "IFCBEAMSTANDARDCASE"])
+            .map(|(i, a)| (i, a.to_vec()))
+            .collect();
+    for (i, a) in &beams {
+        let Some((ring, h, _)) = r.body(a) else {
+            continue;
+        };
+        let Some((c, u, l, w)) = oriented(&ring) else {
+            continue;
+        };
+        let (u, l, w) = if w > l {
+            (Vec2::new(-u.y, u.x), w, l)
+        } else {
+            (u, l, w)
+        };
+        // 세로로 선 몸체(밀어 올린 방향이 보 길이)는 바닥 모양이 단면이라 길이를 모른다 — 건너뛴다
+        if l < w * 1.5 && h > l {
+            continue;
+        }
+        let level = level_for(&mut r, *i, a);
+        let id = m.new_id();
+        m.beams.push(Beam {
+            id,
+            level,
+            a: Vec2::new(c.x - u.x * l / 2.0, c.y - u.y * l / 2.0),
+            b: Vec2::new(c.x + u.x * l / 2.0, c.y + u.y * l / 2.0),
+            width: w,
+            depth: if h > 1.0 { h } else { 600.0 },
+        });
+    }
+
     // 계단 (§50): IfcStair 가 모은 줄기 1 개 → 곧은, 2 개 → 꺾인(나란히 거꾸로면 U자). 그 밖은 줄기마다 곧은 계단
     let mut children: HashMap<usize, Vec<usize>> = HashMap::new();
     for (_, a) in r.st.of(&["IFCRELAGGREGATES"]) {
@@ -1453,6 +1486,36 @@ mod tests {
             assert!((x.width - y.width).abs() < 1e-3);
             assert_eq!(x.risers, y.risers);
         }
+    }
+
+    /// 보 왕복 (§52)
+    #[test]
+    fn beams_round_trip() {
+        let mut ed = crate::edit::Editor::new(crate::archgen::new_drawing());
+        for req in [
+            crate::archgen::ArchReq::Walls {
+                points: vec![[0.0, 0.0], [6000.0, 0.0]],
+                closed: false,
+                thickness: 200.0,
+                wall: WallKind::Exterior,
+            },
+            crate::archgen::ArchReq::Beam {
+                a: [0.0, 0.0],
+                b: [6000.0, 3000.0],
+                width: 300.0,
+                depth: 600.0,
+            },
+        ] {
+            crate::archgen::apply(&mut ed, req).unwrap();
+        }
+        let back = read(&crate::ifc::write(&ed.d.arch, "보")).unwrap();
+        let (x, y) = (&ed.d.arch.beams[0], &back.arch.beams[0]);
+        let same = |p: Vec2, q: Vec2| p.dist(q) < 1e-3;
+        assert!(
+            (same(x.a, y.a) && same(x.b, y.b)) || (same(x.a, y.b) && same(x.b, y.a)),
+            "{x:?} {y:?}"
+        );
+        assert!((x.width - y.width).abs() < 1e-3 && (x.depth - y.depth).abs() < 1e-3);
     }
 
     /// 미터 단위 + 축선 없는 벽 (바닥 사각형만)

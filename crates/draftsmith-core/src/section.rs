@@ -205,6 +205,30 @@ pub fn draw(m: &ArchModel, s: &Section) -> Vec<(&'static str, Shape)> {
                 others.push((depth, t0, t1, z0, top, Vec::new()));
             }
         }
+        // 보: 기둥과 같게 — 자르면 천장 밑 자른 면, 보는 쪽이면 보이는 외곽 (§52)
+        for x in m.beams.iter().filter(|x| x.level == l.id) {
+            let k = x.corners();
+            let top = z0 + l.height;
+            let ts: Vec<f64> = (0..4)
+                .filter_map(|i| cross(k[i], k[(i + 1) % 4]).map(|(t, _)| t))
+                .collect();
+            if ts.len() >= 2 {
+                let (t0, t1) = ts
+                    .iter()
+                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), t| {
+                        (a.min(*t), b.max(*t))
+                    });
+                cut(&mut out, t0, t1, top - x.depth, top);
+            } else if k.iter().all(|q| side(*q) > 0.0) {
+                let (t0, t1) = k
+                    .iter()
+                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), q| {
+                        (a.min(along(*q)), b.max(along(*q)))
+                    });
+                let depth = k.iter().map(|q| side(*q)).fold(f64::INFINITY, f64::min);
+                others.push((depth, t0, t1, top - x.depth, top, Vec::new()));
+            }
+        }
         // 계단
         for st in m.stairs.iter().filter(|x| x.level == l.id) {
             let Some((flights, _)) = st.flights() else {

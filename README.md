@@ -25,7 +25,7 @@
 
 | 동작 | 방법 |
 |---|---|
-| 명령 | 아래 명령줄에 단축(L·PL·REC·C·A·T·DIM·DRA·DDI·DAN·DST·H·M·CO·RO·MI·SC·O·TR·EX·F·CHA·B·I·X·E·WA·DO·WI·RM·GR·GRS·COL·ST·SEC·SH·SHL·TB·3D·IFC) 또는 한글 이름(선·이동·벽 …) + Enter/Space |
+| 명령 | 아래 명령줄에 단축(L·PL·REC·C·A·T·DIM·DRA·DDI·DAN·DST·H·M·CO·RO·MI·SC·O·TR·EX·F·CHA·B·I·X·E·WA·DO·WI·RM·GR·GRS·COL·BM·ST·SEC·SH·SHL·TB·3D·IFC) 또는 한글 이름(선·이동·벽 …) + Enter/Space |
 | 명령 찾기 | ⌘K / Ctrl+K — 이름·단축·초성(ㄱㄸ) |
 | 점 입력 | 누르기(스냅) 또는 `x,y` · `@dx,dy` · `@거리<각` · `거리` |
 | 마치기·되풀이 | 빈 Enter·Space·오른쪽 누르기 (도구가 없으면 지난 명령 되풀이), Esc 취소 |

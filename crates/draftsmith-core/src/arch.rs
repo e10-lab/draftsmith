@@ -327,6 +327,33 @@ impl Column {
     }
 }
 
+/// 보 (중심선 a→b, 폭·춤). 윗면이 그 층 천장(바닥 + 층고)에 붙는다 — 평면에는 숨은선(위에 있음) (§52)
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Beam {
+    pub id: u64,
+    pub level: u64,
+    pub a: Vec2,
+    pub b: Vec2,
+    pub width: f64,
+    /// 춤 (윗면에서 아랫면까지)
+    pub depth: f64,
+}
+
+impl Beam {
+    /// 네 모서리 (a 쪽 오른쪽부터 반시계)
+    pub fn corners(&self) -> [Vec2; 4] {
+        let l = self.a.dist(self.b).max(1e-12);
+        let (ux, uy) = ((self.b.x - self.a.x) / l, (self.b.y - self.a.y) / l);
+        let (nx, ny) = (-uy * self.width / 2.0, ux * self.width / 2.0);
+        [
+            Vec2::new(self.a.x - nx, self.a.y - ny),
+            Vec2::new(self.b.x - nx, self.b.y - ny),
+            Vec2::new(self.b.x + nx, self.b.y + ny),
+            Vec2::new(self.a.x + nx, self.a.y + ny),
+        ]
+    }
+}
+
 /// 계단 (a 에서 b 로 올라감). `mid` 가 있으면 그 점(중심선 꺾이는 곳)에 참이 있는 꺾인(ㄱ자) 계단 (§34)
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Stair {
@@ -530,6 +557,8 @@ pub struct ArchModel {
     pub dims: Vec<Dim>,
     pub columns: Vec<Column>,
     pub stairs: Vec<Stair>,
+    /// 보 (§52)
+    pub beams: Vec<Beam>,
     /// 단면 (§38)
     pub sections: Vec<Section>,
     /// 지금 그리는 층
@@ -585,6 +614,11 @@ impl ArchModel {
                 .iter()
                 .find(|c| c.id == id)
                 .map(|c| (c.at, Vec2::new(c.angle.cos(), c.angle.sin()))),
+            "beam" => self
+                .beams
+                .iter()
+                .find(|x| x.id == id)
+                .map(|x| (x.a, unit(x.a, x.b))),
             _ => None,
         }
     }
@@ -636,6 +670,15 @@ impl ArchModel {
                 offer(10.0, "column", c.id, o, u);
             }
         }
+        for x in self.beams.iter().filter(|x| x.level == level) {
+            let Some((o, u)) = self.frame("beam", x.id) else {
+                continue;
+            };
+            let (t, s) = local(o, u);
+            if s.abs() <= x.width / 2.0 + tol && t >= -tol && t <= x.a.dist(x.b) + tol {
+                offer(25.0, "beam", x.id, o, u);
+            }
+        }
         for w in self.walls.iter().filter(|w| w.level == level) {
             let (o, u) = (w.a, w.dir());
             let (t, s) = local(o, u);
@@ -661,6 +704,7 @@ impl ArchModel {
             && self.dims.is_empty()
             && self.columns.is_empty()
             && self.stairs.is_empty()
+            && self.beams.is_empty()
             && self.sections.is_empty()
     }
 }
