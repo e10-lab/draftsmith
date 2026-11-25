@@ -37,6 +37,8 @@ const app = {
   doorWidth: 900,
   windowWidth: 1200,
   filletRadius: 0,
+  dimArrow: false,
+  dimPlain: false,
   chamfer: [500, 500],
   hatchPattern: "사선",
   hatchSpacing: 200,
@@ -361,6 +363,31 @@ function ask(title, fields) {
   });
 }
 
+/** 치수 스타일 (§36): 새 치수의 끝 모양·쉼표·글자 높이 — 설정 파일에 기억 */
+async function dimStyle() {
+  const v = await ask("치수 스타일 (새 치수에)", [
+    ["arrow", "끝 모양", app.dimArrow ? "화살표" : "사선", ["사선", "화살표"]],
+    ["plain", "쉼표", app.dimPlain ? "아니오" : "예", ["예", "아니오"]],
+    ["h", "글자 높이", String(app.textHeight)],
+  ]);
+  if (!v) return;
+  app.dimArrow = v.arrow === "화살표";
+  app.dimPlain = v.plain === "아니오";
+  if (Number(v.h) > 0) app.textHeight = Number(v.h);
+  invoke("set_setting", { key: "dimstyle", value: JSON.stringify([app.dimArrow, app.dimPlain, app.textHeight]) }).catch(() => {});
+  status(`치수 스타일: ${v.arrow} · 쉼표 ${v.plain} · 글자 ${app.textHeight}`);
+}
+invoke("get_setting", { key: "dimstyle" }).then((v) => {
+  try {
+    const [a, p, h] = JSON.parse(v);
+    app.dimArrow = !!a;
+    app.dimPlain = !!p;
+    if (h > 0) app.textHeight = h;
+  } catch {
+    /* 처음 */
+  }
+}, () => {});
+
 async function addLayer() {
   const v = await ask("레이어 더하기", [["name", "이름", ""], ["color", "색", "#ffffff"]]);
   if (!v || !v.name.trim()) return;
@@ -479,6 +506,7 @@ async function run(id) {
     case "level": return app.doc && addLevel();
     case "copylevel": return app.doc && copyLevel();
     case "sheet": return addSheet();
+    case "dimstyle": return dimStyle();
     case "sheetlist": return addSheet(true);
     case "journal": return app.doc && saveJournal();
     case "merge": return app.doc && mergeJournal();

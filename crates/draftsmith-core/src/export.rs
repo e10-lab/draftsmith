@@ -297,6 +297,13 @@ pub fn to_document(model: &Drawing) -> CadDocument {
         let Some(dm) = model.arch.dims.iter().find(|x| x.id == id) else {
             continue;
         };
+        // 반지름·지름·각도 치수는 아직 선·글자로 (§36)
+        if dm.kind != crate::arch::DimKind::Linear {
+            for e in &parts {
+                put(&mut doc, &d, e, None);
+            }
+            continue;
+        }
         let Some(k) = dm.geom(&model.arch) else {
             continue;
         };
@@ -415,6 +422,8 @@ mod tests {
                 b: [2000.0, 0.0],
                 at: [1000.0, -800.0],
                 text_height: 250.0,
+                arrow: false,
+                plain: false,
             },
         )
         .unwrap();
@@ -452,7 +461,7 @@ mod tests {
             assert!(
                 back.entities
                     .iter()
-                    .any(|e| matches!(&e.shape, Shape::Text(t) if t.value == "2,000")),
+                    .any(|e| matches!(&e.shape, Shape::Text(t) if t.value == "2000")),
                 "{ext}"
             );
             std::fs::remove_dir_all(&dir).ok();

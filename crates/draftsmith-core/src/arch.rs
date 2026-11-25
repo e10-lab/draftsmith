@@ -180,8 +180,23 @@ pub struct Site {
     pub far_limit: f64,
 }
 
+/// 치수 종류 (§36)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DimKind {
+    /// 선형 (정렬·회전) — a·b 두 점
+    #[default]
+    Linear,
+    /// 반지름 — a 중심, b 원 위 점
+    Radius,
+    /// 지름 — a 중심, b 원 위 점
+    Diameter,
+    /// 각도 — vertex 꼭짓점, a·b 두 반직선 위 점, offset = 호 반지름
+    Angle,
+}
+
 /// 치수 (정렬 치수 — 두 점과 치수선까지 거리. 값은 두 점에서 늘 새로 셈, 구현 노트 §28)
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Dim {
     pub id: u64,
     pub level: u64,
@@ -205,6 +220,17 @@ pub struct Dim {
     /// 레이어 이름 (비면 A-ANNO-DIMS)
     #[serde(default)]
     pub layer: String,
+    #[serde(default)]
+    pub kind: DimKind,
+    /// 각도 치수의 꼭짓점
+    #[serde(default)]
+    pub vertex: Option<Vec2>,
+    /// 끝 모양: 거짓이면 45° 사선(건축), 참이면 화살표
+    #[serde(default)]
+    pub arrow: bool,
+    /// 참이면 값에 쉼표 없이 (6000)
+    #[serde(default)]
+    pub plain: bool,
 }
 
 /// 치수의 지금 모양: 두 점, 치수 방향 u·왼쪽 n, 치수선 위 두 점, 값

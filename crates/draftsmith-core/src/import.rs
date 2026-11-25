@@ -501,6 +501,11 @@ impl<'a> Converter<'a> {
                 _ => None,
             })
         });
+        // 원래 치수 끝이 화살표(SOLID·채움)였나
+        let arrow = doc.block_records.get(&b.block_name).is_some()
+            && doc
+                .entities_in_block(&b.block_name)
+                .any(|e| matches!(e, EntityType::Solid(_) | EntityType::Hatch(_)));
         let header = doc.header.dim_text_height
             * if doc.header.dim_scale > 0.0 {
                 doc.header.dim_scale
@@ -532,6 +537,10 @@ impl<'a> Converter<'a> {
             kb: None,
             rotation,
             layer: b.common.layer.clone(),
+            // 원래 모양을 따라: 화살표면 화살표, 값은 쉼표 없이 (AutoCAD 기본 단위 형식)
+            arrow,
+            plain: true,
+            ..Default::default()
         });
         true
     }
@@ -1307,7 +1316,8 @@ mod tests {
             "{a:?} {b:?}"
         );
         match &d.entities[5].shape {
-            Shape::Text(t) => assert_eq!(t.value, "3,000"),
+            // 가져온 치수는 원래 단위 형식(쉼표 없이)으로 (§36)
+            Shape::Text(t) => assert_eq!(t.value, "3000"),
             s => panic!("{s:?}"),
         }
     }

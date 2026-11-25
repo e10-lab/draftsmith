@@ -968,6 +968,18 @@ fn pick_box(
     Ok(out)
 }
 
+/// 도면 좌표 근처 객체의 모양 (보이는 도면 — 치수 도구가 원·선 모양을 읽는다, §36)
+#[tauri::command]
+fn shape_at(x: f64, y: f64, r: f64, state: State<'_, AppState>) -> Result<Option<Shape>, String> {
+    let open = state.lock().map_err(err)?;
+    let (Some(d), Some(idx)) = (open.shown(), open.picks.as_ref()) else {
+        return Ok(None);
+    };
+    Ok(idx
+        .pick(d, Vec2::new(x, y), r)
+        .map(|i| d.entities[i].shape.clone()))
+}
+
 /// 손잡이 하나 (화면이 들고 있다가 옮길 곳과 함께 돌려준다)
 #[derive(Serialize)]
 struct GripOut {
@@ -1378,6 +1390,7 @@ fn main() {
             pick_at,
             pick_box,
             grips,
+            shape_at,
             selection_info,
             export_pdf,
             export_sheets_pdf,

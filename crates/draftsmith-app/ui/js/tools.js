@@ -283,20 +283,42 @@ class DimTool extends Tool {
   }
   base() { return this.chain && !this.pts.length ? this.chain.from : super.base(); }
   input(t) {
-    if (t.trim().toUpperCase() === "N" && this.chain) {
+    const k = t.trim().toUpperCase();
+    if (k === "N" && this.chain) {
       this.start();
+      return true;
+    }
+    // B: 누적(기준선) 치수 ↔ C: 연속 치수 (§36)
+    if ((k === "B" || k === "C") && this.chain) {
+      this.chain.mode = k === "B" ? "b" : "c";
+      this.chain.k = 0;
+      this.sayChain();
       return true;
     }
     return super.input(t);
   }
-  /** 연속 치수의 다음 점 */
+  sayChain() {
+    this.say(this.chain.mode === "b"
+      ? "치수: 누적 치수 — 다음 점 (첫 점에서 잼, C 연속, N 새 치수, Enter 끝)"
+      : "치수: 연속 치수 — 다음 점 (B 누적, N 새 치수, Enter 끝)");
+  }
+  op(a, b, at) {
+    return { kind: "arch", op: { kind: "dim", a, b, at, text_height: this.app.textHeight, arrow: this.app.dimArrow, plain: this.app.dimPlain } };
+  }
+  /** 연속·누적 치수의 다음 점: [시작점, 치수선 점] */
+  next(p) {
+    const c = this.chain;
+    if (c.mode === "b") {
+      const off = c.off + Math.sign(c.off || 1) * this.app.textHeight * 3 * (c.k + 1);
+      return [c.base, [c.base[0] + c.n[0] * off, c.base[1] + c.n[1] * off]];
+    }
+    return [c.from, [c.from[0] + c.n[0] * c.off, c.from[1] + c.n[1] * c.off]];
+  }
   async chainTo(p) {
-    const { from, n, off } = this.chain;
-    const at = [from[0] + n[0] * off, from[1] + n[1] * off];
-    this.pts = [from, p, at];
-    const [a, b] = [from, p];
-    await this.app.apply({ kind: "arch", op: { kind: "dim", a, b, at, text_height: this.app.textHeight } });
-    this.chain = { from: p, n, off };
+    const [a, at] = this.next(p);
+    await this.app.apply(this.op(a, p, at));
+    this.chain.from = p;
+    this.chain.k += 1;
     this.pts = [];
   }
   shapes(a, b, at) {
@@ -331,20 +353,20 @@ class DimTool extends Tool {
     if (this.pts.length === 1) return this.say("치수: 둘째 점");
     if (this.pts.length === 2) return this.say("치수: 치수선 위치");
     const [a, b, at] = this.pts;
-    await this.app.apply({ kind: "arch", op: { kind: "dim", a, b, at, text_height: this.app.textHeight } });
-    // 연속 치수: 앞 치수 끝에서 같은 치수선으로 이어 간다
+    await this.app.apply(this.op(a, b, at));
+    // 연속 치수: 앞 치수 끝에서 같은 치수선으로 이어 간다 (B 면 첫 점에서 누적)
     const L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
     const n = [-(b[1] - a[1]) / L, (b[0] - a[0]) / L];
-    this.chain = { from: b, n, off: (at[0] - a[0]) * n[0] + (at[1] - a[1]) * n[1] };
+    this.chain = { from: b, base: a, n, off: (at[0] - a[0]) * n[0] + (at[1] - a[1]) * n[1], mode: "c", k: 0 };
     this.pts = [];
-    this.say("치수: 이어서 다음 점 (연속 치수) — Enter 로 끝, N 으로 새 치수");
+    this.sayChain();
   }
   paint(ctx, ts) {
     if (!this.cur) return;
     if (this.pts.length === 1) strokePath(ctx, ts, [this.pts[0], this.cur], false, true);
     const c = this.chain;
     const trio = this.pts.length === 2 ? [this.pts[0], this.pts[1], this.cur]
-      : c && !this.pts.length ? [c.from, this.cur, [c.from[0] + c.n[0] * c.off, c.from[1] + c.n[1] * c.off]] : null;
+      : c && !this.pts.length ? (() => { const [a, at] = this.next(this.cur); return [a, this.cur, at]; })() : null;
     if (trio) {
       for (const s of this.shapes(...trio)) {
         if (s.Line) strokePath(ctx, ts, [[s.Line.a.x, s.Line.a.y], [s.Line.b.x, s.Line.b.y]]);
@@ -1059,6 +1081,74 @@ class ExplodeTool extends ModifyTool {
   }
 }
 
+// ── 반지름·지름·각도 치수 (§36) ───────────────────────────────────────────────
+class DimRadialTool extends Tool {
+  get snaps() { return false; }
+  get dia() { return false; }
+  start() { this.say(`${this.dia ? "지름" : "반지름"} 치수: 원·호를 누르세요 (누른 쪽에 치수선)`); }
+  take(p) { return this.click(p); }
+  async click(m) {
+    const s = await this.app.invoke("shape_at", { x: m[0], y: m[1], r: 6 / this.app.v.ppu });
+    const c = s?.Circle || s?.Arc;
+    if (!c) return this.app.report("원이나 호를 누르세요");
+    const o = [c.center.x, c.center.y];
+    let d = [m[0] - o[0], m[1] - o[1]];
+    const l = Math.hypot(...d) || 1;
+    d = [d[0] / l, d[1] / l];
+    const point = [o[0] + d[0] * c.radius, o[1] + d[1] * c.radius];
+    await this.app.apply({
+      kind: "arch",
+      op: { kind: "dim_radial", center: o, point, diameter: this.dia, text_height: this.app.textHeight, arrow: true, plain: this.app.dimPlain },
+    });
+  }
+}
+class DimDiameterTool extends DimRadialTool {
+  get dia() { return true; }
+}
+
+class DimAngleTool extends Tool {
+  get snaps() { return !!this.vertex; }
+  start() {
+    this.lines = [];
+    this.vertex = null;
+    this.say("각도 치수: 첫 선");
+  }
+  take(p) { return this.click(p); }
+  async click(m) {
+    if (this.vertex) {
+      const [a, b] = this.rays;
+      await this.app.apply({ kind: "arch", op: { kind: "dim_angle", vertex: this.vertex, a, b, at: this.pt(m), text_height: this.app.textHeight, arrow: true } });
+      return this.start();
+    }
+    const s = await this.app.invoke("shape_at", { x: m[0], y: m[1], r: 6 / this.app.v.ppu });
+    if (!s?.Line) return this.app.report("선을 누르세요");
+    this.lines.push({ a: [s.Line.a.x, s.Line.a.y], b: [s.Line.b.x, s.Line.b.y], pick: m });
+    if (this.lines.length === 1) return this.say("각도 치수: 둘째 선");
+    // 두 선의 교점과, 누른 쪽으로 가는 반직선 위 점
+    const [p, q] = this.lines;
+    const r = [p.b[0] - p.a[0], p.b[1] - p.a[1]], t = [q.b[0] - q.a[0], q.b[1] - q.a[1]];
+    const den = r[0] * t[1] - r[1] * t[0];
+    if (Math.abs(den) < 1e-12) {
+      this.app.report("평행한 선입니다");
+      return this.start();
+    }
+    const k = ((q.a[0] - p.a[0]) * t[1] - (q.a[1] - p.a[1]) * t[0]) / den;
+    const v = [p.a[0] + r[0] * k, p.a[1] + r[1] * k];
+    const ray = (ln, d) => {
+      const s = (ln.pick[0] - v[0]) * d[0] + (ln.pick[1] - v[1]) * d[1] >= 0 ? 1 : -1;
+      const l = Math.hypot(...d) || 1;
+      return [v[0] + (d[0] / l) * s * l, v[1] + (d[1] / l) * s * l];
+    };
+    this.vertex = v;
+    this.rays = [ray(p, r), ray(q, t)];
+    this.say("각도 치수: 호가 지날 곳을 누르세요");
+  }
+  paint(ctx, ts) {
+    if (!this.vertex || !this.cur) return;
+    strokePath(ctx, ts, [this.vertex, this.cur], false, true);
+  }
+}
+
 export const TOOLS = {
   line: LineTool,
   pline: PlineTool,
@@ -1067,6 +1157,9 @@ export const TOOLS = {
   arc: ArcTool,
   text: TextTool,
   dim: DimTool,
+  dimrad: DimRadialTool,
+  dimdia: DimDiameterTool,
+  dimang: DimAngleTool,
   measure: MeasureTool,
   move: MoveTool,
   copy: CopyTool,

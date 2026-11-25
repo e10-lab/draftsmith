@@ -544,57 +544,171 @@ fn generate(d: &mut Drawing) -> Vec<(Entity, Owner)> {
             }
         }
     }
-    // 치수 (§28·§32)
+    // 치수 (§28·§32·§36)
     for dm in m.dims.iter().filter(|x| x.level == level) {
         let own = ("dim", dm.id);
-        let Some(k) = dm.geom(&m) else {
-            continue;
-        };
         let lay: &str = if dm.layer.is_empty() {
             "A-ANNO-DIMS"
         } else {
             &dm.layer
         };
         let h = dm.text_height.max(1e-6);
-        let (gap, ext, tk) = (h * 0.4, h * 0.6, h * 0.5);
-        // 보조선: 재는 점에서 치수선 쪽으로 (조금 띄우고, 조금 넘게)
-        for (p, q) in [(k.a, k.da), (k.b, k.db)] {
-            let d = sub(q, p);
-            let l = d.x.hypot(d.y);
-            if l > gap {
-                let v = mul(d, 1.0 / l);
-                g.line(lay, add(p, mul(v, gap)), add(q, mul(v, ext)), own);
+        let value = |v: f64| {
+            if dm.plain {
+                format!("{}", v.round())
+            } else {
+                comma(v)
+            }
+        };
+        let text = |v: String| {
+            if dm.text.trim().is_empty() {
+                v
+            } else {
+                dm.text.replace("<>", &v)
+            }
+        };
+        // 끝 표시: 사선(건축) 또는 화살표 — `dir` 은 치수선이 그 끝으로 가는 방향
+        let end = |g: &mut Gen, p: Vec2, dir: Vec2| {
+            let n = Vec2::new(-dir.y, dir.x);
+            if dm.arrow {
+                let back = sub(p, mul(dir, h * 0.7));
+                g.put(
+                    lay,
+                    Shape::Fill {
+                        loops: vec![vec![
+                            p,
+                            add(back, mul(n, h * 0.18)),
+                            sub(back, mul(n, h * 0.18)),
+                        ]],
+                    },
+                    own,
+                );
+            } else {
+                let t = mul(add(dir, n), h * 0.25);
+                g.line(lay, sub(p, t), add(p, t), own);
+            }
+        };
+        // 읽을 수 있는 글자 방향
+        let readable = |u: Vec2| {
+            let mut rot = u.y.atan2(u.x);
+            if rot > std::f64::consts::FRAC_PI_2 + 1e-9
+                || rot <= -std::f64::consts::FRAC_PI_2 + 1e-9
+            {
+                rot += std::f64::consts::PI;
+            }
+            rot
+        };
+        let label = |g: &mut Gen, at: Vec2, rot: f64, v: String| {
+            g.put(
+                lay,
+                Shape::Text(TextShape {
+                    at,
+                    height: h,
+                    rotation: rot,
+                    width_factor: 1.0,
+                    halign: 0.5,
+                    valign: VAlign::Bottom,
+                    value: v,
+                }),
+                own,
+            );
+        };
+        match dm.kind {
+            crate::arch::DimKind::Linear => {
+                let Some(k) = dm.geom(&m) else {
+                    continue;
+                };
+                let (gap, ext) = (h * 0.4, h * 0.6);
+                for (p, q) in [(k.a, k.da), (k.b, k.db)] {
+                    let d = sub(q, p);
+                    let l = d.x.hypot(d.y);
+                    if l > gap {
+                        let v = mul(d, 1.0 / l);
+                        g.line(lay, add(p, mul(v, gap)), add(q, mul(v, ext)), own);
+                    }
+                }
+                g.line(lay, k.da, k.db, own);
+                let along = sub(k.db, k.da);
+                let l = along.x.hypot(along.y).max(1e-12);
+                let dir = mul(along, 1.0 / l);
+                end(&mut g, k.db, dir);
+                end(&mut g, k.da, mul(dir, -1.0));
+                let rot = readable(k.u);
+                let up = Vec2::new(-rot.sin(), rot.cos());
+                label(
+                    &mut g,
+                    add(mul(add(k.da, k.db), 0.5), mul(up, h * 0.3)),
+                    rot,
+                    text(value(k.len)),
+                );
+            }
+            crate::arch::DimKind::Radius | crate::arch::DimKind::Diameter => {
+                let (c, p) = dm.ends(&m);
+                let r = c.dist(p);
+                if r < 1e-9 {
+                    continue;
+                }
+                let u = mul(sub(p, c), 1.0 / r);
+                let dia = dm.kind == crate::arch::DimKind::Diameter;
+                let from = if dia { sub(c, mul(u, r)) } else { c };
+                g.line(lay, from, p, own);
+                end(&mut g, p, u);
+                if dia {
+                    end(&mut g, from, mul(u, -1.0));
+                }
+                let rot = readable(u);
+                let up = Vec2::new(-rot.sin(), rot.cos());
+                let mid = if dia { c } else { c.lerp(p, 0.5) };
+                let v = if dia {
+                    format!("Ø{}", value(2.0 * r))
+                } else {
+                    format!("R{}", value(r))
+                };
+                label(&mut g, add(mid, mul(up, h * 0.3)), rot, text(v));
+            }
+            crate::arch::DimKind::Angle => {
+                let Some(v) = dm.vertex else {
+                    continue;
+                };
+                let (a, b) = dm.ends(&m);
+                let (t0, t1) = ((a.y - v.y).atan2(a.x - v.x), (b.y - v.y).atan2(b.x - v.x));
+                let mut sw = crate::curve::ccw_sweep(t0, t1);
+                let (mut s0, mut s1) = (t0, t1);
+                if sw > std::f64::consts::PI {
+                    std::mem::swap(&mut s0, &mut s1);
+                    sw = std::f64::consts::TAU - sw;
+                }
+                let rad = dm.offset.abs().max(h);
+                let at = |t: f64| Vec2::new(v.x + rad * t.cos(), v.y + rad * t.sin());
+                g.put(
+                    lay,
+                    Shape::Arc {
+                        center: v,
+                        radius: rad,
+                        start: s0.rem_euclid(std::f64::consts::TAU),
+                        end: (s0 + sw).rem_euclid(std::f64::consts::TAU),
+                    },
+                    own,
+                );
+                // 반직선이 호까지 닿지 않으면 보조선
+                for (t, p) in [(t0, a), (t1, b)] {
+                    if v.dist(p) < rad {
+                        g.line(lay, p, at(t), own);
+                    }
+                }
+                end(&mut g, at(s0), Vec2::new(s0.sin(), -s0.cos()));
+                end(&mut g, at(s1), Vec2::new(-s1.sin(), s1.cos()));
+                let mid = s0 + sw / 2.0;
+                let rot = readable(Vec2::new(-mid.sin(), mid.cos()));
+                let deg = sw.to_degrees();
+                let v = if (deg - deg.round()).abs() < 0.05 {
+                    format!("{}°", deg.round())
+                } else {
+                    format!("{deg:.1}°")
+                };
+                label(&mut g, at(mid), rot, text(v));
             }
         }
-        g.line(lay, k.da, k.db, own);
-        let t = mul(add(k.u, k.n), tk * 0.5);
-        for p in [k.da, k.db] {
-            g.line(lay, sub(p, t), add(p, t), own);
-        }
-        let mut rot = k.u.y.atan2(k.u.x);
-        if rot > std::f64::consts::FRAC_PI_2 + 1e-9 || rot <= -std::f64::consts::FRAC_PI_2 + 1e-9 {
-            rot += std::f64::consts::PI;
-        }
-        let up = Vec2::new(-rot.sin(), rot.cos());
-        let mid = add(mul(add(k.da, k.db), 0.5), mul(up, h * 0.3));
-        let value = if dm.text.trim().is_empty() {
-            comma(k.len)
-        } else {
-            dm.text.replace("<>", &comma(k.len))
-        };
-        g.put(
-            lay,
-            Shape::Text(TextShape {
-                at: mid,
-                height: h,
-                rotation: rot,
-                width_factor: 1.0,
-                halign: 0.5,
-                valign: VAlign::Bottom,
-                value,
-            }),
-            own,
-        );
     }
     // 기둥
     for c in m.columns.iter().filter(|x| x.level == level) {
@@ -768,6 +882,33 @@ pub enum ArchReq {
         b: [f64; 2],
         at: [f64; 2],
         text_height: f64,
+        /// 끝 모양 화살표 (거짓이면 사선)
+        #[serde(default)]
+        arrow: bool,
+        /// 쉼표 없이
+        #[serde(default)]
+        plain: bool,
+    },
+    /// 반지름·지름 치수 (§36): 중심, 원 위 점
+    DimRadial {
+        center: [f64; 2],
+        point: [f64; 2],
+        diameter: bool,
+        text_height: f64,
+        #[serde(default)]
+        arrow: bool,
+        #[serde(default)]
+        plain: bool,
+    },
+    /// 각도 치수: 꼭짓점, 두 반직선 위 점, 호가 지날 점
+    DimAngle {
+        vertex: [f64; 2],
+        a: [f64; 2],
+        b: [f64; 2],
+        at: [f64; 2],
+        text_height: f64,
+        #[serde(default)]
+        arrow: bool,
     },
     /// 기둥
     Column {
@@ -831,8 +972,16 @@ pub fn arch_grips(m: &ArchModel, what: &str, id: u64) -> Vec<Vec2> {
             .dims
             .iter()
             .find(|x| x.id == id)
-            .and_then(|x| x.geom(m))
-            .map(|k| vec![k.a, k.b, k.da.lerp(k.db, 0.5)])
+            .map(|x| match x.kind {
+                crate::arch::DimKind::Linear => x
+                    .geom(m)
+                    .map(|k| vec![k.a, k.b, k.da.lerp(k.db, 0.5)])
+                    .unwrap_or_default(),
+                _ => {
+                    let (a, b) = x.ends(m);
+                    [a, b].into_iter().chain(x.vertex).collect()
+                }
+            })
             .unwrap_or_default(),
         "room" => m
             .rooms
@@ -914,6 +1063,16 @@ fn grip_arch(m: &mut ArchModel, what: &str, id: u64, k: usize, to: Vec2) -> Resu
                 .iter_mut()
                 .find(|x| x.id == id)
                 .ok_or("치수가 없습니다")?;
+            if x.kind != crate::arch::DimKind::Linear {
+                match k {
+                    0 => x.a = to,
+                    1 => x.b = to,
+                    _ => x.vertex = Some(to),
+                }
+                x.ka = None;
+                x.kb = None;
+                return Ok(());
+            }
             let geo = x.geom(&mm).ok_or("치수 모양이 없습니다")?;
             match k {
                 // 끝점을 옮기면 그 자리 객체에 다시 묶는다. 회전 치수는 치수선 자리를 그대로 둔다
@@ -1122,7 +1281,9 @@ fn set_field(m: &mut ArchModel, what: &str, id: u64, k: &str, v: &str) -> Result
             match k {
                 "글자" => x.text = v.trim().to_string(),
                 "글자 높이" => x.text_height = num()?.max(1e-3),
-                "치수선 거리" => x.offset = num()?,
+                "치수선 거리" | "호 반지름" => x.offset = num()?,
+                "끝 모양" => x.arrow = v.trim() == "화살표",
+                "쉼표" => x.plain = v.trim() == "아니오",
                 _ => {}
             }
         }
@@ -1270,6 +1431,8 @@ pub fn apply(ed: &mut Editor, req: ArchReq) -> Result<(), String> {
             b,
             at,
             text_height,
+            arrow,
+            plain,
         } => {
             let (a, b, at) = (p2(a), p2(b), p2(at));
             let len = a.dist(b);
@@ -1295,6 +1458,64 @@ pub fn apply(ed: &mut Editor, req: ArchReq) -> Result<(), String> {
                 kb,
                 rotation: None,
                 layer: String::new(),
+                arrow,
+                plain,
+                ..Default::default()
+            });
+        }
+        ArchReq::DimRadial {
+            center,
+            point,
+            diameter,
+            text_height,
+            arrow,
+            plain,
+        } => {
+            if p2(center).dist(p2(point)) < 1e-9 {
+                return Err("반지름이 0 입니다".into());
+            }
+            let id = m.new_id();
+            m.dims.push(crate::arch::Dim {
+                id,
+                level,
+                a: p2(center),
+                b: p2(point),
+                text_height,
+                kind: if diameter {
+                    crate::arch::DimKind::Diameter
+                } else {
+                    crate::arch::DimKind::Radius
+                },
+                arrow,
+                plain,
+                ..Default::default()
+            });
+        }
+        ArchReq::DimAngle {
+            vertex,
+            a,
+            b,
+            at,
+            text_height,
+            arrow,
+        } => {
+            let v = p2(vertex);
+            let rad = v.dist(p2(at));
+            if rad < 1e-9 || v.dist(p2(a)) < 1e-9 || v.dist(p2(b)) < 1e-9 {
+                return Err("각도 치수 점이 겹칩니다".into());
+            }
+            let id = m.new_id();
+            m.dims.push(crate::arch::Dim {
+                id,
+                level,
+                a: p2(a),
+                b: p2(b),
+                vertex: Some(v),
+                offset: rad,
+                text_height,
+                kind: crate::arch::DimKind::Angle,
+                arrow,
+                ..Default::default()
             });
         }
         ArchReq::Column { at, width, depth } => {
@@ -1472,10 +1693,20 @@ pub fn apply(ed: &mut Editor, req: ArchReq) -> Result<(), String> {
                 "dim" => {
                     // 치수 옮기기 = 치수선 옮기기 (끝점은 그대로 — 묶인 객체를 따른다)
                     let mm = m.clone();
-                    if let Some(x) = m.dims.iter_mut().find(|x| x.id == id)
-                        && let Some(k) = x.geom(&mm)
-                    {
-                        x.offset += dot(d, k.n);
+                    if let Some(x) = m.dims.iter_mut().find(|x| x.id == id) {
+                        if x.kind == crate::arch::DimKind::Linear {
+                            if let Some(k) = x.geom(&mm) {
+                                x.offset += dot(d, k.n);
+                            }
+                        } else {
+                            // 반지름·지름·각도 치수는 통째로
+                            let (a, b) = x.ends(&mm);
+                            x.a = add(a, d);
+                            x.b = add(b, d);
+                            x.ka = None;
+                            x.kb = None;
+                            x.vertex = x.vertex.map(|v| add(v, d));
+                        }
                     }
                 }
                 "column" => {
@@ -1691,28 +1922,57 @@ pub fn properties(m: &ArchModel, what: &str, id: u64) -> Vec<(String, String)> {
         }
         "dim" => {
             if let Some(x) = m.dims.iter().find(|x| x.id == id) {
-                let len = x.geom(m).map(|k| k.len).unwrap_or(0.0);
-                out.push((
-                    "종류".into(),
-                    if x.rotation.is_some() {
-                        "치수 (회전)"
-                    } else {
-                        "치수"
-                    }
-                    .into(),
-                ));
-                out.push(("길이".into(), comma(len)));
-                let tie =
-                    |k: &Option<crate::arch::Anchor>| match k.as_ref().map(|k| k.what.as_str()) {
-                        Some("wall") => "벽",
-                        Some("grid") => "그리드",
-                        Some("column") => "기둥",
-                        _ => "없음",
-                    };
-                out.push(("묶음".into(), format!("{} · {}", tie(&x.ka), tie(&x.kb))));
+                use crate::arch::DimKind as K;
+                let (a, b) = x.ends(m);
+                let (kind, value) = match x.kind {
+                    K::Linear => (
+                        if x.rotation.is_some() {
+                            "치수 (회전)"
+                        } else {
+                            "치수"
+                        },
+                        comma(x.geom(m).map(|k| k.len).unwrap_or(0.0)),
+                    ),
+                    K::Radius => ("반지름 치수", format!("R{}", comma(a.dist(b)))),
+                    K::Diameter => ("지름 치수", format!("Ø{}", comma(2.0 * a.dist(b)))),
+                    K::Angle => ("각도 치수", String::new()),
+                };
+                out.push(("종류".into(), kind.into()));
+                if !value.is_empty() {
+                    out.push(("값".into(), value));
+                }
+                if x.kind == K::Linear {
+                    let tie =
+                        |k: &Option<crate::arch::Anchor>| match k.as_ref().map(|k| k.what.as_str())
+                        {
+                            Some("wall") => "벽",
+                            Some("grid") => "그리드",
+                            Some("column") => "기둥",
+                            _ => "없음",
+                        };
+                    out.push(("묶음".into(), format!("{} · {}", tie(&x.ka), tie(&x.kb))));
+                }
                 out.push(("글자:고침".into(), x.text.clone()));
                 out.push(("글자 높이:고침".into(), f(x.text_height)));
-                out.push(("치수선 거리:고침".into(), f(x.offset)));
+                if matches!(x.kind, K::Linear | K::Angle) {
+                    out.push((
+                        if x.kind == K::Angle {
+                            "호 반지름:고침"
+                        } else {
+                            "치수선 거리:고침"
+                        }
+                        .into(),
+                        f(x.offset),
+                    ));
+                }
+                out.push((
+                    "끝 모양:고침".into(),
+                    if x.arrow { "화살표" } else { "사선" }.into(),
+                ));
+                out.push((
+                    "쉼표:고침".into(),
+                    if x.plain { "아니오" } else { "예" }.into(),
+                ));
             }
         }
         "column" => {
@@ -2260,6 +2520,8 @@ mod tests {
                 b: [12000.0, 0.0],
                 at: [6000.0, -1000.0],
                 text_height: 250.0,
+                arrow: false,
+                plain: false,
             },
         )
         .unwrap();
@@ -2339,6 +2601,8 @@ mod tests {
                 b: [6000.0, 0.0],
                 at: [3000.0, -2000.0],
                 text_height: 250.0,
+                arrow: false,
+                plain: false,
             },
         )
         .unwrap();
@@ -2398,6 +2662,7 @@ mod tests {
             kb: None,
             rotation: Some(std::f64::consts::FRAC_PI_2),
             layer: String::new(),
+            ..Default::default()
         });
         let k = m.dims[0].geom(&m).unwrap();
         assert!((k.len - 3000.0).abs() < 1e-9);
@@ -2463,5 +2728,88 @@ mod tests {
             p.iter().any(|(k, v)| k == "줄기 단 수" && v == "9 + 9"),
             "{p:?}"
         );
+    }
+
+    #[test]
+    fn radial_and_angle_dims() {
+        let mut ed = Editor::new(new_drawing());
+        apply(
+            &mut ed,
+            ArchReq::DimRadial {
+                center: [0.0, 0.0],
+                point: [600.0, 0.0],
+                diameter: false,
+                text_height: 250.0,
+                arrow: true,
+                plain: false,
+            },
+        )
+        .unwrap();
+        apply(
+            &mut ed,
+            ArchReq::DimRadial {
+                center: [0.0, 0.0],
+                point: [0.0, 600.0],
+                diameter: true,
+                text_height: 250.0,
+                arrow: true,
+                plain: false,
+            },
+        )
+        .unwrap();
+        apply(
+            &mut ed,
+            ArchReq::DimAngle {
+                vertex: [0.0, 0.0],
+                a: [1000.0, 0.0],
+                b: [1000.0, 1000.0],
+                at: [800.0, 0.0],
+                text_height: 250.0,
+                arrow: true,
+            },
+        )
+        .unwrap();
+        let g = with_arch(&ed.d).unwrap();
+        let texts: Vec<String> = g
+            .entities
+            .iter()
+            .filter_map(|e| match &e.shape {
+                Shape::Text(t) => Some(t.value.clone()),
+                _ => None,
+            })
+            .collect();
+        for want in ["R600", "Ø1,200", "45°"] {
+            assert!(texts.iter().any(|t| t == want), "{want}: {texts:?}");
+        }
+        // 끝 모양·쉼표 바꾸기
+        let id = ed.d.arch.dims[1].id;
+        apply(
+            &mut ed,
+            ArchReq::Set {
+                what: "dim".into(),
+                id,
+                fields: vec![("쉼표".into(), "아니오".into())],
+            },
+        )
+        .unwrap();
+        let g = with_arch(&ed.d).unwrap();
+        assert!(
+            g.entities
+                .iter()
+                .any(|e| matches!(&e.shape, Shape::Text(t) if t.value == "Ø1200"))
+        );
+        // 각도 치수 옮기기는 통째로
+        let aid = ed.d.arch.dims[2].id;
+        apply(
+            &mut ed,
+            ArchReq::Move {
+                what: "dim".into(),
+                id: aid,
+                dx: 100.0,
+                dy: 0.0,
+            },
+        )
+        .unwrap();
+        assert_eq!(ed.d.arch.dims[2].vertex, Some(Vec2::new(100.0, 0.0)));
     }
 }

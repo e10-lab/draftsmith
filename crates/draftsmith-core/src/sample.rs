@@ -351,7 +351,7 @@ mod tests {
         let n = d.entities.iter().filter(|e| e.layer == door).count();
         assert_eq!(n, cells * 2, "{ext}");
         // 치수 문자 = 칸 폭, 서식 코드 없이
-        assert!(t.contains(&"6,000"), "{ext}: {t:?}");
+        assert!(t.contains(&"6000"), "{ext}: {t:?}");
         // 중심선 레이어 객체는 CENTER 무늬
         let grid = d.layers.iter().position(|l| l.name == "A-GRID").unwrap() as u32;
         let lt = d
