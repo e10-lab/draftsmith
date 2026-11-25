@@ -1301,6 +1301,44 @@ fn export_pdf(req: PdfRequest, state: State<'_, AppState>) -> Result<Option<Stri
     Ok(Some(path.display().to_string()))
 }
 
+/// 모형 공간의 도면 틀마다 한 쪽 (§63). (저장한 경로, 틀 수). 취소하면 null
+#[tauri::command]
+fn export_frames_pdf(
+    req: PdfRequest,
+    state: State<'_, AppState>,
+) -> Result<Option<(String, usize)>, String> {
+    let o = pdf_options(&req)?;
+    let (bytes, n, stem, dir) = {
+        let open = state.lock().map_err(err)?;
+        let ed = open.ed.as_ref().ok_or("열린 도면이 없습니다")?;
+        let (bytes, n) = pdf::export_frames(&ed.d, &o)?;
+        let stem = open
+            .path
+            .as_ref()
+            .and_then(|p| p.file_stem())
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "도면".into());
+        let dir = open
+            .path
+            .as_ref()
+            .and_then(|p| p.parent())
+            .map(|p| p.to_path_buf());
+        (bytes, n, stem, dir)
+    };
+    let mut dlg = rfd::FileDialog::new()
+        .set_title("도면 틀마다 PDF 저장")
+        .add_filter("PDF", &["pdf"])
+        .set_file_name(format!("{stem}.pdf"));
+    if let Some(dir) = dir {
+        dlg = dlg.set_directory(dir);
+    }
+    let Some(path) = dlg.save_file() else {
+        return Ok(None);
+    };
+    std::fs::write(&path, bytes).map_err(err)?;
+    Ok(Some((path.display().to_string(), n)))
+}
+
 /// 모든 배치를 PDF 여러 쪽으로 (도면 세트). 취소하면 null
 #[tauri::command]
 fn export_sheets_pdf(
@@ -1590,6 +1628,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             set_shx_folder,
+            export_frames_pdf,
             count_text,
             text_of,
             app_version,

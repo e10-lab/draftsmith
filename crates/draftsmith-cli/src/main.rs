@@ -79,6 +79,9 @@ enum Cmd {
         /// 색 기준 출력 스타일 (.ctb 파일)
         #[arg(long)]
         ctb: Option<PathBuf>,
+        /// 모형 공간의 도면 틀마다 한 쪽 (용지·축척은 틀 크기로 — 구현 노트 §63)
+        #[arg(long)]
+        frames: bool,
     },
 }
 
@@ -184,10 +187,11 @@ fn main() -> Result<()> {
             mono,
             layout: lay,
             ctb,
+            frames,
         } => {
             let model = import::read_file(&file)?;
             let d = match &lay {
-                None => shown(model),
+                None => shown(model.clone()),
                 Some(name) => {
                     let i = model
                         .layouts
@@ -218,6 +222,23 @@ fn main() -> Result<()> {
                 mono,
                 ..Default::default()
             };
+            if frames {
+                let fs = draftsmith_core::frames::find(&model);
+                let (bytes, n) = pdf::export_frames(&model, &o).map_err(anyhow::Error::msg)?;
+                std::fs::write(&out, bytes)?;
+                println!("{} 에 썼습니다 (도면 틀 {n} 장)", out.display());
+                for (i, f) in fs.iter().enumerate() {
+                    println!(
+                        "  {:>2}  {} 1:{}  ({:.0}, {:.0})",
+                        i + 1,
+                        f.paper,
+                        f.scale,
+                        f.area.min.x,
+                        f.area.min.y
+                    );
+                }
+                return Ok(());
+            }
             std::fs::write(&out, pdf::export(&d, &o).map_err(anyhow::Error::msg)?)?;
             println!("{} 에 썼습니다", out.display());
         }

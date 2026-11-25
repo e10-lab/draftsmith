@@ -786,7 +786,19 @@ $("pdf-save").addEventListener("click", async () => {
     ctb: $("pdf-ctb").value || null,
   };
   togglePdf(false);
+  const frames = $("pdf-what").value === "frames";
   $("pdf-what").value = "one";
+  if (frames) {
+    // 모형의 도면 틀마다 한 쪽 — 용지·축척은 틀 크기로 (§63)
+    status("도면 틀마다 PDF 만드는 중…");
+    try {
+      const r = await invoke("export_frames_pdf", { req: { ...req, area: null } });
+      status(r ? `PDF 저장 (도면 틀 ${r[1]} 장): ${r[0]}` : "PDF 저장을 취소했습니다");
+    } catch (e) {
+      status(`PDF 를 저장하지 못했습니다: ${e}`);
+    }
+    return;
+  }
   status(sheets ? "도면 세트 PDF 만드는 중…" : "PDF 만드는 중…");
   try {
     const path = await invoke(sheets ? "export_sheets_pdf" : "export_pdf", { req });

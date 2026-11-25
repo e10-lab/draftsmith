@@ -145,6 +145,71 @@ pub fn export_pages(pages: &[Drawing], o: &PdfOptions) -> Result<Vec<u8>, String
         .map_err(|e| format!("PDF 를 만들지 못했습니다: {e:?}"))
 }
 
+/// 한 도면의 여러 범위를 쪽마다 제 용지·축척으로 (모형 공간 도면 틀마다, 구현 노트 §63)
+pub fn export_windows(d: &Drawing, pages: &[PdfOptions]) -> Result<Vec<u8>, String> {
+    let font_data = FONT.to_vec();
+    let face = ttf_parser::Face::parse(FONT, 0).map_err(|e| e.to_string())?;
+    let font = Font::new(font_data.into(), 0).ok_or("글꼴을 읽지 못했습니다")?;
+    let mut doc = Document::new();
+    for o in pages {
+        draw_page(&mut doc, d, o, &face, &font)?;
+    }
+    doc.finish()
+        .map_err(|e| format!("PDF 를 만들지 못했습니다: {e:?}"))
+}
+
+/// 도면 틀마다 한 쪽 (틀이 없으면 Err). 여백 0 — 틀이 용지 끝에 맞는다
+pub fn export_frames(d: &Drawing, base: &PdfOptions) -> Result<(Vec<u8>, usize), String> {
+    let frames = crate::frames::find(d);
+    if frames.is_empty() {
+        return Err(
+            "모형 공간에서 도면 틀(같은 종이 비율 블록·사각형 두 개 이상)을 찾지 못했습니다".into(),
+        );
+    }
+    let shown = crate::archgen::shown(d);
+    // 쪽마다 그 틀에 걸치는 객체만 (도면 전체를 쪽마다 다시 펼치지 않게)
+    let boxes: Vec<Bbox> = shown.entities.iter().map(|e| e.shape.bbox()).collect();
+    let font_data = FONT.to_vec();
+    let face = ttf_parser::Face::parse(FONT, 0).map_err(|e| e.to_string())?;
+    let font = Font::new(font_data.into(), 0).ok_or("글꼴을 읽지 못했습니다")?;
+    let mut doc = Document::new();
+    for f in &frames {
+        let a = f.area;
+        let pad = a.width().max(a.height()) * 0.01;
+        let page = Drawing {
+            entities: shown
+                .entities
+                .iter()
+                .zip(&boxes)
+                .filter(|(_, b)| {
+                    !b.is_empty()
+                        && b.min.x <= a.max.x + pad
+                        && b.max.x >= a.min.x - pad
+                        && b.min.y <= a.max.y + pad
+                        && b.max.y >= a.min.y - pad
+                })
+                .map(|(e, _)| e.clone())
+                .collect(),
+            layers: shown.layers.clone(),
+            linetypes: shown.linetypes.clone(),
+            units: shown.units,
+            ..Default::default()
+        };
+        let o = PdfOptions {
+            paper_mm: f.paper_mm,
+            margin_mm: 0.0,
+            scale: Some(f.scale),
+            area: Some(a),
+            ..base.clone()
+        };
+        draw_page(&mut doc, &page, &o, &face, &font)?;
+    }
+    let bytes = doc
+        .finish()
+        .map_err(|e| format!("PDF 를 만들지 못했습니다: {e:?}"))?;
+    Ok((bytes, frames.len()))
+}
+
 /// 한 쪽 그리기
 fn draw_page(
     doc: &mut Document,

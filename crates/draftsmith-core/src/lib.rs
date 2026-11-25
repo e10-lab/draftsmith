@@ -19,6 +19,7 @@ pub mod drawing;
 pub mod edit;
 pub mod export;
 pub mod fill;
+pub mod frames;
 pub mod geom;
 pub mod grip;
 pub mod ifc;
