@@ -298,7 +298,7 @@ impl Column {
     }
 }
 
-/// 곧은 계단 (a 에서 b 로 올라감)
+/// 계단 (a 에서 b 로 올라감). `mid` 가 있으면 그 점(중심선 꺾이는 곳)에 참이 있는 꺾인(ㄱ자) 계단 (§34)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Stair {
     pub id: u64,
@@ -308,6 +308,79 @@ pub struct Stair {
     pub width: f64,
     /// 단 수 (챌면 수)
     pub risers: u32,
+    #[serde(default)]
+    pub mid: Option<Vec2>,
+}
+
+/// 계단 한 줄기: 시작점(중심선), 방향, 길이, 단 수, 앞 줄기까지 단 수
+#[derive(Debug, Clone, Copy)]
+pub struct Flight {
+    pub start: Vec2,
+    pub u: Vec2,
+    pub len: f64,
+    pub risers: u32,
+    pub first: u32,
+}
+
+impl Stair {
+    /// 줄기들과 참(네 모서리). 꺾인 계단은 참 폭만큼 두 줄기가 짧아지고, 단 수는 길이 비례로 나눈다
+    pub fn flights(&self) -> Option<(Vec<Flight>, Option<[Vec2; 4]>)> {
+        let unit = |a: Vec2, b: Vec2| {
+            let l = a.dist(b);
+            (l > 1e-9).then(|| (Vec2::new((b.x - a.x) / l, (b.y - a.y) / l), l))
+        };
+        let r = self.risers.max(1);
+        match self.mid {
+            None => {
+                let (u, len) = unit(self.a, self.b)?;
+                Some((
+                    vec![Flight {
+                        start: self.a,
+                        u,
+                        len,
+                        risers: r,
+                        first: 0,
+                    }],
+                    None,
+                ))
+            }
+            Some(c) => {
+                let (u1, l1) = unit(self.a, c)?;
+                let (u2, l2) = unit(c, self.b)?;
+                let h = self.width / 2.0;
+                let (l1, l2) = (l1 - h, l2 - h);
+                if l1 <= 1e-6 || l2 <= 1e-6 || r < 2 {
+                    return None;
+                }
+                let n1 = ((r as f64 * l1 / (l1 + l2)).round() as u32).clamp(1, r - 1);
+                let p = |s: f64, t: f64| {
+                    Vec2::new(
+                        c.x + (u1.x * s + u2.x * t) * h,
+                        c.y + (u1.y * s + u2.y * t) * h,
+                    )
+                };
+                Some((
+                    vec![
+                        Flight {
+                            start: self.a,
+                            u: u1,
+                            len: l1,
+                            risers: n1,
+                            first: 0,
+                        },
+                        Flight {
+                            start: p(0.0, 1.0),
+                            u: u2,
+                            len: l2,
+                            risers: r - n1,
+                            first: n1,
+                        },
+                    ],
+                    Some([p(-1.0, -1.0), p(1.0, -1.0), p(1.0, 1.0), p(-1.0, 1.0)]),
+                ))
+            }
+        }
+    }
 }
 
 /// 건축 객체 전체

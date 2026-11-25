@@ -144,25 +144,33 @@ pub fn mesh(m: &ArchModel) -> Mesh {
         for c in m.columns.iter().filter(|c| c.level == l.id) {
             out.prism(c.corners(), z0, z0 + l.height, COLUMN);
         }
-        // 계단: 단마다 바닥에서 그 단 높이까지 상자
+        // 계단: 단마다 바닥에서 그 단 높이까지 상자, 참은 첫 줄기 끝 높이까지 (§34)
         for st in m.stairs.iter().filter(|s| s.level == l.id) {
-            let len = st.a.dist(st.b);
-            if len < 1e-9 || st.risers == 0 {
+            let Some((flights, landing)) = st.flights() else {
                 continue;
+            };
+            let rise = l.height / st.risers.max(1) as f64;
+            for f in &flights {
+                let n = Vec2::new(-f.u.y * st.width / 2.0, f.u.x * st.width / 2.0);
+                let q = |t: f64, k: f64| {
+                    Vec2::new(
+                        f.start.x + f.u.x * t + n.x * k,
+                        f.start.y + f.u.y * t + n.y * k,
+                    )
+                };
+                let r = f.risers.max(1) as f64;
+                for k in 0..f.risers {
+                    let (t0, t1) = (f.len * k as f64 / r, f.len * (k + 1) as f64 / r);
+                    out.prism(
+                        [q(t0, -1.0), q(t1, -1.0), q(t1, 1.0), q(t0, 1.0)],
+                        z0,
+                        z0 + rise * (f.first + k + 1) as f64,
+                        STAIR,
+                    );
+                }
             }
-            let r = st.risers as f64;
-            let u = Vec2::new((st.b.x - st.a.x) / len, (st.b.y - st.a.y) / len);
-            let n = Vec2::new(-u.y * st.width / 2.0, u.x * st.width / 2.0);
-            let q =
-                |t: f64, k: f64| Vec2::new(st.a.x + u.x * t + n.x * k, st.a.y + u.y * t + n.y * k);
-            for k in 0..st.risers {
-                let (t0, t1) = (len * k as f64 / r, len * (k + 1) as f64 / r);
-                out.prism(
-                    [q(t0, -1.0), q(t1, -1.0), q(t1, 1.0), q(t0, 1.0)],
-                    z0,
-                    z0 + l.height * (k + 1) as f64 / r,
-                    STAIR,
-                );
+            if let Some(sq) = landing {
+                out.prism(sq, z0, z0 + rise * flights[0].risers as f64, STAIR);
             }
         }
         for w in m.walls.iter().filter(|w| w.level == l.id) {

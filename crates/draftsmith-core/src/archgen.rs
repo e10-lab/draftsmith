@@ -616,44 +616,62 @@ fn generate(d: &mut Drawing) -> Vec<(Entity, Owner)> {
             own,
         );
     }
-    // 계단: 외곽, 디딤판 선, 오름 화살표
+    // 계단: 줄기마다 외곽·디딤판 선, 참 외곽, 중심선을 따라 오름 화살표 (§34)
     for st in m.stairs.iter().filter(|x| x.level == level) {
         let own = ("stair", st.id);
-        let len = st.a.dist(st.b);
-        if len < 1e-9 || st.risers == 0 {
+        let Some((flights, landing)) = st.flights() else {
             continue;
+        };
+        for f in &flights {
+            let n = mul(Vec2::new(-f.u.y, f.u.x), st.width / 2.0);
+            let q = |t: f64, k: f64| add(add(f.start, mul(f.u, t)), mul(n, k));
+            g.put(
+                "A-STRS",
+                Shape::Polyline {
+                    points: vec![
+                        (q(0.0, -1.0), 0.0),
+                        (q(f.len, -1.0), 0.0),
+                        (q(f.len, 1.0), 0.0),
+                        (q(0.0, 1.0), 0.0),
+                    ],
+                    closed: true,
+                },
+                own,
+            );
+            let r = f.risers.max(1) as f64;
+            for k in 1..f.risers {
+                let t = f.len * k as f64 / r;
+                g.line("A-STRS", q(t, -1.0), q(t, 1.0), own);
+            }
         }
-        let u = mul(sub(st.b, st.a), 1.0 / len);
-        let n = mul(Vec2::new(-u.y, u.x), st.width / 2.0);
-        let q = |t: f64, k: f64| add(add(st.a, mul(u, t)), mul(n, k));
-        g.put(
-            "A-STRS",
-            Shape::Polyline {
-                points: vec![
-                    (q(0.0, -1.0), 0.0),
-                    (q(len, -1.0), 0.0),
-                    (q(len, 1.0), 0.0),
-                    (q(0.0, 1.0), 0.0),
-                ],
-                closed: true,
-            },
-            own,
-        );
-        let r = st.risers as f64;
-        for k in 1..st.risers {
-            let t = len * k as f64 / r;
-            g.line("A-STRS", q(t, -1.0), q(t, 1.0), own);
+        if let Some(sq) = landing {
+            g.put(
+                "A-STRS",
+                Shape::Polyline {
+                    points: sq.iter().map(|p| (*p, 0.0)).collect(),
+                    closed: true,
+                },
+                own,
+            );
         }
-        let head = (st.width * 0.12).min(len * 0.2);
-        g.line(
-            "A-STRS",
-            q(len * 0.5 / r, 0.0),
-            q(len - head * 0.2, 0.0),
-            own,
-        );
-        let tip = q(len - head * 0.2, 0.0);
-        let back = sub(tip, mul(u, head));
-        let side = mul(n, head * 0.4 / (st.width / 2.0));
+        // 화살표: 첫 단 가운데 → (꺾는 점) → 끝 조금 앞
+        let f0 = flights[0];
+        let last = flights[flights.len() - 1];
+        let head = (st.width * 0.12).min(last.len * 0.2);
+        let tip = add(last.start, mul(last.u, last.len - head * 0.2));
+        let mut path = vec![add(
+            f0.start,
+            mul(f0.u, f0.len * 0.5 / f0.risers.max(1) as f64),
+        )];
+        if let Some(c) = st.mid {
+            path.push(c);
+        }
+        path.push(tip);
+        for w in path.windows(2) {
+            g.line("A-STRS", w[0], w[1], own);
+        }
+        let back = sub(tip, mul(last.u, head));
+        let side = mul(Vec2::new(-last.u.y, last.u.x), head * 0.4);
         g.put(
             "A-STRS",
             Shape::Fill {
@@ -664,7 +682,7 @@ fn generate(d: &mut Drawing) -> Vec<(Entity, Owner)> {
         // 「UP」 은 오르기 시작점 바깥에
         g.text(
             "A-STRS",
-            q(-text_h * 0.9, 0.0),
+            sub(f0.start, mul(f0.u, text_h * 0.9)),
             text_h * 0.8,
             "UP".into(),
             own,
@@ -763,6 +781,9 @@ pub enum ArchReq {
         b: [f64; 2],
         width: f64,
         risers: u32,
+        /// 꺾는 점 (있으면 꺾인 계단)
+        #[serde(default)]
+        mid: Option<[f64; 2]>,
     },
     /// 그립 옮기기 (§33): 객체의 손잡이 k 를 to 로
     Grip {
@@ -804,7 +825,7 @@ pub fn arch_grips(m: &ArchModel, what: &str, id: u64) -> Vec<Vec2> {
             .stairs
             .iter()
             .find(|x| x.id == id)
-            .map(|x| vec![x.a, x.b])
+            .map(|x| [x.a, x.b].into_iter().chain(x.mid).collect())
             .unwrap_or_default(),
         "dim" => m
             .dims
@@ -877,7 +898,14 @@ fn grip_arch(m: &mut ArchModel, what: &str, id: u64, k: usize, to: Vec2) -> Resu
                 .iter_mut()
                 .find(|x| x.id == id)
                 .ok_or("계단이 없습니다")?;
-            if k == 0 { x.a = to } else { x.b = to }
+            match k {
+                0 => x.a = to,
+                1 => x.b = to,
+                _ => x.mid = Some(to),
+            }
+            if x.flights().is_none() {
+                return Err("계단 줄기가 너무 짧아집니다".into());
+            }
         }
         "dim" => {
             let mm = m.clone();
@@ -1285,6 +1313,7 @@ pub fn apply(ed: &mut Editor, req: ArchReq) -> Result<(), String> {
             b,
             width,
             risers,
+            mid,
         } => {
             if p2(a).dist(p2(b)) < 1e-6 {
                 return Err("계단 길이가 0 입니다".into());
@@ -1297,7 +1326,12 @@ pub fn apply(ed: &mut Editor, req: ArchReq) -> Result<(), String> {
                 b: p2(b),
                 width: width.max(1.0),
                 risers: risers.max(1),
+                mid: mid.map(p2),
             });
+            if m.stairs.last().and_then(|x| x.flights()).is_none() {
+                m.stairs.pop();
+                return Err("꺾인 계단 줄기가 계단 폭보다 짧습니다".into());
+            }
         }
         ArchReq::GridSet {
             origin,
@@ -1453,6 +1487,7 @@ pub fn apply(ed: &mut Editor, req: ArchReq) -> Result<(), String> {
                     if let Some(x) = m.stairs.iter_mut().find(|x| x.id == id) {
                         x.a = add(x.a, d);
                         x.b = add(x.b, d);
+                        x.mid = x.mid.map(|c| add(c, d));
                     }
                 }
                 _ => {}
@@ -1692,11 +1727,34 @@ pub fn properties(m: &ArchModel, what: &str, id: u64) -> Vec<(String, String)> {
             if let Some(x) = m.stairs.iter().find(|x| x.id == id) {
                 let h = m.level(x.level).map(|l| l.height).unwrap_or(3000.0);
                 let r = x.risers.max(1) as f64;
-                out.push(("종류".into(), "계단".into()));
+                out.push((
+                    "종류".into(),
+                    if x.mid.is_some() {
+                        "꺾인 계단"
+                    } else {
+                        "계단"
+                    }
+                    .into(),
+                ));
                 out.push(("폭:고침".into(), f(x.width)));
                 out.push(("단 수:고침".into(), x.risers.to_string()));
                 out.push(("단 높이".into(), format!("{:.1}", h / r)));
-                out.push(("디딤판 깊이".into(), format!("{:.1}", x.a.dist(x.b) / r)));
+                if let Some((fl, _)) = x.flights() {
+                    let depth: Vec<String> = fl
+                        .iter()
+                        .map(|f| format!("{:.1}", f.len / f.risers.max(1) as f64))
+                        .collect();
+                    out.push(("디딤판 깊이".into(), depth.join(" / ")));
+                    if fl.len() > 1 {
+                        out.push((
+                            "줄기 단 수".into(),
+                            fl.iter()
+                                .map(|f| f.risers.to_string())
+                                .collect::<Vec<_>>()
+                                .join(" + "),
+                        ));
+                    }
+                }
             }
         }
         "site" => {
@@ -2221,6 +2279,7 @@ mod tests {
                 b: [4000.0, 1000.0],
                 width: 1200.0,
                 risers: 18,
+                mid: None,
             },
         )
         .unwrap();
@@ -2356,6 +2415,53 @@ mod tests {
             g.entities
                 .iter()
                 .any(|e| matches!(&e.shape, Shape::Text(t) if t.value == "3,000"))
+        );
+    }
+
+    #[test]
+    fn l_shaped_stair() {
+        let mut ed = Editor::new(new_drawing());
+        apply(
+            &mut ed,
+            ArchReq::Stair {
+                a: [0.0, 0.0],
+                b: [3000.0, 3000.0],
+                width: 1000.0,
+                risers: 18,
+                mid: Some([3000.0, 0.0]),
+            },
+        )
+        .unwrap();
+        let st = &ed.d.arch.stairs[0];
+        let (fl, landing) = st.flights().unwrap();
+        assert_eq!(
+            (fl.len(), fl[0].risers, fl[1].risers, fl[1].first),
+            (2, 9, 9, 9)
+        );
+        assert!(
+            (fl[0].len - 2500.0).abs() < 1e-9 && fl[1].start.dist(Vec2::new(3000.0, 500.0)) < 1e-9
+        );
+        assert!(landing.is_some());
+        // 3D: 단 18 개 + 참 하나
+        assert_eq!(crate::model3d::mesh(&ed.d.arch).tris.len(), 19 * 12);
+        // 너무 짧은 꺾인 계단은 거절
+        assert!(
+            apply(
+                &mut ed,
+                ArchReq::Stair {
+                    a: [0.0, 0.0],
+                    b: [400.0, 400.0],
+                    width: 1000.0,
+                    risers: 18,
+                    mid: Some([400.0, 0.0])
+                }
+            )
+            .is_err()
+        );
+        let p = properties(&ed.d.arch, "stair", ed.d.arch.stairs[0].id);
+        assert!(
+            p.iter().any(|(k, v)| k == "줄기 단 수" && v == "9 + 9"),
+            "{p:?}"
         );
     }
 }

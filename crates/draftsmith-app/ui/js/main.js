@@ -373,12 +373,15 @@ async function copyLevel() {
   if (v) await app.apply({ kind: "arch", op: { kind: "copy_level", name: v.name } });
 }
 
-async function addSheet() {
+async function addSheet(listSheet = false) {
   if (!app.doc) return;
-  const levels = app.doc.arch.levels.map(([, n]) => n);
+  // 지금 층을 먼저
+  const act = app.doc.arch.levels.find(([id]) => id === app.doc.arch.active_level)?.[1];
+  const levels = [...(act ? [act] : []), ...app.doc.arch.levels.map(([, n]) => n).filter((n) => n !== act)];
   const v = await ask("도면 시트 만들기", [
-    ["title", "도면명", levels.length ? `${levels[0]} 평면도` : "평면도"],
-    ["number", "도면 번호", `A-${String(app.doc.layouts.length + 101)}`],
+    ["kind", "종류", listSheet ? "도면 목록" : "평면 시트", ["평면 시트", "도면 목록"]],
+    ["title", "도면명", listSheet ? "도면 목록" : levels.length ? `${levels[0]} 평면도` : "평면도"],
+    ["number", "도면 번호", listSheet ? "A-000" : `A-${String(app.doc.layouts.length + 101)}`],
     ["paper", "용지", "A3", ["A3", "A2", "A1"]],
     ["scale", "축척 1:", "100"],
     ["level", "층 (건축 객체)", levels[0] ?? "", ["", ...levels]],
@@ -386,6 +389,8 @@ async function addSheet() {
   ]);
   if (!v) return;
   app.lastProject = v.project;
+  const list = v.kind === "도면 목록";
+  if (list && v.title.endsWith("평면도")) v.title = "도면 목록";
   const level = app.doc.arch.levels.find(([, n]) => n === v.level)?.[0] ?? null;
   const st = await app.apply({
     kind: "add_sheet",
@@ -395,6 +400,7 @@ async function addSheet() {
     scale: Number(v.scale) || 100,
     level,
     project: v.project,
+    list,
   });
   if (st) await showSpace(st.layouts.length - 1);
 }
@@ -462,6 +468,7 @@ async function run(id) {
     case "level": return app.doc && addLevel();
     case "copylevel": return app.doc && copyLevel();
     case "sheet": return addSheet();
+    case "sheetlist": return addSheet(true);
     case "journal": return app.doc && saveJournal();
     case "merge": return app.doc && mergeJournal();
     case "palette": return palette.show();

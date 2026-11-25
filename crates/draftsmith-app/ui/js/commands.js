@@ -43,6 +43,7 @@ export const COMMANDS = [
   ["tables", "면적표·일람표", ["TB", "TABLES", "표", "면적표", "일람표"], "건축"],
   ["view3d", "3D 보기", ["3D", "3DV", "VIEW3D", "입체"], "건축"],
   ["sheet", "도면 시트 만들기", ["SH", "SHEET", "시트", "도면시트"], "도면화"],
+  ["sheetlist", "도면 목록 시트 만들기", ["SHL", "SHEETLIST", "목록시트", "도면목록시트"], "도면화"],
   ["sheetspdf", "도면 세트 PDF", ["SPDF", "PUBLISH", "일괄출력"], "도면화"],
   ["measure", "거리 재기", ["DI", "DIST", "거리", "측정"], "보기"],
   ["fit", "전체 보기", ["Z", "ZE", "FIT", "전체보기"], "보기"],

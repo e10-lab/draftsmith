@@ -69,6 +69,9 @@ pub struct Layout {
     /// 건축 객체를 보일 층 (DraftSmith 시트 — 구현 노트 §21). None 이면 지금 층
     #[serde(default)]
     pub level: Option<u64>,
+    /// 도면 목록 시트: 종이에 모든 시트의 목록 표를 그때그때 그린다 (§34)
+    #[serde(default)]
+    pub list: bool,
 }
 
 fn inside(b: &Bbox, p: Vec2) -> bool {
@@ -297,6 +300,7 @@ mod tests {
                 frozen: Vec::new(),
             }],
             level: None,
+            list: false,
         });
         let c = compose(&d, 0).unwrap();
         assert_eq!(c.entities.len(), 1);

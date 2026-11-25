@@ -951,15 +951,26 @@ class StairTool extends Tool {
     return super.input(t);
   }
   async take(p) {
-    if (!this.pts.length) {
-      this.pts.push(p);
-      return this.say("계단: 오른 끝점 (거리를 쳐도 됨)");
-    }
-    await this.app.apply({ kind: "arch", op: { kind: "stair", a: this.pts[0], b: p, width: this.app.stairWidth, risers: this.app.stairRisers } });
+    this.pts.push(p);
+    if (this.pts.length === 1) return this.say("계단: 다음 점 (거리를 쳐도 됨)");
+    if (this.pts.length === 2) return this.say("계단: Enter 면 곧은 계단 — 꺾으려면 다음 점 (둘째 점에 참)");
+    const [a, mid, b] = this.pts;
+    await this.put(a, b, mid);
+  }
+  async put(a, b, mid = null) {
+    await this.app.apply({ kind: "arch", op: { kind: "stair", a, b, mid, width: this.app.stairWidth, risers: this.app.stairRisers } });
     this.app.done();
+  }
+  enter() {
+    if (this.pts.length === 2) this.put(this.pts[0], this.pts[1]);
+    else this.app.done();
   }
   paint(ctx, ts) {
     if (!this.pts.length || !this.cur) return;
+    if (this.pts.length === 2) {
+      strokePath(ctx, ts, [this.pts[0], this.pts[1], this.cur], false, true);
+      return;
+    }
     const a = this.pts[0], b = this.cur, L = dist(a, b);
     if (L < 1e-9) return;
     const h = this.app.stairWidth / 2, n = [-(b[1] - a[1]) / L * h, (b[0] - a[0]) / L * h];

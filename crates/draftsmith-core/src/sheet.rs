@@ -22,6 +22,9 @@ pub struct SheetReq {
     /// 보일 층 (건축 객체). None 이면 지금 층
     pub level: Option<u64>,
     pub project: String,
+    /// 도면 목록 시트 (뷰포트 없이 목록 표)
+    #[serde(default)]
+    pub list: bool,
 }
 
 /// 가로 방향 용지 크기 (mm)
@@ -67,8 +70,116 @@ pub fn model_for(d: &Drawing, level: Option<u64>) -> Drawing {
 
 /// 배치 `i` 를 종이 도면으로 (층이 정해진 시트면 그 층으로 펼쳐서)
 pub fn compose(d: &Drawing, i: usize) -> Option<Drawing> {
-    let level = d.layouts.get(i)?.level;
-    crate::layout::compose(&model_for(d, level), i)
+    let lay = d.layouts.get(i)?;
+    let mut out = crate::layout::compose(&model_for(d, lay.level), i)?;
+    if lay.list {
+        let frame = {
+            let mut b = crate::geom::Bbox::EMPTY;
+            for e in &lay.paper {
+                b.merge(&e.shape.bbox());
+            }
+            b
+        };
+        let layer = out.layer_index("A-ANNO-TTLB");
+        out.entities.extend(list_table(d, frame, layer));
+    }
+    Some(out)
+}
+
+/// 배치의 축척 (첫 뷰포트에서). 없으면 None
+pub fn scale_of(l: &Layout) -> Option<f64> {
+    let v = l.viewports.first()?;
+    (v.height > 0.0).then(|| v.view_height / v.height)
+}
+
+/// 도면 목록 표: 틀 왼쪽 위에 순번·도면 번호·도면명·축척·층 (§34)
+fn list_table(d: &Drawing, frame: crate::geom::Bbox, layer: u32) -> Vec<Entity> {
+    let mut out = Vec::new();
+    if frame.is_empty() {
+        return out;
+    }
+    let mut put = |shape: Shape, weight: Option<u16>| {
+        out.push(Entity {
+            layer,
+            color: None,
+            aci: Some(7),
+            linetype: None,
+            weight,
+            shape,
+        });
+    };
+    let text = |x: f64, y: f64, h: f64, v: String| {
+        Shape::Text(TextShape {
+            at: Vec2::new(x, y),
+            height: h,
+            rotation: 0.0,
+            width_factor: 1.0,
+            halign: 0.0,
+            valign: VAlign::Middle,
+            value: v,
+        })
+    };
+    let cols = [
+        ("순번", 15.0),
+        ("도면 번호", 32.0),
+        ("도면명", 110.0),
+        ("축척", 25.0),
+        ("층", 28.0),
+    ];
+    let width: f64 = cols.iter().map(|c| c.1).sum();
+    let (x0, top) = (frame.min.x + 15.0, frame.max.y - 18.0);
+    put(text(x0, top, 7.0, "도면 목록".into()), None);
+    let rh = 9.0;
+    let y0 = top - 10.0;
+    let mut rows: Vec<[String; 5]> = vec![cols.map(|c| c.0.to_string())];
+    for (i, l) in d.layouts.iter().enumerate() {
+        let (num, title) = match l.name.split_once(' ') {
+            Some((a, b)) if a.chars().any(|c| c.is_ascii_digit()) => (a.to_string(), b.to_string()),
+            _ => (String::new(), l.name.clone()),
+        };
+        let scale = scale_of(l)
+            .map(|k| format!("1:{}", k.round()))
+            .unwrap_or_else(|| "-".into());
+        let level = l
+            .level
+            .and_then(|id| d.arch.level(id))
+            .map(|x| x.name.clone())
+            .unwrap_or_default();
+        rows.push([(i + 1).to_string(), num, title, scale, level]);
+    }
+    let n = rows.len();
+    for k in 0..=n {
+        let y = y0 - rh * k as f64;
+        put(
+            Shape::Line {
+                a: Vec2::new(x0, y),
+                b: Vec2::new(x0 + width, y),
+            },
+            Some(if k <= 1 || k == n { 35 } else { 18 }),
+        );
+    }
+    let mut x = x0;
+    for c in 0..=cols.len() {
+        put(
+            Shape::Line {
+                a: Vec2::new(x, y0),
+                b: Vec2::new(x, y0 - rh * n as f64),
+            },
+            Some(if c == 0 || c == cols.len() { 35 } else { 18 }),
+        );
+        if c < cols.len() {
+            x += cols[c].1;
+        }
+    }
+    for (k, row) in rows.into_iter().enumerate() {
+        let y = y0 - rh * (k as f64 + 0.5);
+        let mut x = x0;
+        for (c, v) in row.into_iter().enumerate() {
+            put(text(x + 2.5, y, if k == 0 { 3.0 } else { 3.5 }, v), None);
+            x += cols[c].1;
+        }
+    }
+    out
 }
 
 /// 시트 하나를 만든다 (도면 `d` 의 레이어에 표제란 레이어를 더할 수 있다)
@@ -135,7 +246,11 @@ pub fn make(d: &mut Drawing, req: &SheetReq) -> Result<Layout, String> {
     let half = x0 + lab + (tw - lab) / 2.0;
     put(line(half, y0, half, y0 + rh), Some(18));
     put(line(half + 18.0, y0, half + 18.0, y0 + rh), Some(18));
-    let scale = format!("1:{}", req.scale.round());
+    let scale = if req.list {
+        "-".to_string()
+    } else {
+        format!("1:{}", req.scale.round())
+    };
     let date = today();
     let cells: [(&str, &str, f64); 3] = [
         ("프로젝트", &req.project, 3.0),
@@ -185,7 +300,7 @@ pub fn make(d: &mut Drawing, req: &SheetReq) -> Result<Layout, String> {
         None,
     );
 
-    // 뷰포트: 틀 안, 표제란 위 띠는 비움
+    // 뷰포트: 틀 안, 표제란 위 띠는 비움 (도면 목록 시트는 뷰포트 없음)
     let (vx0, vy0, vx1, vy1) = (l + 2.0, b + th + 2.0, r - 2.0, t - 2.0);
     let (vw, vh) = (vx1 - vx0, vy1 - vy0);
     let model = model_for(d, req.level);
@@ -214,8 +329,9 @@ pub fn make(d: &mut Drawing, req: &SheetReq) -> Result<Layout, String> {
         name,
         order: d.layouts.iter().map(|l| l.order).max().unwrap_or(0) + 1,
         paper,
-        viewports: vec![vp],
-        level: req.level,
+        viewports: if req.list { Vec::new() } else { vec![vp] },
+        level: if req.list { None } else { req.level },
+        list: req.list,
     })
 }
 
@@ -246,6 +362,7 @@ mod tests {
             scale: 100.0,
             level: None,
             project: "시험".into(),
+            list: false,
         };
         let mut d = ed.d.clone();
         let l = make(&mut d, &req).unwrap();
@@ -263,5 +380,41 @@ mod tests {
         let t = today();
         assert_eq!(t.len(), 10);
         assert_eq!(&t[4..5], ".");
+    }
+
+    #[test]
+    fn list_sheet_lists_all_sheets() {
+        let mut d = new_drawing();
+        let mk = |title: &str, number: &str, list: bool| SheetReq {
+            title: title.into(),
+            number: number.into(),
+            paper: "A3".into(),
+            scale: 100.0,
+            level: None,
+            project: String::new(),
+            list,
+        };
+        for (t, n, l) in [
+            ("도면 목록", "A-000", true),
+            ("1층 평면도", "A-101", false),
+            ("2층 평면도", "A-102", false),
+        ] {
+            let lay = make(&mut d, &mk(t, n, l)).unwrap();
+            d.layouts.push(lay);
+        }
+        let c = compose(&d, 0).unwrap();
+        let texts: Vec<String> = c
+            .entities
+            .iter()
+            .filter_map(|e| match &e.shape {
+                Shape::Text(t) => Some(t.value.clone()),
+                _ => None,
+            })
+            .collect();
+        for want in ["도면 목록", "A-101", "2층 평면도", "1:100", "A-000"] {
+            assert!(texts.iter().any(|t| t == want), "{want}: {texts:?}");
+        }
+        // 목록 시트 자신은 축척 없음
+        assert!(texts.iter().any(|t| t == "-"));
     }
 }
