@@ -975,7 +975,7 @@ class StairTool extends Tool {
   async take(p) {
     this.pts.push(p);
     if (this.pts.length === 1) return this.say("계단: 다음 점 (거리를 쳐도 됨)");
-    if (this.pts.length === 2) return this.say("계단: Enter 면 곧은 계단 — 꺾으려면 다음 점 (둘째 점에 참)");
+    if (this.pts.length === 2) return this.say("계단: Enter 면 곧은 계단 — 꺾으려면 다음 점 (둘째 점에 참, 옆으로 돌아오면 U자)");
     const [a, mid, b] = this.pts;
     await this.put(a, b, mid);
   }

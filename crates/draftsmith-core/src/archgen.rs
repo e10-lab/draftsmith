@@ -777,9 +777,7 @@ fn generate(d: &mut Drawing) -> Vec<(Entity, Owner)> {
             f0.start,
             mul(f0.u, f0.len * 0.5 / f0.risers.max(1) as f64),
         )];
-        if let Some(c) = st.mid {
-            path.push(c);
-        }
+        path.extend(st.turns());
         path.push(tip);
         for w in path.windows(2) {
             g.line("A-STRS", w[0], w[1], own);
@@ -1989,7 +1987,9 @@ pub fn properties(m: &ArchModel, what: &str, id: u64) -> Vec<(String, String)> {
                 let r = x.risers.max(1) as f64;
                 out.push((
                     "종류".into(),
-                    if x.mid.is_some() {
+                    if x.u_turn().is_some() {
+                        "U자 계단"
+                    } else if x.mid.is_some() {
                         "꺾인 계단"
                     } else {
                         "계단"
@@ -2811,5 +2811,31 @@ mod tests {
         )
         .unwrap();
         assert_eq!(ed.d.arch.dims[2].vertex, Some(Vec2::new(100.0, 0.0)));
+    }
+
+    #[test]
+    fn u_shaped_stair() {
+        let mut ed = Editor::new(new_drawing());
+        // 첫 줄기 (0,0)→(4000,0) 위로, 옆 1200 띄워 (0,1200) 으로 돌아옴. 폭 1000
+        apply(
+            &mut ed,
+            ArchReq::Stair {
+                a: [0.0, 0.0],
+                b: [0.0, 1200.0],
+                width: 1000.0,
+                risers: 20,
+                mid: Some([4000.0, 0.0]),
+            },
+        )
+        .unwrap();
+        let st = &ed.d.arch.stairs[0];
+        assert!(st.u_turn().is_some());
+        let (fl, landing) = st.flights().unwrap();
+        assert_eq!((fl[0].risers, fl[1].risers), (10, 10));
+        assert!((fl[0].len - 3500.0).abs() < 1e-9 && (fl[1].len - 3500.0).abs() < 1e-9);
+        assert!(fl[1].u.x < 0.0 && landing.is_some());
+        assert_eq!(st.turns().len(), 2);
+        let p = properties(&ed.d.arch, "stair", st.id);
+        assert!(p.iter().any(|(_, v)| v == "U자 계단"), "{p:?}");
     }
 }

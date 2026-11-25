@@ -493,7 +493,7 @@ pub fn fillet(
     r: f64,
 ) -> Result<(Shape, Shape, Option<Shape>), String> {
     let (Shape::Line { a: a0, b: a1 }, Shape::Line { a: b0, b: b1 }) = (a, b) else {
-        return Err("모깎기는 지금은 선 두 개만 됩니다".into());
+        return Err("모깎기는 선 두 개, 선과 호·원, 폴리선 모서리에 됩니다".into());
     };
     let x = raw_hits(&Piece::Seg(*a0, *a1), &Piece::Seg(*b0, *b1))
         .pop()
@@ -556,6 +556,97 @@ fn ring_area(r: &[Vec2]) -> f64 {
         .sum::<f64>()
         .abs()
         / 2.0
+}
+
+/// 선과 호·원 사이 모깎기 (§37): 반지름 r 인 원이 선(고른 쪽)과 호·원 모두에 닿게. 선은 접점까지 자르고,
+/// 호는 고른 쪽을 남겨 접점까지 (원은 그대로). (선 새 모양, 호·원 새 모양, 모깎기 호)
+pub fn fillet_line_arc(
+    line: &Shape,
+    pl: Vec2,
+    curve: &Shape,
+    pc: Vec2,
+    r: f64,
+) -> Result<(Shape, Shape, Shape), String> {
+    let Shape::Line { a: l0, b: l1 } = line else {
+        return Err("선이 아닙니다".into());
+    };
+    let (c, big) = match curve {
+        Shape::Arc { center, radius, .. } | Shape::Circle { center, radius } => (*center, *radius),
+        _ => return Err("호·원이 아닙니다".into()),
+    };
+    if r <= 1e-9 {
+        return Err("선과 호의 모깎기는 반지름이 있어야 합니다".into());
+    }
+    let u = norm(sub(*l1, *l0));
+    let n = Vec2::new(-u.y, u.x);
+    // 후보 중심: 선에서 ±r 떨어진 직선과, 원에서 R±r 떨어진 원의 교점
+    let mut best: Option<(f64, Vec2, Vec2, Vec2)> = None;
+    for side in [1.0, -1.0] {
+        let (o0, o1) = (add(*l0, mul(n, side * r)), add(*l1, mul(n, side * r)));
+        for rr in [big + r, big - r] {
+            if rr <= 1e-9 {
+                continue;
+            }
+            for o in line_circle(o0, o1, c, rr) {
+                let tl = add(*l0, mul(u, dot(sub(o, *l0), u)));
+                let tc = add(c, mul(norm(sub(o, c)), big));
+                let score = tl.dist(pl) + tc.dist(pc);
+                if best.as_ref().is_none_or(|b| score < b.0) {
+                    best = Some((score, o, tl, tc));
+                }
+            }
+        }
+    }
+    let (_, o, tl, tc) = best.ok_or("모깎기 원을 놓을 곳이 없습니다 — 반지름을 줄이세요")?;
+    // 선: 고른 쪽 먼 끝에서 접점까지
+    let far = if dot(sub(*l0, tl), sub(pl, tl)) >= dot(sub(*l1, tl), sub(pl, tl)) {
+        *l0
+    } else {
+        *l1
+    };
+    let new_line = Shape::Line { a: far, b: tl };
+    // 호: 접점 각에서 나눠 고른 쪽을 남긴다 (접점이 호 밖이면 가까운 끝을 접점으로)
+    let ang = |p: Vec2| (p.y - c.y).atan2(p.x - c.x);
+    let th = ang(tc);
+    let new_curve = match curve {
+        Shape::Arc { start, end, .. } => {
+            let sw = ccw_sweep(*start, *end);
+            let at = ccw_sweep(*start, th).rem_euclid(TAU);
+            let (s0, e0) = if at > 1e-9 && at < sw - 1e-9 {
+                let pick = ccw_sweep(*start, ang(pc)).rem_euclid(TAU);
+                if pick < at { (*start, th) } else { (th, *end) }
+            } else {
+                // 호 밖: 시작·끝 중 각이 가까운 쪽을 접점으로
+                let ds = ccw_sweep(th, *start).min(ccw_sweep(*start, th));
+                let de = ccw_sweep(th, *end).min(ccw_sweep(*end, th));
+                if ds < de { (th, *end) } else { (*start, th) }
+            };
+            Shape::Arc {
+                center: c,
+                radius: big,
+                start: s0.rem_euclid(TAU),
+                end: e0.rem_euclid(TAU),
+            }
+        }
+        other => other.clone(),
+    };
+    let (mut s0, mut e0) = (
+        (tl.y - o.y).atan2(tl.x - o.x),
+        (tc.y - o.y).atan2(tc.x - o.x),
+    );
+    if ccw_sweep(s0, e0) > PI {
+        std::mem::swap(&mut s0, &mut e0);
+    }
+    Ok((
+        new_line,
+        new_curve,
+        Shape::Arc {
+            center: o,
+            radius: r,
+            start: s0.rem_euclid(TAU),
+            end: e0.rem_euclid(TAU),
+        },
+    ))
 }
 
 /// 모따기: 두 선(고른 점 쪽을 남김)을 교점에서 d1·d2 떨어진 곳에서 잘라 선으로 잇는다 (§33)
@@ -924,6 +1015,43 @@ mod tests {
         }
         match corner_polyline(&sq, Vec2::new(0.0, 9.0), Corner::Chamfer(1.0, 1.0)).unwrap() {
             Shape::Polyline { points, .. } => assert_eq!(points.len(), 5),
+            s => panic!("{s:?}"),
+        }
+    }
+
+    #[test]
+    fn fillet_line_and_circle() {
+        // 원 (0,0) R5 바깥, 선 y = −8. 반지름 2 모깎기 원은 선 위 2 (y = −6), 원 중심에서 7 떨어진 곳
+        let line = l(-20.0, -8.0, 20.0, -8.0);
+        let circle = Shape::Circle {
+            center: Vec2::default(),
+            radius: 5.0,
+        };
+        let (nl, nc, arc) = fillet_line_arc(
+            &line,
+            Vec2::new(10.0, -8.0),
+            &circle,
+            Vec2::new(3.0, -4.0),
+            2.0,
+        )
+        .unwrap();
+        match arc {
+            Shape::Arc { center, radius, .. } => {
+                assert!(
+                    (center.y + 6.0).abs() < 1e-9
+                        && (center.dist(Vec2::default()) - 7.0).abs() < 1e-9
+                        && radius == 2.0,
+                    "{center:?}"
+                );
+                assert!(center.x > 0.0);
+            }
+            s => panic!("{s:?}"),
+        }
+        assert_eq!(nc, circle);
+        match nl {
+            Shape::Line { a, b } => assert!(
+                a == Vec2::new(20.0, -8.0) && (b.y + 8.0).abs() < 1e-9 && b.x > 0.0 && b.x < 5.0
+            ),
             s => panic!("{s:?}"),
         }
     }

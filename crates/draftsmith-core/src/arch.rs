@@ -349,6 +349,31 @@ pub struct Flight {
 }
 
 impl Stair {
+    /// U자 계단이면 첫 줄기 중심선에서 둘째 줄기 중심선까지 옆으로 간 벡터: 끝점이 꺾는 점보다 뒤로(첫 줄기 쪽)
+    /// 반 폭 넘게 돌아오고, 옆으로 계단 폭 이상 떨어져 있을 때
+    pub fn u_turn(&self) -> Option<Vec2> {
+        let c = self.mid?;
+        let l = self.a.dist(c);
+        if l < 1e-9 {
+            return None;
+        }
+        let u = Vec2::new((c.x - self.a.x) / l, (c.y - self.a.y) / l);
+        let back = (self.b.x - c.x) * u.x + (self.b.y - c.y) * u.y;
+        let ab = Vec2::new(self.b.x - self.a.x, self.b.y - self.a.y);
+        let along = ab.x * u.x + ab.y * u.y;
+        let w = Vec2::new(ab.x - u.x * along, ab.y - u.y * along);
+        (back < -self.width / 2.0 && w.x.hypot(w.y) >= self.width - 1e-6).then_some(w)
+    }
+
+    /// 화살표가 꺾이는 점들 (꺾인 계단은 꺾는 점, U자는 참 양쪽)
+    pub fn turns(&self) -> Vec<Vec2> {
+        match (self.mid, self.u_turn()) {
+            (Some(c), Some(w)) => vec![c, Vec2::new(c.x + w.x, c.y + w.y)],
+            (Some(c), None) => vec![c],
+            _ => Vec::new(),
+        }
+    }
+
     /// 줄기들과 참(네 모서리). 꺾인 계단은 참 폭만큼 두 줄기가 짧아지고, 단 수는 길이 비례로 나눈다
     pub fn flights(&self) -> Option<(Vec<Flight>, Option<[Vec2; 4]>)> {
         let unit = |a: Vec2, b: Vec2| {
@@ -368,6 +393,42 @@ impl Stair {
                         first: 0,
                     }],
                     None,
+                ))
+            }
+            Some(c) if self.u_turn().is_some() => {
+                // U자 계단 (§37): 둘째 줄기는 첫 줄기와 나란히 거꾸로, 참은 두 줄기 폭 전체
+                let w = self.u_turn()?;
+                let (u1, l1) = unit(self.a, c)?;
+                let h = self.width / 2.0;
+                let wl = w.x.hypot(w.y);
+                let e = Vec2::new(w.x / wl, w.y / wl);
+                let l1 = l1 - h;
+                let s2 = Vec2::new(c.x + w.x - u1.x * h, c.y + w.y - u1.y * h);
+                let l2 = (s2.x - self.b.x) * u1.x + (s2.y - self.b.y) * u1.y;
+                if l1 <= 1e-6 || l2 <= 1e-6 || r < 2 {
+                    return None;
+                }
+                let n1 = ((r as f64 * l1 / (l1 + l2)).round() as u32).clamp(1, r - 1);
+                let p =
+                    |s: f64, t: f64| Vec2::new(c.x + u1.x * s + e.x * t, c.y + u1.y * s + e.y * t);
+                Some((
+                    vec![
+                        Flight {
+                            start: self.a,
+                            u: u1,
+                            len: l1,
+                            risers: n1,
+                            first: 0,
+                        },
+                        Flight {
+                            start: s2,
+                            u: Vec2::new(-u1.x, -u1.y),
+                            len: l2,
+                            risers: r - n1,
+                            first: n1,
+                        },
+                    ],
+                    Some([p(-h, -h), p(h, -h), p(h, wl + h), p(-h, wl + h)]),
                 ))
             }
             Some(c) => {
