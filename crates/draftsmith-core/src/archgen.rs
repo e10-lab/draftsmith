@@ -111,6 +111,19 @@ pub fn new_drawing() -> Drawing {
     d
 }
 
+/// 치수 모양 (§61): 끝 표시·보조선·글자 자리
+struct DimLook {
+    arrow: f64,
+    /// 사선 길이 (None 이면 채운 화살표)
+    tick: Option<f64>,
+    exo: f64,
+    exe: f64,
+    gap: f64,
+    centered: bool,
+    lfac: f64,
+    post: String,
+}
+
 /// 생성한 객체 하나의 주인 (종류, 번호)
 type Owner = (&'static str, u64);
 
@@ -647,7 +660,47 @@ fn generate_scaled(d: &mut Drawing, scale: f64) -> Vec<(Entity, Owner)> {
             &dm.layer
         };
         let h = dm.text_height.max(1e-6);
-        let value = |v: f64| number(v, dm.precision, dm.plain);
+        // 가져온 치수 스타일이면 그 크기로 (§61), 아니면 글자 높이에 비례한 DraftSmith 기본
+        let st = m
+            .dim_styles
+            .iter()
+            .find(|s| !dm.style.is_empty() && s.name.eq_ignore_ascii_case(&dm.style));
+        let look = match st {
+            Some(s) => {
+                let k = s.k();
+                DimLook {
+                    arrow: s.arrow * k,
+                    tick: if s.tick > 0.0 { Some(s.tick * k) } else { None },
+                    exo: s.exo * k,
+                    exe: s.exe * k,
+                    gap: s.gap * k,
+                    centered: s.tad == 0,
+                    lfac: if s.lfac != 0.0 { s.lfac.abs() } else { 1.0 },
+                    post: s.post.clone(),
+                }
+            }
+            None => DimLook {
+                arrow: h * 0.7,
+                tick: (!dm.arrow).then_some(h * 0.5 * std::f64::consts::SQRT_2),
+                exo: h * 0.4,
+                exe: h * 0.6,
+                gap: h * 0.3,
+                centered: false,
+                lfac: 1.0,
+                post: String::new(),
+            },
+        };
+        let value = |v: f64| {
+            let n = number(v * look.lfac, dm.precision, dm.plain);
+            // 접두·접미 DIMPOST: 「<>」 자리에 값, 없으면 뒤에
+            if look.post.is_empty() || look.post == "<>" {
+                n
+            } else if look.post.contains("<>") {
+                look.post.replace("<>", &n)
+            } else {
+                format!("{n}{}", look.post)
+            }
+        };
         let text = |v: String| {
             if dm.text.trim().is_empty() {
                 v
@@ -658,22 +711,46 @@ fn generate_scaled(d: &mut Drawing, scale: f64) -> Vec<(Entity, Owner)> {
         // 끝 표시: 사선(건축) 또는 화살표 — `dir` 은 치수선이 그 끝으로 가는 방향
         let end = |g: &mut Gen, p: Vec2, dir: Vec2| {
             let n = Vec2::new(-dir.y, dir.x);
-            if dm.arrow {
-                let back = sub(p, mul(dir, h * 0.7));
-                g.put(
-                    lay,
-                    Shape::Fill {
-                        loops: vec![vec![
-                            p,
-                            add(back, mul(n, h * 0.18)),
-                            sub(back, mul(n, h * 0.18)),
-                        ]],
-                    },
-                    own,
+            // 가져온 화살표 블록 (점 등): 화살표 크기 배율, +x 가 바깥(치수선 끝 쪽)을 향하게 (§61)
+            if !dm.arrow_block.is_empty()
+                && let Some(bl) =
+                    g.d.blocks
+                        .iter()
+                        .find(|b| b.name == dm.arrow_block)
+                        .cloned()
+            {
+                let t = crate::drawing::Block::transform(
+                    p,
+                    Vec2::new(look.arrow, look.arrow),
+                    dir.y.atan2(dir.x),
                 );
-            } else {
-                let t = mul(add(dir, n), h * 0.25);
-                g.line(lay, sub(p, t), add(p, t), own);
+                for e in &bl.entities {
+                    g.put(lay, e.shape.transformed(&t), own);
+                }
+                return;
+            }
+            match look.tick {
+                // 사선: 길이 tick 의 45° 선 (가운데가 끝점)
+                Some(t) => {
+                    let t = mul(add(dir, n), t / 2.0 / std::f64::consts::SQRT_2);
+                    g.line(lay, sub(p, t), add(p, t), own);
+                }
+                // 채운 화살표: 길이 arrow, 폭 arrow/3 (AutoCAD 기본 닫힌 화살표)
+                None => {
+                    let back = sub(p, mul(dir, look.arrow));
+                    let w = if st.is_some() {
+                        look.arrow / 6.0
+                    } else {
+                        h * 0.18
+                    };
+                    g.put(
+                        lay,
+                        Shape::Fill {
+                            loops: vec![vec![p, add(back, mul(n, w)), sub(back, mul(n, w))]],
+                        },
+                        own,
+                    );
+                }
             }
         };
         // 읽을 수 있는 글자 방향
@@ -690,24 +767,30 @@ fn generate_scaled(d: &mut Drawing, scale: f64) -> Vec<(Entity, Owner)> {
             g.put(
                 lay,
                 Shape::Text(TextShape {
-                    style: String::new(),
+                    style: st.map(|s| s.txsty.clone()).unwrap_or_default(),
                     at,
                     height: h,
                     rotation: rot,
                     width_factor: 1.0,
                     halign: 0.5,
-                    valign: VAlign::Bottom,
+                    valign: if look.centered {
+                        VAlign::Middle
+                    } else {
+                        VAlign::Bottom
+                    },
                     value: v,
                 }),
                 own,
             );
         };
+        // 글자 자리: 치수선 위(간격만큼) 또는 가운데
+        let above = if look.centered { 0.0 } else { look.gap };
         match dm.kind {
             crate::arch::DimKind::Linear => {
                 let Some(k) = dm.geom(&m) else {
                     continue;
                 };
-                let (gap, ext) = (h * 0.4, h * 0.6);
+                let (gap, ext) = (look.exo, look.exe);
                 for (p, q) in [(k.a, k.da), (k.b, k.db)] {
                     let d = sub(q, p);
                     let l = d.x.hypot(d.y);
@@ -726,7 +809,7 @@ fn generate_scaled(d: &mut Drawing, scale: f64) -> Vec<(Entity, Owner)> {
                 let up = Vec2::new(-rot.sin(), rot.cos());
                 label(
                     &mut g,
-                    add(mul(add(k.da, k.db), 0.5), mul(up, h * 0.3)),
+                    add(mul(add(k.da, k.db), 0.5), mul(up, above)),
                     rot,
                     text(value(k.len)),
                 );
@@ -753,7 +836,7 @@ fn generate_scaled(d: &mut Drawing, scale: f64) -> Vec<(Entity, Owner)> {
                 } else {
                     format!("R{}", value(r))
                 };
-                label(&mut g, add(mid, mul(up, h * 0.3)), rot, text(v));
+                label(&mut g, add(mid, mul(up, above)), rot, text(v));
             }
             crate::arch::DimKind::Angle => {
                 let Some(v) = dm.vertex else {
@@ -2578,6 +2661,18 @@ pub fn properties(m: &ArchModel, what: &str, id: u64) -> Vec<(String, String)> {
                     if x.plain { "아니오" } else { "예" }.into(),
                 ));
                 out.push(("소수 자리:고침".into(), x.precision.to_string()));
+                // 치수 스타일 (§61): 가져온 스타일이면 그 이름, 화살표 블록
+                out.push((
+                    "치수 스타일".into(),
+                    if x.style.is_empty() {
+                        "DraftSmith".into()
+                    } else {
+                        x.style.clone()
+                    },
+                ));
+                if !x.arrow_block.is_empty() {
+                    out.push(("화살표".into(), x.arrow_block.clone()));
+                }
             }
         }
         "beam" => {

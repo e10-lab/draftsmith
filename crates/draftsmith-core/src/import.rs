@@ -151,6 +151,8 @@ struct Converter<'a> {
     layer_aci: Vec<Option<u8>>,
     /// 지금 넣는 객체의 색 번호
     cur_aci: Option<u8>,
+    /// 치수 화살표 블록을 정의하는 중 — 폭 있는 폴리선을 채움으로 (§61)
+    arrow_mode: bool,
 }
 
 impl<'a> Converter<'a> {
@@ -268,6 +270,22 @@ impl<'a> Converter<'a> {
                 a: v2(&x.start),
                 b: v2(&x.end),
             },
+            EntityType::LwPolyline(x)
+                if self.arrow_mode
+                    && (x.constant_width > 0.0
+                        || x.vertices.iter().any(|v| v.start_width > 0.0)) =>
+            {
+                let w = if x.constant_width > 0.0 {
+                    x.constant_width
+                } else {
+                    x.vertices[0].start_width
+                };
+                let place = ocs(&x.normal).then(t);
+                for s in wide_fills(x, w) {
+                    self.push(layer, color, s, &place);
+                }
+                return;
+            }
             EntityType::LwPolyline(x) => {
                 let s = Shape::Polyline {
                     points: x
@@ -606,6 +624,8 @@ impl<'a> Converter<'a> {
                 _ => String::new(),
             };
             let _ = self.layer(&b.common.layer);
+            let dec = self.dim_dec(&b.style_name);
+            let arrow_block = self.dim_arrow_block(&b.block_name);
             let m = &mut self.d.arch;
             let level = m.ensure_level();
             let id = m.new_id();
@@ -622,7 +642,9 @@ impl<'a> Converter<'a> {
                 layer: b.common.layer.clone(),
                 arrow: true,
                 plain: true,
-                precision: self.doc.header.dim_decimal_places.clamp(0, 4) as u8,
+                precision: dec,
+                style: b.style_name.clone(),
+                arrow_block: arrow_block.clone(),
                 ..Default::default()
             });
             return true;
@@ -686,6 +708,8 @@ impl<'a> Converter<'a> {
         };
         // 레이어 표에 있게
         let _ = self.layer(&b.common.layer);
+        let dec = self.dim_dec(&b.style_name);
+        let arrow_block = self.dim_arrow_block(&b.block_name);
         let m = &mut self.d.arch;
         let level = m.ensure_level();
         let id = m.new_id();
@@ -704,11 +728,91 @@ impl<'a> Converter<'a> {
             // 원래 모양을 따라: 화살표면 화살표, 값은 쉼표 없이 (AutoCAD 기본 단위 형식)
             arrow,
             plain: true,
-            // 소수 자리는 머리글 DIMDEC (선형 치수, 0~4)
-            precision: doc.header.dim_decimal_places.clamp(0, 4) as u8,
+            // 소수 자리는 스타일 DIMDEC (없으면 머리글, 0~4)
+            precision: dec,
+            style: b.style_name.clone(),
+            arrow_block,
             ..Default::default()
         });
         true
+    }
+
+    /// 블록 정의를 기준점이 원점이 되게 펼쳐 `Drawing::blocks` 에 (이미 있으면 그대로)
+    fn define_block(&mut self, name: &str) {
+        let Some(block) = self.doc.block_records.get(name) else {
+            return;
+        };
+        if !self.d.blocks.iter().any(|b| b.name == name) {
+            let base = block.base_point;
+            let zero = self.layer("0");
+            let saved = std::mem::take(&mut self.d.entities);
+            let saved_inserts = self.d.inserts;
+            self.block(
+                name,
+                &[Affine::translate(-base.x, -base.y)],
+                Inherit {
+                    layer: zero,
+                    color: None,
+                    linetype: None,
+                    weight: None,
+                    aci: None,
+                },
+            );
+            let entities = std::mem::replace(&mut self.d.entities, saved);
+            self.d.inserts = saved_inserts;
+            // 속성 정의 (보이는 것, 기준점이 원점이 되게)
+            let to_local = Affine::translate(-base.x, -base.y);
+            let attdefs = doc_attdefs(self.doc, name)
+                .filter_map(
+                    |a| match Shape::Text(attdef_text(a)).transformed(&to_local) {
+                        Shape::Text(text) => Some(crate::drawing::AttDef {
+                            tag: a.tag.clone(),
+                            prompt: a.prompt.clone(),
+                            text,
+                        }),
+                        _ => None,
+                    },
+                )
+                .collect();
+            self.d.blocks.push(crate::drawing::Block {
+                name: name.to_string(),
+                entities,
+                attdefs,
+            });
+        }
+    }
+
+    /// 치수 화살표 블록 정의 (폭 있는 폴리선은 채움으로, §61)
+    fn define_arrow_block(&mut self, name: &str) {
+        let saved = self.arrow_mode;
+        self.arrow_mode = true;
+        self.define_block(name);
+        self.arrow_mode = saved;
+    }
+
+    /// 치수 모양 블록(*D) 안 화살표 블록 이름 — 있으면 그 정의를 들여온다 (§61)
+    fn dim_arrow_block(&mut self, dblock: &str) -> String {
+        let name = self.doc.entities_in_block(dblock).find_map(|e| match e {
+            EntityType::Insert(i) => Some(i.block_name.clone()),
+            _ => None,
+        });
+        match name {
+            Some(n) => {
+                self.define_arrow_block(&n);
+                n
+            }
+            None => String::new(),
+        }
+    }
+
+    /// 치수 소수 자리: 스타일 DIMDEC, 없으면 머리글 (0~4)
+    fn dim_dec(&self, style: &str) -> u8 {
+        self.doc
+            .dim_styles
+            .get(style)
+            .map(|s| s.dimdec)
+            .unwrap_or(self.doc.header.dim_decimal_places)
+            .clamp(0, 4) as u8
     }
 
     /// 치수 글자 높이: 치수 블록(*D) 안 글자에서, 없으면 DIMTXT × DIMSCALE, 그것도 없으면 250
@@ -770,44 +874,8 @@ impl<'a> Converter<'a> {
         let Some(block) = self.doc.block_records.get(&x.block_name) else {
             return false;
         };
-        if !self.d.blocks.iter().any(|b| b.name == x.block_name) {
-            let base = block.base_point;
-            let zero = self.layer("0");
-            let saved = std::mem::take(&mut self.d.entities);
-            let saved_inserts = self.d.inserts;
-            self.block(
-                &x.block_name,
-                &[Affine::translate(-base.x, -base.y)],
-                Inherit {
-                    layer: zero,
-                    color: None,
-                    linetype: None,
-                    weight: None,
-                    aci: None,
-                },
-            );
-            let entities = std::mem::replace(&mut self.d.entities, saved);
-            self.d.inserts = saved_inserts;
-            // 속성 정의 (보이는 것, 기준점이 원점이 되게)
-            let to_local = Affine::translate(-base.x, -base.y);
-            let attdefs = doc_attdefs(self.doc, &x.block_name)
-                .filter_map(
-                    |a| match Shape::Text(attdef_text(a)).transformed(&to_local) {
-                        Shape::Text(text) => Some(crate::drawing::AttDef {
-                            tag: a.tag.clone(),
-                            prompt: a.prompt.clone(),
-                            text,
-                        }),
-                        _ => None,
-                    },
-                )
-                .collect();
-            self.d.blocks.push(crate::drawing::Block {
-                name: x.block_name.clone(),
-                entities,
-                attdefs,
-            });
-        }
+        let _ = block;
+        self.define_block(&x.block_name);
         let (layer, color) = self.style(&x.common, None);
         // 배열 블록(MINSERT)은 칸마다 블록 참조 하나씩 (§43)
         let points = if x.is_array() {
@@ -972,6 +1040,58 @@ fn doc_attdefs<'a>(
         })
         .collect::<Vec<_>>()
         .into_iter()
+}
+
+/// 폭 있는 폴리선을 변마다 채운 모양으로 (곧은 변은 사각, 호 변은 고리 조각) — 치수 화살표 블록용 (§61)
+fn wide_fills(x: &acadrust::entities::LwPolyline, w: f64) -> Vec<Shape> {
+    let n = x.vertices.len();
+    let segs = if x.is_closed { n } else { n.saturating_sub(1) };
+    let h = w / 2.0;
+    let mut out = Vec::new();
+    for i in 0..segs {
+        let (va, vb) = (&x.vertices[i], &x.vertices[(i + 1) % n]);
+        let (a, b) = (
+            Vec2::new(va.location.x, va.location.y),
+            Vec2::new(vb.location.x, vb.location.y),
+        );
+        let ring = match curve::bulge_arc(a, b, va.bulge) {
+            Some((c, r, start, sweep)) => {
+                let k = (sweep.abs() / (std::f64::consts::PI / 24.0))
+                    .ceil()
+                    .max(2.0) as usize;
+                let at = |rr: f64, t: f64| Vec2::new(c.x + rr * t.cos(), c.y + rr * t.sin());
+                let (ro, ri) = (r + h, (r - h).max(0.0));
+                let mut ring: Vec<Vec2> = (0..=k)
+                    .map(|j| at(ro, start + sweep * j as f64 / k as f64))
+                    .collect();
+                if ri > 1e-12 {
+                    ring.extend(
+                        (0..=k)
+                            .rev()
+                            .map(|j| at(ri, start + sweep * j as f64 / k as f64)),
+                    );
+                } else {
+                    ring.push(c);
+                }
+                ring
+            }
+            None => {
+                let l = a.dist(b);
+                if l < 1e-12 {
+                    continue;
+                }
+                let (nx, ny) = (-(b.y - a.y) / l * h, (b.x - a.x) / l * h);
+                vec![
+                    Vec2::new(a.x + nx, a.y + ny),
+                    Vec2::new(b.x + nx, b.y + ny),
+                    Vec2::new(b.x - nx, b.y - ny),
+                    Vec2::new(a.x - nx, a.y - ny),
+                ]
+            }
+        };
+        out.push(Shape::Fill { loops: vec![ring] });
+    }
+    out
 }
 
 /// ATTDEF → 기본값 글자 (블록 안 좌표)
@@ -1303,6 +1423,7 @@ pub fn from_document(doc: &CadDocument) -> Drawing {
         cur_w: None,
         layer_aci: Vec::new(),
         cur_aci: None,
+        arrow_mode: false,
     };
     // 선 종류 무늬 (대시가 있는 것만 — CONTINUOUS 등 실선은 넣지 않는다)
     for lt in doc.line_types.iter() {
@@ -1361,6 +1482,32 @@ pub fn from_document(doc: &CadDocument) -> Drawing {
         c.entity(e, &Affine::IDENTITY, None);
     }
     read_layouts(&mut c);
+    // 치수 스타일 (§61)
+    for s in doc.dim_styles.iter() {
+        c.d.arch.dim_styles.push(crate::arch::DimStyle {
+            name: s.name.clone(),
+            text: s.dimtxt,
+            arrow: s.dimasz,
+            tick: s.dimtsz,
+            exo: s.dimexo,
+            exe: s.dimexe,
+            gap: s.dimgap,
+            scale: s.dimscale,
+            lfac: s.dimlfac,
+            dec: s.dimdec,
+            zin: s.dimzin,
+            lunit: s.dimlunit,
+            tad: s.dimtad,
+            just: s.dimjust,
+            blk: s.dimblk_name.clone(),
+            txsty: s.dimtxsty.clone(),
+            post: s.dimpost.clone(),
+            clrd: s.dimclrd,
+            clre: s.dimclre,
+            clrt: s.dimclrt,
+            dle: s.dimdle,
+        });
+    }
     // 글자 스타일 표 전부 (속성값만 쓰는 스타일도 SHX 로 그릴 수 있게, §59)
     for st in doc.text_styles.iter() {
         if !c

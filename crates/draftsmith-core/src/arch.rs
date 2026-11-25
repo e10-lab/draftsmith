@@ -364,6 +364,79 @@ pub struct Site {
     pub parcel: String,
 }
 
+/// 치수 스타일의 주요 값 (AutoCAD DIMSTYLE, §61). 길이는 축척(DIMSCALE) 곱하기 전
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DimStyle {
+    pub name: String,
+    /// 글자 높이 DIMTXT
+    pub text: f64,
+    /// 화살표 크기 DIMASZ
+    pub arrow: f64,
+    /// 사선(틱) 크기 DIMTSZ (0 이면 화살표)
+    pub tick: f64,
+    /// 치수 보조선 띄움 DIMEXO · 넘김 DIMEXE
+    pub exo: f64,
+    pub exe: f64,
+    /// 글자와 치수선 사이 DIMGAP
+    pub gap: f64,
+    /// 전체 축척 DIMSCALE · 길이 배율 DIMLFAC
+    pub scale: f64,
+    pub lfac: f64,
+    /// 소수 자리 DIMDEC · 0 지우기 DIMZIN · 단위 DIMLUNIT
+    pub dec: i16,
+    pub zin: i16,
+    pub lunit: i16,
+    /// 글자 세로 자리 DIMTAD (0 가운데, 1 위) · 맞춤 DIMJUST
+    pub tad: i16,
+    pub just: i16,
+    /// 화살표 블록 DIMBLK · 글자 스타일 DIMTXSTY · 접두·접미 DIMPOST
+    pub blk: String,
+    pub txsty: String,
+    pub post: String,
+    /// 색 (ACI) 치수선 DIMCLRD · 보조선 DIMCLRE · 글자 DIMCLRT
+    pub clrd: i16,
+    pub clre: i16,
+    pub clrt: i16,
+    /// 치수선 넘김 DIMDLE
+    pub dle: f64,
+}
+
+impl Default for DimStyle {
+    fn default() -> Self {
+        DimStyle {
+            name: String::new(),
+            text: 2.5,
+            arrow: 2.5,
+            tick: 0.0,
+            exo: 0.625,
+            exe: 1.25,
+            gap: 0.625,
+            scale: 1.0,
+            lfac: 1.0,
+            dec: 0,
+            zin: 8,
+            lunit: 2,
+            tad: 1,
+            just: 0,
+            blk: String::new(),
+            txsty: "Standard".into(),
+            post: String::new(),
+            clrd: 0,
+            clre: 0,
+            clrt: 0,
+            dle: 0.0,
+        }
+    }
+}
+
+impl DimStyle {
+    /// 전체 축척 (0 이면 1)
+    pub fn k(&self) -> f64 {
+        if self.scale > 0.0 { self.scale } else { 1.0 }
+    }
+}
+
 /// 치수 종류 (§36)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -418,6 +491,12 @@ pub struct Dim {
     /// 소수 자리 (0 이면 정수, §43)
     #[serde(default)]
     pub precision: u8,
+    /// 치수 스타일 이름 (가져온 도면의 스타일이면 크기·화살표를 그 스타일로, §61)
+    #[serde(default)]
+    pub style: String,
+    /// 화살표 블록 (가져온 치수가 쓰던 것 — 점·사선 등, 블록 정의는 `Drawing::blocks`)
+    #[serde(default)]
+    pub arrow_block: String,
 }
 
 /// 치수의 지금 모양: 두 점, 치수 방향 u·왼쪽 n, 치수선 위 두 점, 값
@@ -743,6 +822,8 @@ pub struct ArchModel {
     pub stairs: Vec<Stair>,
     /// 보 (§52)
     pub beams: Vec<Beam>,
+    /// 가져온 치수 스타일 (§61) — 그리기와 내보내기에 쓴다
+    pub dim_styles: Vec<DimStyle>,
     /// 단면 (§38)
     pub sections: Vec<Section>,
     /// 지금 그리는 층

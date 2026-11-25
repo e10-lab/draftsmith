@@ -245,6 +245,67 @@ fn to_cad(e: &Entity) -> Vec<EntityType> {
 /// DraftSmith 가 만든 글자의 스타일 (맑은 고딕 — 한글이 AutoCAD 에서 깨지지 않게, §60-1)
 pub const DS_STYLE: &str = "DRAFTSMITH";
 
+/// 치수 스타일 이름: 가져온 스타일이면 그대로, 아니면 DRAFTSMITH (§61)
+fn dim_style_of(m: &crate::arch::ArchModel, s: &str) -> String {
+    if !s.is_empty() && m.dim_styles.iter().any(|x| x.name.eq_ignore_ascii_case(s)) {
+        s.to_string()
+    } else {
+        DS_STYLE.to_string()
+    }
+}
+
+/// 치수 스타일 표 (§61): 가져온 스타일의 주요 값을 되쓰고, DraftSmith 치수용 DRAFTSMITH (글자 2.5 × 축척 100, 사선)
+fn dim_styles(doc: &mut CadDocument, m: &crate::arch::ArchModel) {
+    let mut list = m.dim_styles.clone();
+    if !list.iter().any(|x| x.name.eq_ignore_ascii_case(DS_STYLE)) {
+        list.push(crate::arch::DimStyle {
+            name: DS_STYLE.into(),
+            tick: 1.25,
+            scale: 100.0,
+            txsty: DS_STYLE.into(),
+            ..Default::default()
+        });
+    }
+    for s in list {
+        let mut x = acadrust::tables::DimStyle::new(s.name.clone());
+        x.dimtxt = s.text;
+        x.dimasz = s.arrow;
+        x.dimtsz = s.tick;
+        x.dimexo = s.exo;
+        x.dimexe = s.exe;
+        x.dimgap = s.gap;
+        x.dimscale = s.scale;
+        x.dimlfac = s.lfac;
+        x.dimdec = s.dec;
+        x.dimzin = s.zin;
+        x.dimlunit = s.lunit;
+        x.dimtad = s.tad;
+        x.dimjust = s.just;
+        x.dimblk_name = s.blk.clone();
+        x.dimtxsty = if doc.text_styles.get(&s.txsty).is_some() {
+            s.txsty.clone()
+        } else {
+            DS_STYLE.into()
+        };
+        x.dimpost = s.post.clone();
+        x.dimclrd = s.clrd;
+        x.dimclre = s.clre;
+        x.dimclrt = s.clrt;
+        x.dimdle = s.dle;
+        match doc.dim_styles.get_mut(&s.name) {
+            Some(y) => {
+                *y = acadrust::tables::DimStyle {
+                    handle: y.handle,
+                    ..x
+                }
+            }
+            None => {
+                let _ = doc.dim_styles.add(x);
+            }
+        }
+    }
+}
+
 /// 글자 스타일 이름: 가져온 스타일이면 그대로, 아니면 DRAFTSMITH
 fn style_of(d: &Drawing, s: &str) -> String {
     if !s.is_empty() && d.fonts.iter().any(|f| f.style.eq_ignore_ascii_case(s)) {
@@ -367,6 +428,7 @@ pub fn to_document(model: &Drawing) -> CadDocument {
         st.true_type_font = "맑은 고딕".into();
         let _ = doc.text_styles.add(st);
     }
+    dim_styles(&mut doc, &model.arch);
     // 블록 정의
     for b in &model.blocks {
         let h = block_record(&mut doc, &b.name);
@@ -445,6 +507,7 @@ pub fn to_document(model: &Drawing) -> CadDocument {
             };
             let bb = dim.base_mut();
             bb.block_name = name;
+            bb.style_name = dim_style_of(&model.arch, &dm.style);
             bb.actual_measurement = match dm.kind {
                 K::Radius => a.dist(b),
                 K::Diameter => 2.0 * a.dist(b),
@@ -485,6 +548,7 @@ pub fn to_document(model: &Drawing) -> CadDocument {
             }
         };
         let bb = base.base_mut();
+        bb.style_name = dim_style_of(&model.arch, &dm.style);
         bb.definition_point = v3(k.db);
         bb.text_middle_point = v3(k.da.lerp(k.db, 0.5));
         bb.actual_measurement = k.len;
@@ -532,6 +596,7 @@ pub fn all_levels_model(d: &Drawing) -> Drawing {
         active_level: first,
         site: m.site.clone(),
         sections: m.sections.clone(),
+        dim_styles: m.dim_styles.clone(),
         next_id: m.next_id,
         ..Default::default()
     };
@@ -731,6 +796,67 @@ mod tests {
         // 원 반지름 2 를 (1,0)/(1,1) 같은 비스듬한 켤레로 써도 주축 길이는 같아야
         let (major, ratio, _, _) = principal_axes(Vec2::new(3.0, 0.0), Vec2::new(0.0, 1.0));
         assert!((major.x.hypot(major.y) - 3.0).abs() < 1e-9 && (ratio - 1.0 / 3.0).abs() < 1e-9);
+    }
+
+    /// 치수 스타일 왕복 (§61): 스타일 이름·값이 돌아오고, 소수 자리는 스타일 DIMDEC 로
+    #[test]
+    fn dim_styles_round_trip() {
+        use crate::archgen::{ArchReq, apply, new_drawing};
+        let mut ed = crate::edit::Editor::new(new_drawing());
+        apply(
+            &mut ed,
+            ArchReq::Dim {
+                a: [0.0, 0.0],
+                b: [3000.0, 0.0],
+                at: [1500.0, -800.0],
+                text_height: 200.0,
+                arrow: false,
+                plain: true,
+                precision: 0,
+            },
+        )
+        .unwrap();
+        ed.d.arch.dim_styles.push(crate::arch::DimStyle {
+            name: "SDIM-100".into(),
+            text: 2.0,
+            arrow: 0.8,
+            exo: 1.0,
+            exe: 1.0,
+            gap: 1.0,
+            scale: 100.0,
+            dec: 1,
+            ..Default::default()
+        });
+        ed.d.arch.dims[0].style = "SDIM-100".into();
+        for ext in ["dxf", "dwg"] {
+            let dir = std::env::temp_dir().join(format!("dsmith-dst-{}-{ext}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let p = dir.join(format!("d.{ext}"));
+            write(&ed.d, &p).unwrap();
+            let back = crate::import::read_file(&p).unwrap();
+            assert_eq!(back.arch.dims[0].style, "SDIM-100", "{ext}");
+            assert_eq!(back.arch.dims[0].precision, 1, "{ext}");
+            let st = back
+                .arch
+                .dim_styles
+                .iter()
+                .find(|s| s.name == "SDIM-100")
+                .unwrap();
+            assert_eq!((st.scale, st.exe, st.arrow), (100.0, 1.0, 0.8), "{ext}");
+            assert!(
+                back.arch.dim_styles.iter().any(|s| s.name == DS_STYLE),
+                "{ext}"
+            );
+            std::fs::remove_dir_all(&dir).ok();
+        }
+        // 그리기: 보조선이 치수선을 exe × 축척 = 100 넘는다
+        let v = crate::archgen::with_arch(&ed.d).unwrap();
+        let k = ed.d.arch.dims[0].geom(&ed.d.arch).unwrap();
+        assert!(v.entities.iter().any(|e| match e.shape {
+            Shape::Line { a, b } =>
+                (a.dist(k.a) - 100.0).abs() < 1e-6 && (b.dist(k.da) - 100.0).abs() < 1e-6,
+            _ => false,
+        }));
     }
 
     /// 글자 스타일 왕복 (§60-1): 가져온 스타일은 그대로, DraftSmith 글자는 맑은 고딕 스타일
