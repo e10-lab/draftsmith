@@ -25,6 +25,9 @@ pub struct ViewportView {
     pub target: Vec2,
     /// 이 뷰포트에서 얼린 레이어 (도면 레이어 번호)
     pub frozen: Vec<u32>,
+    /// 이 뷰포트가 보여 줄 층 (없으면 시트의 층, §53)
+    #[serde(default)]
+    pub level: Option<u64>,
 }
 
 impl ViewportView {
@@ -298,6 +301,7 @@ mod tests {
                 twist: 0.0,
                 target: Vec2::default(),
                 frozen: Vec::new(),
+                level: None,
             }],
             level: None,
             list: false,

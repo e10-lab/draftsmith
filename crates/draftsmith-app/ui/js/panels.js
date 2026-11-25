@@ -185,6 +185,15 @@ export function renderViewports(app, doc) {
       const [a, b] = num(x);
       if (Number.isFinite(a) && Number.isFinite(b)) send(v.index, { view_center: [a, b] });
     });
+    // 층: 시트 층을 따르거나 뷰포트마다 다른 층 (§53)
+    const lv = el("select");
+    lv.append(new Option("시트 층", "0", false, v.level == null));
+    for (const [id, name] of doc.arch?.levels ?? []) lv.append(new Option(name, String(id), false, v.level === id));
+    lv.addEventListener("change", () => send(v.index, { level: Number(lv.value), fit: Number(lv.value) !== 0 }));
+    dl.append(el("dt", "", "층"));
+    const ldd = el("dd");
+    ldd.append(lv);
+    dl.append(ldd);
     const fit = el("button", "", "모형에 맞춤");
     fit.title = "그 층 모형 전체가 들어오게 가운데와 표준 축척을 맞춥니다";
     fit.addEventListener("click", () => send(v.index, { fit: true }));

@@ -359,6 +359,7 @@ fn state_of(open: &Open, read_ms: f64, added: Vec<usize>) -> Result<DocState, St
                         } else {
                             0.0
                         },
+                        level: v.level,
                     })
                     .collect()
             })
@@ -374,6 +375,8 @@ struct VpInfo {
     size: [f64; 2],
     view_center: [f64; 2],
     scale: f64,
+    /// 뷰포트 제 층 (없으면 시트 층, §53)
+    level: Option<u64>,
 }
 
 /// 새 도면 (기본 레이어)

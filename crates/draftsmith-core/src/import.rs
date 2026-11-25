@@ -1326,6 +1326,7 @@ fn read_layouts(c: &mut Converter) {
                         twist: v.twist_angle,
                         target: v2(&v.view_target),
                         frozen,
+                        level: None,
                     });
                 }
                 e => c.entity(e, &Affine::IDENTITY, None),

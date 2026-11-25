@@ -75,11 +75,35 @@ pub fn model_at_scale(d: &Drawing, level: Option<u64>, scale: f64) -> Drawing {
         .unwrap_or(m)
 }
 
-/// 배치 `i` 를 종이 도면으로 (층이 정해진 시트면 그 층으로 펼쳐서)
+/// 배치 `i` 를 종이 도면으로 (층이 정해진 시트면 그 층으로 펼쳐서).
+/// 뷰포트마다 제 층·축척으로 펼쳐 합친다 — 한 시트에 1 층·2 층 평면을 나란히 둘 수 있다 (§53)
 pub fn compose(d: &Drawing, i: usize) -> Option<Drawing> {
     let lay = d.layouts.get(i)?;
-    let scale = scale_of(lay).unwrap_or(100.0);
-    let mut out = crate::layout::compose(&model_at_scale(d, lay.level, scale), i)?;
+    // 건축 객체가 없으면(가져온 DWG 배치) 펼칠 것이 없으니 한 번에 — 큰 도면을 뷰포트마다 복사하지 않게
+    let mut out = if lay.viewports.is_empty() || d.arch.is_empty() {
+        crate::layout::compose(&model_at_scale(d, lay.level, 100.0), i)?
+    } else {
+        let mut out: Option<Drawing> = None;
+        for v in &lay.viewports {
+            let scale = if v.height > 0.0 {
+                v.view_height / v.height
+            } else {
+                100.0
+            };
+            let mut m = model_at_scale(d, v.level.or(lay.level), scale);
+            let l = m.layouts.get_mut(i)?;
+            l.viewports = vec![v.clone()];
+            l.paper.clear();
+            let part = crate::layout::compose(&m, i)?;
+            match &mut out {
+                None => out = Some(part),
+                Some(o) => merge_into(o, part),
+            }
+        }
+        let mut o = out?;
+        o.entities.extend(lay.paper.iter().cloned());
+        o
+    };
     if lay.list {
         let frame = {
             let mut b = crate::geom::Bbox::EMPTY;
@@ -92,6 +116,45 @@ pub fn compose(d: &Drawing, i: usize) -> Option<Drawing> {
         out.entities.extend(list_table(d, frame, layer));
     }
     Some(out)
+}
+
+/// 다른 층에서 펼친 도면(레이어·선 종류 번호가 다를 수 있음)을 이름으로 맞춰 붙인다
+fn merge_into(o: &mut Drawing, part: Drawing) {
+    let layers: Vec<u32> = part
+        .layers
+        .iter()
+        .map(|l| match o.layers.iter().position(|x| x.name == l.name) {
+            Some(k) => k as u32,
+            None => {
+                o.layers.push(l.clone());
+                (o.layers.len() - 1) as u32
+            }
+        })
+        .collect();
+    let lts: Vec<u16> = part
+        .linetypes
+        .iter()
+        .map(|p| {
+            match o
+                .linetypes
+                .iter()
+                .position(|x| x.name.eq_ignore_ascii_case(&p.name))
+            {
+                Some(k) => k as u16,
+                None => {
+                    o.linetypes.push(p.clone());
+                    (o.linetypes.len() - 1) as u16
+                }
+            }
+        })
+        .collect();
+    for mut e in part.entities {
+        e.layer = layers.get(e.layer as usize).copied().unwrap_or(0);
+        if let Some(l) = &mut e.linetype {
+            l.pattern = lts.get(l.pattern as usize).copied().unwrap_or(l.pattern);
+        }
+        o.entities.push(e);
+    }
 }
 
 /// 뷰포트 고치기 (§35). 없는 값은 그대로
@@ -108,6 +171,8 @@ pub struct VpEdit {
     pub view_center: Option<[f64; 2]>,
     /// 모형(그 층) 전체가 들어오게 가운데·축척을 맞춘다 (표준 축척으로)
     pub fit: bool,
+    /// 보여 줄 층 (0 이면 시트의 층으로 되돌림, §53)
+    pub level: Option<u64>,
 }
 
 /// 표준 축척 (분모)
@@ -119,8 +184,14 @@ pub const SCALES: [f64; 22] = [
 /// 시트 `i` 의 뷰포트 `k` 를 고친 배치
 pub fn edit_viewport(d: &Drawing, i: usize, k: usize, e: &VpEdit) -> Result<Layout, String> {
     let mut lay = d.layouts.get(i).cloned().ok_or("시트가 없습니다")?;
-    let level = lay.level;
     let v = lay.viewports.get_mut(k).ok_or("뷰포트가 없습니다")?;
+    if let Some(l) = e.level {
+        if l != 0 && !d.arch.levels.iter().any(|x| x.id == l) {
+            return Err("없는 층입니다".into());
+        }
+        v.level = (l != 0).then_some(l);
+    }
+    let level = v.level.or(lay.level);
     let scale_now = if v.height > 0.0 {
         v.view_height / v.height
     } else {
@@ -249,6 +320,7 @@ pub fn add_viewport(d: &Drawing, i: usize) -> Result<Layout, String> {
         twist: 0.0,
         target: Vec2::default(),
         frozen: Vec::new(),
+        level: None,
     });
     Ok(lay)
 }
@@ -495,6 +567,7 @@ pub fn make(d: &mut Drawing, req: &SheetReq) -> Result<Layout, String> {
         twist: 0.0,
         target: Vec2::default(),
         frozen: Vec::new(),
+        level: None,
     };
     let name = if req.number.trim().is_empty() {
         req.title.clone()
@@ -509,6 +582,59 @@ pub fn make(d: &mut Drawing, req: &SheetReq) -> Result<Layout, String> {
         level: if req.list { None } else { req.level },
         list: req.list,
     })
+}
+
+#[cfg(test)]
+mod per_level_tests {
+    use super::*;
+
+    /// 뷰포트마다 다른 층 (§53): 1 층 시트에 뷰포트를 더해 2 층으로 바꾸면 두 층 벽이 다 나온다
+    #[test]
+    fn viewport_levels() {
+        let d = crate::demo::demo_building().unwrap();
+        let i = d
+            .layouts
+            .iter()
+            .position(|l| l.level == Some(d.arch.levels[0].id))
+            .unwrap();
+        let wall_layer = |o: &Drawing| {
+            o.entities
+                .iter()
+                .filter(|e| o.layers[e.layer as usize].name == "A-WALL")
+                .count()
+        };
+        let one = wall_layer(&compose(&d, i).unwrap());
+        let mut d2 = d.clone();
+        d2.layouts[i] = add_viewport(&d2, i).unwrap();
+        let k = d2.layouts[i].viewports.len() - 1;
+        let l2 = d2.arch.levels[1].id;
+        d2.layouts[i] = edit_viewport(
+            &d2,
+            i,
+            k,
+            &VpEdit {
+                level: Some(l2),
+                fit: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(d2.layouts[i].viewports[k].level, Some(l2));
+        let two = wall_layer(&compose(&d2, i).unwrap());
+        assert!(two > one, "{one} → {two}");
+        // 0 이면 시트 층으로 되돌림
+        d2.layouts[i] = edit_viewport(
+            &d2,
+            i,
+            k,
+            &VpEdit {
+                level: Some(0),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(d2.layouts[i].viewports[k].level, None);
+    }
 }
 
 #[cfg(test)]
