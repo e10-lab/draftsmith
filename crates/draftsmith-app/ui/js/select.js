@@ -27,6 +27,7 @@ export class SelectTool {
     this.app = app;
     this.panel = panel;
     this.ids = [];
+    this.uids = null;    // 고른 객체의 고유 번호 (§84)
     this.arch = null;    // { what, id, at }
     this.info = null;    // { props, outline }
     this.box = null;
@@ -44,6 +45,7 @@ export class SelectTool {
     this.grip = null;
     this.grips = [];
     this.ids = [];
+    this.uids = null;
     this.arch = null;
     this.info = null;
     this.render();
@@ -123,6 +125,7 @@ export class SelectTool {
   /** 고르기 결과(pick_at) 하나를 그대로 보여 준다 (간격 띄우기 대상 표시 등) */
   showPick(r) {
     this.ids = [];
+    this.uids = null;
     this.arch = null;
     this.info = { props: r.props, outline: r.outline };
     this.render();
@@ -152,6 +155,7 @@ export class SelectTool {
     }
     if (r.arch) {
       this.ids = [];
+      this.uids = null;
       this.arch = { what: r.arch[0], id: r.arch[1], at: m };
       this.info = { props: r.props, outline: r.outline };
       return this.render();
@@ -163,6 +167,7 @@ export class SelectTool {
       if (i >= 0) this.ids.splice(i, 1);
       else this.ids.push(r.index);
     } else this.ids = [r.index];
+    this.uids = null;
     await this.update();
   }
 
@@ -200,12 +205,14 @@ export class SelectTool {
     }
     this.arch = null;
     this.ids = add ? [...new Set([...this.ids, ...found])] : found;
+    this.uids = null;
     await this.update();
   }
 
   async set(ids) {
     this.arch = null;
     this.ids = [...ids];
+    this.uids = null;
     await this.update();
   }
 
@@ -219,6 +226,11 @@ export class SelectTool {
       else this.clear();
       return this.render();
     }
+    // 편집 뒤: 고유 번호로 같은 객체를 다시 찾는다 — 앞 객체가 빠져 목록 번호가 밀려도 (§84)
+    if (this.uids?.some((u) => u !== 0)) {
+      const found = await this.app.invoke("indices_of_uids", { uids: this.uids }).catch(() => null);
+      if (found) this.ids = found;
+    }
     this.ids = this.ids.filter((i) => i < (this.app.doc?.entities ?? 0));
     if (!this.ids.length) {
       this.info = null;
@@ -226,6 +238,7 @@ export class SelectTool {
     }
     try {
       this.info = await this.app.invoke("selection_info", { ids: this.ids, tol: 1 / this.app.v.ppu });
+      this.uids = this.info.uids;
     } catch {
       this.info = null;
     }

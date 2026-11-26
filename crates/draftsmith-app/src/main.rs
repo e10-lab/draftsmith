@@ -1210,6 +1210,8 @@ fn grips(
 struct SelOut {
     outline: Vec<[f64; 4]>,
     props: Vec<(String, String)>,
+    /// 고른 모형 객체의 고유 번호 (§84) — 편집 뒤 목록 번호가 밀려도 같은 객체를 다시 찾는다. 모형 객체가 아니면 0
+    uids: Vec<u64>,
 }
 
 #[tauri::command]
@@ -1250,7 +1252,39 @@ fn selection_info(ids: Vec<usize>, tol: f64, state: State<'_, AppState>) -> Resu
             ),
         ]
     };
-    Ok(SelOut { outline, props })
+    let uids = ids
+        .iter()
+        .map(|&i| {
+            open.ed
+                .as_ref()
+                .filter(|_| open.sheet.is_none())
+                .and_then(|e| e.d.entities.get(i))
+                .map(|x| x.id)
+                .unwrap_or(0)
+        })
+        .collect();
+    Ok(SelOut {
+        outline,
+        props,
+        uids,
+    })
+}
+
+/// 고유 번호 → 지금 모형 목록 번호 (없어진 객체는 빠진다, §84)
+#[tauri::command]
+fn indices_of_uids(uids: Vec<u64>, state: State<'_, AppState>) -> Result<Vec<usize>, String> {
+    let open = state.lock().map_err(err)?;
+    let Some(e) = open.ed.as_ref().filter(|_| open.sheet.is_none()) else {
+        return Ok(Vec::new());
+    };
+    let want: std::collections::HashSet<u64> = uids.iter().copied().filter(|u| *u != 0).collect();
+    Ok(e.d
+        .entities
+        .iter()
+        .enumerate()
+        .filter(|(_, x)| want.contains(&x.id))
+        .map(|(i, _)| i)
+        .collect())
 }
 
 /// PDF 출력 설정 (화면에서)
@@ -1748,6 +1782,7 @@ fn main() {
             set_space,
             display_data,
             text_data,
+            indices_of_uids,
             arch_tables,
             export_table_csv,
             model_3d,
