@@ -3,9 +3,9 @@
 // 누르기: 가장 가까운 객체 하나 (Shift 면 더하고 빼기). 끌기: 왼→오른쪽은 창 고르기(상자 안에 다 든 것),
 // 오른→왼쪽은 걸침 고르기(상자에 걸친 것도). 고른 모형 객체 번호는 ids, 건축 객체(벽·문·창·실·그리드)는 arch.
 // 속성 칸: 모형 객체는 레이어·색을 바꿀 수 있고, 건축 객체는 「:고침」 붙은 값을 바로 고친다.
+import { tok } from "./tokens.js";
 
 const PICK_PX = 6;
-const HILITE = "#4aa8ff";
 const ACI = [
   ["", "레이어 색 (ByLayer)"], ["1", "빨강 (1)"], ["2", "노랑 (2)"], ["3", "초록 (3)"], ["4", "하늘 (4)"],
   ["5", "파랑 (5)"], ["6", "자홍 (6)"], ["7", "흰색·검정 (7)"], ["8", "회색 (8)"], ["9", "밝은 회색 (9)"],
@@ -373,7 +373,7 @@ export class SelectTool {
   paint(ctx, toScreen) {
     if (this.grip && this.cur) {
       const [ax, ay] = toScreen(this.grip.x, this.grip.y), [bx, by] = toScreen(...this.cur);
-      ctx.strokeStyle = HILITE;
+      ctx.strokeStyle = tok("--ov-hilite");
       ctx.lineWidth = 1.5;
       ctx.setLineDash([6, 4]);
       ctx.beginPath();
@@ -385,14 +385,14 @@ export class SelectTool {
     for (const g of this.grips) {
       const [x, y] = toScreen(g.x, g.y);
       const on = this.grip && g.k === this.grip.k && g.id === this.grip.id && String(g.arch) === String(this.grip.arch);
-      ctx.fillStyle = on ? "#ff5a4a" : HILITE;
-      ctx.strokeStyle = "#fff";
+      ctx.fillStyle = on ? tok("--ov-hot") : tok("--ov-hilite");
+      ctx.strokeStyle = tok("--ov-grip-line");
       ctx.lineWidth = 1;
       ctx.fillRect(x - 4, y - 4, 8, 8);
       ctx.strokeRect(x - 4, y - 4, 8, 8);
     }
     if (this.info) {
-      ctx.strokeStyle = HILITE;
+      ctx.strokeStyle = tok("--ov-hilite");
       ctx.lineWidth = 3;
       ctx.globalAlpha = 0.85;
       ctx.beginPath();
@@ -407,8 +407,8 @@ export class SelectTool {
     if (this.box) {
       const [ax, ay] = toScreen(...this.box.a), [bx, by] = toScreen(...this.box.b);
       const cross = this.box.crossing;
-      ctx.fillStyle = cross ? "rgba(80,200,120,0.12)" : "rgba(74,168,255,0.12)";
-      ctx.strokeStyle = cross ? "#50c878" : HILITE;
+      ctx.fillStyle = cross ? tok("--ov-cross-fill") : tok("--ov-hilite-fill");
+      ctx.strokeStyle = cross ? tok("--ov-cross") : tok("--ov-hilite");
       ctx.lineWidth = 1;
       ctx.setLineDash(cross ? [5, 4] : []);
       ctx.fillRect(Math.min(ax, bx), Math.min(ay, by), Math.abs(bx - ax), Math.abs(by - ay));

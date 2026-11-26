@@ -8,8 +8,8 @@
 //   enter()            빈 Enter·오른쪽 누르기 — 마치기
 //   paint(ctx, ts)     미리보기 그리기
 // 편집은 app.apply(req) 하나로 Rust `edit` 명령에 보낸다 (되돌리기 한 단계 = 요청 하나).
+import { tok } from "./tokens.js";
 
-const PREVIEW = "#4aa8ff";
 const fmt = (v) => (Math.round(v * 10) / 10).toLocaleString("ko-KR");
 
 // ── 모양 JSON (Rust `Shape` serde 꼴) ─────────────────────────────────────────
@@ -45,7 +45,7 @@ const dist = (a, b) => Math.hypot(b[0] - a[0], b[1] - a[1]);
 
 function strokePath(ctx, ts, pts, closed = false, dash = false) {
   if (pts.length < 2) return;
-  ctx.strokeStyle = PREVIEW;
+  ctx.strokeStyle = tok("--ov-preview");
   ctx.lineWidth = 1.5;
   ctx.setLineDash(dash ? [6, 4] : []);
   ctx.beginPath();
@@ -62,9 +62,9 @@ function label(ctx, ts, at, text) {
   const [x, y] = ts(at[0], at[1]);
   ctx.font = `600 12px "Pretendard", sans-serif`;
   const w = ctx.measureText(text).width + 10;
-  ctx.fillStyle = "rgba(20,22,26,0.85)";
+  ctx.fillStyle = tok("--ov-tip-bg");
   ctx.fillRect(x - w / 2, y - 22, w, 18);
-  ctx.fillStyle = "#fff";
+  ctx.fillStyle = tok("--ov-tip-text");
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillText(text, x, y - 13);
@@ -179,7 +179,7 @@ class CircleTool extends Tool {
     if (!this.pts.length || !this.cur) return;
     const [c] = this.pts, r = dist(c, this.cur);
     const [x, y] = ts(c[0], c[1]);
-    ctx.strokeStyle = PREVIEW;
+    ctx.strokeStyle = tok("--ov-preview");
     ctx.lineWidth = 1.5;
     ctx.beginPath();
     ctx.arc(x, y, r * this.app.v.ppu, 0, Math.PI * 2);
@@ -226,7 +226,7 @@ class ArcTool extends Tool {
       const k = arc3(this.pts[0], this.pts[1], this.cur);
       if (!k) return;
       const [x, y] = ts(k.o[0], k.o[1]);
-      ctx.strokeStyle = PREVIEW;
+      ctx.strokeStyle = tok("--ov-preview");
       ctx.lineWidth = 1.5;
       ctx.beginPath();
       // 화면은 y 가 아래라 각도 부호가 뒤집힌다
@@ -270,7 +270,7 @@ class TextTool extends Tool {
     if (!p) return;
     const [x, y] = ts(p[0], p[1]);
     const h = this.app.textHeight * this.app.v.ppu;
-    ctx.strokeStyle = PREVIEW;
+    ctx.strokeStyle = tok("--ov-preview");
     ctx.strokeRect(x, y - h, Math.max(h * 3, 12), h);
   }
 }
@@ -431,7 +431,7 @@ class ModifyTool extends Tool {
   ghost(ctx, ts, m) {
     const o = this.app.select.info?.outline;
     if (!o) return;
-    ctx.strokeStyle = PREVIEW;
+    ctx.strokeStyle = tok("--ov-preview");
     ctx.globalAlpha = 0.7;
     ctx.lineWidth = 1;
     ctx.beginPath();
@@ -680,7 +680,7 @@ class ArcWallTool extends Tool {
       const k = arc3(this.pts[0], this.pts[1], this.cur);
       if (!k) return;
       const [x, y] = ts(k.o[0], k.o[1]);
-      ctx.strokeStyle = PREVIEW;
+      ctx.strokeStyle = tok("--ov-preview");
       ctx.lineWidth = 1.5;
       const h = this.app.wallThickness / 2;
       for (const r of [k.r - h, k.r + h]) {
@@ -719,7 +719,7 @@ class OpeningTool extends Tool {
   paint(ctx, ts) {
     if (!this.cur) return;
     const [x, y] = ts(...this.cur), r = (this.width / 2) * this.app.v.ppu;
-    ctx.strokeStyle = PREVIEW;
+    ctx.strokeStyle = tok("--ov-preview");
     ctx.setLineDash([4, 3]);
     ctx.beginPath();
     ctx.arc(x, y, r, 0, Math.PI * 2);
@@ -1176,7 +1176,7 @@ class InsertTool extends Tool {
   paint(ctx, ts) {
     if (!this.name || !this.cur) return;
     const [x, y] = ts(...this.cur);
-    ctx.strokeStyle = PREVIEW;
+    ctx.strokeStyle = tok("--ov-preview");
     ctx.strokeRect(x - 6, y - 6, 12, 12);
   }
 }

@@ -2,6 +2,7 @@
 //
 // 도면은 Rust 가 들고 있고 (편집 엔진), 화면은 상태(DocState)와 표시 데이터만 받는다. 편집은 app.apply(req)
 // 하나로 `edit` 명령에 보내고, 돌아온 상태로 옆 칸·탭·되돌리기 단추를 다시 그린다 (구현 노트 §18·§25).
+import { tok } from "./tokens.js";
 import { Viewer } from "./viewer.js";
 import { Snapper } from "./snapper.js";
 import { SelectTool } from "./select.js";
@@ -198,16 +199,16 @@ const host = {
       const v = vpDrag?.index === v0.index ? vpDrag : v0;
       const [ax, ay] = ts(v.center[0] - v.size[0] / 2, v.center[1] - v.size[1] / 2);
       const [bx, by] = ts(v.center[0] + v.size[0] / 2, v.center[1] + v.size[1] / 2);
-      ctx.strokeStyle = v === vpDrag ? "rgba(74,168,255,1)" : "rgba(74,168,255,0.7)";
+      ctx.strokeStyle = v === vpDrag ? tok("--ov-viewport-on") : tok("--ov-viewport");
       ctx.lineWidth = v === vpDrag ? 2 : 1;
       ctx.setLineDash([5, 4]);
       ctx.strokeRect(Math.min(ax, bx), Math.min(ay, by), Math.abs(bx - ax), Math.abs(by - ay));
       ctx.setLineDash([]);
       // 모서리 손잡이
-      ctx.fillStyle = "rgba(74,168,255,0.9)";
+      ctx.fillStyle = tok("--ov-viewport-grip");
       for (const [x, y] of [[ax, ay], [bx, ay], [bx, by], [ax, by]]) ctx.fillRect(x - 3, y - 3, 6, 6);
       if (v === vpDrag) {
-        ctx.fillStyle = "rgba(74,168,255,1)";
+        ctx.fillStyle = tok("--ov-viewport-on");
         ctx.font = "12px sans-serif";
         ctx.fillText(`${Math.round(v.size[0])} × ${Math.round(v.size[1])} mm`, Math.min(ax, bx) + 4, Math.min(ay, by) - 6);
       }

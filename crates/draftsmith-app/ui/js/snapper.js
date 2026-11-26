@@ -6,10 +6,10 @@
 //   @dx,dy   기준점에서 상대
 //   @d<각    기준점에서 거리 d, 각도(도)
 //   d        기준점에서 커서 쪽으로 거리 d (직접 거리 입력)
+import { tok } from "./tokens.js";
 
 const SNAP_PX = 12;
 const SNAP_NAMES = ["끝점", "중간점", "중심", "사분점", "삽입점"];
-const COLOR = "#ffd24a";
 
 export class Snapper {
   constructor(viewer, invoke) {
@@ -101,7 +101,7 @@ export class Snapper {
     if (!this.snap || !this.on) return;
     const [x, y] = toScreen(this.snap.x, this.snap.y);
     const r = 6;
-    ctx.strokeStyle = COLOR;
+    ctx.strokeStyle = tok("--ov-snap");
     ctx.lineWidth = 2;
     ctx.beginPath();
     switch (this.snap.kind) {
@@ -113,7 +113,7 @@ export class Snapper {
     }
     ctx.stroke();
     ctx.font = `11px "Pretendard", sans-serif`;
-    ctx.fillStyle = COLOR;
+    ctx.fillStyle = tok("--ov-snap");
     ctx.textAlign = "left";
     ctx.textBaseline = "top";
     ctx.fillText(SNAP_NAMES[this.snap.kind] ?? "", x + 9, y + 7);
