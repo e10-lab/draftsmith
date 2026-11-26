@@ -50,9 +50,12 @@ pub fn to_bytes(d: &Drawing) -> Result<Vec<u8>, String> {
             .map_err(|e| e.to_string())?;
         z.write_all(&serde_json::to_vec_pretty(&m).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
-        z.start_file("drawing.json", opt)
+        // 한 번에 만들어 통째로 쓴다 — 압축 스트림에 잘게 쓰면 실무 도면(블록 정의 JSON 54 MB)에서 2 초.
+        // 압축 수준 3: 기본(6)과 크기는 거의 같고(13.6 / 13.3 MB) 시간은 반 (§80)
+        let json = serde_json::to_vec(d).map_err(|e| e.to_string())?;
+        z.start_file("drawing.json", opt.compression_level(Some(3)))
             .map_err(|e| e.to_string())?;
-        serde_json::to_writer(&mut z, d).map_err(|e| e.to_string())?;
+        z.write_all(&json).map_err(|e| e.to_string())?;
         z.finish().map_err(|e| e.to_string())?;
     }
     Ok(buf.into_inner())
