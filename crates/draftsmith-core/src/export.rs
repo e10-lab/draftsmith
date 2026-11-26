@@ -715,6 +715,7 @@ pub fn all_levels_model(d: &Drawing) -> Drawing {
         if !bb.is_empty() {
             let layer = out.layer_index("A-ANNO-TEXT");
             out.entities.push(Entity {
+                id: 0,
                 layer,
                 color: None,
                 aci: None,
@@ -831,6 +832,7 @@ mod tests {
     fn wide_polyline_round_trip() {
         let mut d = crate::archgen::new_drawing();
         let ent = |shape: Shape| Entity {
+            id: 0,
             layer: 0,
             color: None,
             aci: None,
@@ -956,6 +958,7 @@ mod tests {
             ttf: String::new(),
         });
         let t = |v: &str, style: &str| Entity {
+            id: 0,
             layer: 0,
             color: None,
             aci: None,

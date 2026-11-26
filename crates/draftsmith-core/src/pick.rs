@@ -353,6 +353,10 @@ pub fn properties(d: &Drawing, i: usize) -> Vec<(String, String)> {
         Shape::Text(_) => "문자",
     };
     out.push(("종류".into(), kind.into()));
+    // 객체 고유 번호 (§82) — DWG·DXF 에서 온 객체는 그 핸들(16 진)과 같다
+    if e.id != 0 {
+        out.push(("고유 번호".into(), format!("{:X}", e.id)));
+    }
     if let Some(l) = d.layers.get(e.layer as usize) {
         out.push(("레이어".into(), l.name.clone()));
     }
@@ -614,6 +618,7 @@ mod tests {
         let layer = d.layer_index("A-WALL");
         let mut put = |shape| {
             d.entities.push(Entity {
+                id: 0,
                 layer,
                 aci: None,
                 weight: None,

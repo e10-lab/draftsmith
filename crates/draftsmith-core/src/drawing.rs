@@ -21,6 +21,10 @@ pub struct Layer {
 /// 작도 객체 하나
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Entity {
+    /// 객체 고유 번호 (§82). 0 은 「아직 없음」 — 편집기가 작업을 실행할 때 매긴다. 블록 정의 안 객체·보이는 도면이
+    /// 만든 객체는 0. 옛 파일은 0 으로 읽혀 열 때 매긴다
+    #[serde(default)]
+    pub id: u64,
     /// [`Drawing::layers`] 의 번호
     pub layer: u32,
     /// 객체 자체 색. `None` 이면 레이어 색
@@ -492,6 +496,8 @@ pub struct Drawing {
     pub blocks: Vec<Block>,
     /// 가져온 글자들이 쓰던 글꼴 (글자 스타일별, §57) — 화면·PDF 는 모두 내장 글꼴로 대체
     pub fonts: Vec<FontUse>,
+    /// 다음에 줄 객체 고유 번호 (§82). 모든 객체 번호보다 크다
+    pub next_id: u64,
 }
 
 /// 글자 스타일 하나가 쓰던 글꼴과 글자 수 (§57)
@@ -828,6 +834,28 @@ impl Drawing {
             visible: true,
         });
         (self.layers.len() - 1) as u32
+    }
+
+    /// 번호가 없거나(0) 앞 객체와 겹치는 객체에 새 고유 번호를 준다 (§82). 새로 준 수
+    pub fn assign_ids(&mut self) -> usize {
+        let max = self.entities.iter().map(|e| e.id).max().unwrap_or(0);
+        self.next_id = self.next_id.max(max + 1).max(1);
+        let mut seen = std::collections::HashSet::with_capacity(self.entities.len());
+        let mut n = 0;
+        for e in self.entities.iter_mut() {
+            if e.id == 0 || !seen.insert(e.id) {
+                e.id = self.next_id;
+                self.next_id += 1;
+                seen.insert(e.id);
+                n += 1;
+            }
+        }
+        n
+    }
+
+    /// 객체 고유 번호 → 지금 목록 번호
+    pub fn index_of(&self, id: u64) -> Option<usize> {
+        (id != 0).then(|| self.entities.iter().position(|e| e.id == id))?
     }
 
     pub fn bbox(&self) -> Bbox {

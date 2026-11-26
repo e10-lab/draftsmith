@@ -350,6 +350,7 @@ fn list_table(d: &Drawing, frame: crate::geom::Bbox, layer: u32) -> Vec<Entity> 
     }
     let mut put = |shape: Shape, weight: Option<u16>| {
         out.push(Entity {
+            id: 0,
             layer,
             color: None,
             aci: Some(7),
@@ -443,6 +444,7 @@ pub fn make(d: &mut Drawing, req: &SheetReq) -> Result<Layout, String> {
     let mut paper = Vec::new();
     let mut put = |shape: Shape, weight: Option<u16>| {
         paper.push(Entity {
+            id: 0,
             layer,
             color: None,
             aci: Some(7),

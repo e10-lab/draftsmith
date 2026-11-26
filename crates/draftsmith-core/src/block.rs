@@ -38,6 +38,7 @@ fn expand_into(d: &Drawing, e: &Entity, depth: usize, out: &mut Vec<Entity>) {
     // 속성값 글자 (참조의 레이어·색으로, §46)
     for a in attrs {
         out.push(Entity {
+            id: 0,
             layer: e.layer,
             color: e.color,
             aci: e.aci,

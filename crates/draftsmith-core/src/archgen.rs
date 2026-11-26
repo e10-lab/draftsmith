@@ -188,6 +188,7 @@ impl Gen<'_> {
         };
         self.out.push((
             Entity {
+                id: 0,
                 layer,
                 color: None,
                 aci: None,
@@ -4231,6 +4232,7 @@ mod tests {
         let mut d = new_drawing();
         let i = d.layer_index("벽체");
         d.entities.push(Entity {
+            id: 0,
             layer: i,
             color: None,
             aci: None,

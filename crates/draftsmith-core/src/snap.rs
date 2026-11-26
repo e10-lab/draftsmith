@@ -312,6 +312,7 @@ mod tests {
         let layer = d.layer_index("0");
         let mut put = |shape| {
             d.entities.push(Entity {
+                id: 0,
                 layer,
                 aci: None,
                 weight: None,

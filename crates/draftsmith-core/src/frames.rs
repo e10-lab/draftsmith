@@ -189,6 +189,7 @@ mod tests {
             closed: true,
         };
         let ent = |shape: Shape| Entity {
+            id: 0,
             layer: 0,
             color: None,
             aci: None,

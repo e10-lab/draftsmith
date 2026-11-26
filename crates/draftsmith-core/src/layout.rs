@@ -278,6 +278,7 @@ mod tests {
         let mut d = Drawing::default();
         let layer = d.layer_index("0");
         d.entities.push(Entity {
+            id: 0,
             layer,
             aci: None,
             weight: None,

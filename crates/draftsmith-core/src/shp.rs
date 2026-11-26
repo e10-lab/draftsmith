@@ -220,6 +220,7 @@ pub fn read(path: &Path) -> Result<Drawing, String> {
     let txt = d.layer_index("지적-지번");
     d.layers[txt as usize].color = [0, 255, 255];
     let ent = |layer: u32, shape: Shape| Entity {
+        id: 0,
         layer,
         color: None,
         aci: None,

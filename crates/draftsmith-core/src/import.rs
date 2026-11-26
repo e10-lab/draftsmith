@@ -153,6 +153,8 @@ struct Converter<'a> {
     cur_aci: Option<u8>,
     /// 치수 화살표 블록을 정의하는 중 — 폭 있는 폴리선을 채움으로 (§61)
     arrow_mode: bool,
+    /// 지금 넣는 맨 위 객체의 DWG·DXF 핸들 — 객체 고유 번호로 (§82)
+    cur_handle: u64,
 }
 
 impl<'a> Converter<'a> {
@@ -245,6 +247,7 @@ impl<'a> Converter<'a> {
             _ => self.cur_w,
         };
         self.d.entities.push(Entity {
+            id: self.cur_handle,
             layer,
             aci: self.cur_aci,
             weight,
@@ -263,6 +266,10 @@ impl<'a> Converter<'a> {
         let common = e.common();
         if common.invisible {
             return;
+        }
+        // 맨 위 객체(블록 펼침 안이 아닌)는 핸들을 고유 번호로 — 다시 가져와도 같은 번호 (§82)
+        if inherit.is_none() {
+            self.cur_handle = common.handle.value();
         }
         let (layer, color) = self.style(common, inherit);
         let shape = match e {
@@ -937,6 +944,7 @@ impl<'a> Converter<'a> {
         for p in points {
             self.d.inserts += 1;
             self.d.entities.push(Entity {
+                id: 0,
                 layer,
                 aci: self.cur_aci,
                 weight: self.cur_w,
@@ -1472,6 +1480,7 @@ pub fn from_document(doc: &CadDocument) -> Drawing {
         layer_aci: Vec::new(),
         cur_aci: None,
         arrow_mode: false,
+        cur_handle: 0,
     };
     // 선 종류 무늬 (대시가 있는 것만 — CONTINUOUS 등 실선은 넣지 않는다)
     for lt in doc.line_types.iter() {
@@ -1578,6 +1587,8 @@ pub fn from_document(doc: &CadDocument) -> Drawing {
             });
         }
     }
+    // 한 객체가 여럿으로 펼쳐져 겹친 번호·번호 없는 객체에 새 번호 (§82)
+    c.d.assign_ids();
     c.d
 }
 
@@ -1713,6 +1724,27 @@ mod tests {
         let t = crate::archgen::tables(&d);
         let g = t.tables.iter().find(|x| x.name == "글꼴").unwrap();
         assert!(g.rows[0][4].contains("SHX"));
+    }
+
+    /// 객체 고유 번호는 DWG·DXF 핸들 (§82): 다시 가져와도 같고, 겹치지 않는다
+    #[test]
+    fn entity_ids_from_handles() {
+        let mut doc = CadDocument::new();
+        for k in 0..3 {
+            let l = acadrust::entities::Line::from_points(
+                Vector3::new(k as f64, 0.0, 0.0),
+                Vector3::new(k as f64, 5.0, 0.0),
+            );
+            doc.add_entity(EntityType::Line(l)).unwrap();
+        }
+        let handles: Vec<u64> = doc.entities().map(|e| e.common().handle.value()).collect();
+        assert!(handles.iter().all(|h| *h != 0));
+        let a = from_document(&doc);
+        let b = from_document(&doc);
+        let ids = |d: &Drawing| d.entities.iter().map(|e| e.id).collect::<Vec<_>>();
+        assert_eq!(ids(&a), handles);
+        assert_eq!(ids(&a), ids(&b));
+        assert!(a.next_id > *handles.iter().max().unwrap());
     }
 
     #[test]

@@ -188,6 +188,7 @@ mod tests {
 
     fn ent(shape: Shape) -> Entity {
         Entity {
+            id: 0,
             layer: 0,
             color: None,
             aci: None,

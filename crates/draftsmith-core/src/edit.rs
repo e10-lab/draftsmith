@@ -107,8 +107,44 @@ fn revert(d: &mut Drawing, op: &Op) {
     }
 }
 
+/// 새 작업에 객체 고유 번호를 매기며 실행한다 (§82): 더하는 객체는 번호가 없거나 이미 있는 번호면 새 번호, 바꾸는
+/// 객체는 원래 번호를 잇는다. 묶음은 하나씩 매기며 실행. 매긴 작업이 기록되므로 되돌리기·다시 하기·재생에서 번호가 같다
+fn run_new(d: &mut Drawing, op: &mut Op) {
+    match op {
+        Op::Batch(ops) => ops.iter_mut().for_each(|o| run_new(d, o)),
+        Op::Add { start, items } => {
+            let keep = (*start).min(d.entities.len());
+            // 번호를 가진 항목(복사·남에게서 온 작업)이 있을 때만 겹침을 본다
+            let used: std::collections::HashSet<u64> = if items.iter().any(|e| e.id != 0) {
+                d.entities[..keep].iter().map(|e| e.id).collect()
+            } else {
+                Default::default()
+            };
+            let mut mine = std::collections::HashSet::new();
+            for e in items.iter_mut() {
+                if e.id == 0 || used.contains(&e.id) || !mine.insert(e.id) {
+                    e.id = d.next_id.max(1);
+                    d.next_id = e.id + 1;
+                    mine.insert(e.id);
+                } else {
+                    d.next_id = d.next_id.max(e.id + 1);
+                }
+            }
+            apply(d, op);
+        }
+        Op::Replace { items } => {
+            for (_, old, new) in items.iter_mut() {
+                new.id = old.id;
+            }
+            apply(d, op);
+        }
+        _ => apply(d, op),
+    }
+}
+
 impl Editor {
-    pub fn new(d: Drawing) -> Editor {
+    pub fn new(mut d: Drawing) -> Editor {
+        d.assign_ids();
         Editor {
             d,
             ..Default::default()
@@ -116,8 +152,8 @@ impl Editor {
     }
 
     /// 작업을 실행하고 기록한다
-    pub fn run(&mut self, op: Op) {
-        apply(&mut self.d, &op);
+    pub fn run(&mut self, mut op: Op) {
+        run_new(&mut self.d, &mut op);
         self.journal.push(op.clone());
         self.undo.push(op);
         self.redo.clear();
@@ -126,7 +162,7 @@ impl Editor {
 
     /// 다른 곳(공동작업)에서 온 작업: 실행하되 되돌리기 기록에는 넣지 않는다
     pub fn run_remote(&mut self, op: &Op) {
-        apply(&mut self.d, op);
+        run_new(&mut self.d, &mut op.clone());
         self.dirty = true;
     }
 
@@ -298,6 +334,7 @@ impl Editor {
             v.iter().map(|&i| (i, self.d.entities[i].clone())).collect();
         let start = self.d.entities.len() - removed.len();
         let insert = Entity {
+            id: 0,
             layer,
             color: None,
             aci: None,
@@ -615,6 +652,7 @@ impl Editor {
         let items: Vec<Entity> = shapes
             .into_iter()
             .map(|shape| Entity {
+                id: 0,
                 layer,
                 color: None,
                 aci: None,
@@ -941,6 +979,64 @@ mod tests {
         let mut d = Drawing::default();
         d.layer_index("0");
         Editor::new(d)
+    }
+
+    /// 객체 고유 번호 (§82): 열 때·더할 때·복사할 때 새 번호, 고치거나 옮기면 그대로, 되돌려도 같은 번호
+    #[test]
+    fn entity_ids() {
+        let line = |x: f64| Shape::Line {
+            a: Vec2::new(x, 0.0),
+            b: Vec2::new(x + 10.0, 0.0),
+        };
+        let ids = |e: &Editor| e.d.entities.iter().map(|x| x.id).collect::<Vec<_>>();
+        // 열 때: 번호 없는 객체와 겹치는 번호에 새 번호
+        let mut d = Drawing::default();
+        let l0 = d.layer_index("0");
+        for (id, x) in [(0, 0.0), (7, 20.0), (7, 40.0)] {
+            d.entities.push(Entity {
+                id,
+                layer: l0,
+                color: None,
+                aci: None,
+                linetype: None,
+                weight: None,
+                shape: line(x),
+            });
+        }
+        let mut e = Editor::new(d);
+        assert_eq!(ids(&e), vec![8, 7, 9]);
+        assert_eq!(e.d.next_id, 10);
+        // 더하기·복사는 새 번호, 옮기기는 그대로
+        e.add_shapes(vec![line(60.0)]);
+        e.copy(&[0, 1], &Affine::translate(0.0, 5.0));
+        e.transform(&[1], &Affine::translate(1.0, 0.0));
+        assert_eq!(ids(&e), vec![8, 7, 9, 10, 11, 12]);
+        assert_eq!(e.d.index_of(12), Some(5));
+        // 지우고 되돌리면 같은 번호, 다시 하면 다시 빠진다
+        e.remove(&[1]);
+        assert_eq!(ids(&e), vec![8, 9, 10, 11, 12]);
+        e.undo();
+        assert_eq!(ids(&e), vec![8, 7, 9, 10, 11, 12]);
+        e.redo();
+        e.undo();
+        e.undo(); // 옮기기 되돌림 — 번호 그대로
+        assert_eq!(ids(&e), vec![8, 7, 9, 10, 11, 12]);
+        // 자르기처럼 한 객체가 여럿이 되면 첫 조각은 그 번호, 나머지는 새 번호
+        let r = e.reshape(vec![(0, vec![line(0.0), line(3.0), line(6.0)])]);
+        assert_eq!(e.d.entities[0].id, 8);
+        let more: Vec<u64> = e.d.entities[r].iter().map(|x| x.id).collect();
+        assert_eq!(more, vec![13, 14]);
+        // 파일로 저장했다 열어도 같은 번호
+        let back = crate::docfile::from_bytes(&crate::docfile::to_bytes(&e.d).unwrap()).unwrap();
+        let e2 = Editor::new(back);
+        assert_eq!(ids(&e2), ids(&e));
+        assert_eq!(e2.d.next_id, e.d.next_id);
+        // 다른 편집기에서 온 작업은 같은 번호로 재생
+        let mut a = Editor::new(e.d.clone());
+        let mut b = Editor::new(e.d.clone());
+        a.add_shapes(vec![line(99.0)]);
+        b.merge(a.history());
+        assert_eq!(ids(&a), ids(&b));
     }
 
     #[test]

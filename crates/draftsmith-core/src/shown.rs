@@ -265,6 +265,7 @@ impl ShownCache {
             arch,
             blocks,
             fonts,
+            next_id,
         } = d;
         out.code_page.clone_from(code_page);
         out.skipped.clone_from(skipped);
@@ -273,6 +274,7 @@ impl ShownCache {
         out.recovered.clone_from(recovered);
         out.current_layer = *current_layer;
         out.fonts.clone_from(fonts);
+        out.next_id = *next_id;
         if fresh {
             out.blocks = blocks.clone();
         }
@@ -344,6 +346,7 @@ mod tests {
 
     fn ent(layer: u32, shape: Shape) -> Entity {
         Entity {
+            id: 0,
             layer,
             color: None,
             aci: None,

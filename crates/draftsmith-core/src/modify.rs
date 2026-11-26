@@ -958,6 +958,7 @@ mod wide_edit_tests {
     #[test]
     fn trim_extend_offset_keep_width() {
         let ent = |shape: Shape| Entity {
+            id: 0,
             layer: 0,
             color: None,
             aci: None,
@@ -1042,6 +1043,7 @@ mod tests {
             entities: shapes
                 .into_iter()
                 .map(|shape| Entity {
+                    id: 0,
                     layer: 0,
                     color: None,
                     aci: None,
