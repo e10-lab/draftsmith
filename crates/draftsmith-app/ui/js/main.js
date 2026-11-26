@@ -67,6 +67,18 @@ const tables = new TablesDrawer($("tables"), app);
 /** Tauri 바이너리 응답을 ArrayBuffer 로. 플랫폼에 따라 ArrayBuffer·Uint8Array·숫자 배열(JSON 대체 경로)로 온다.
  *  숫자 배열이면 느린 경로라 상태 막대에 알린다 (구현 노트 §6). */
 let slowPath = false;
+let binaryProbe = null;
+/** 바이너리 응답이 ArrayBuffer 로 오는가 (앱을 띄운 뒤 한 번 시험, §70) */
+function binaryOk() {
+  binaryProbe ??= invoke("probe_binary").then((r) => r instanceof ArrayBuffer || ArrayBuffer.isView(r), () => false);
+  return binaryProbe;
+}
+function fromB64(s) {
+  const bin = atob(s);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out.buffer;
+}
 function toBuffer(v) {
   if (v instanceof ArrayBuffer) return v;
   if (ArrayBuffer.isView(v)) return v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength);
@@ -270,7 +282,16 @@ app.onSelect = () => {
 async function redraw(keepView = false) {
   const t = performance.now();
   // 편집 뒤(보던 자리 그대로)에는 바뀐 객체만 부분 갱신될 수 있다 (§68)
-  const [buf, textBuf] = (await Promise.all([invoke(keepView && viewer.hasData ? "display_update" : "display_data"), invoke("text_data")])).map(toBuffer);
+  const update = keepView && viewer.hasData;
+  let buf, textBuf;
+  if (await binaryOk()) {
+    [buf, textBuf] = (await Promise.all([invoke(update ? "display_update" : "display_data"), invoke("text_data")])).map(toBuffer);
+  } else {
+    // 바이너리가 숫자 배열로 오는 환경: base64 글로 받아 푼다 (숫자 배열보다 수십 배 빠름, §70)
+    const [a, b] = await invoke("display_b64", { update });
+    [buf, textBuf] = [fromB64(a), fromB64(b)];
+    slowPath = true;
+  }
   const transfer = performance.now() - t;
   const upload = viewer.load(buf, textBuf, { keepView });
   return { transfer, upload, mb: (buf.byteLength + textBuf.byteLength) / 1e6 };
@@ -356,7 +377,7 @@ async function open(path) {
         (st.inserts ? ` (블록 참조 ${fmt(st.inserts)} 개)` : "") +
         (st.recovered ? " · 깨진 곳이 있어 복구해서 읽음" : "") +
         ` · 읽기 ${ms(st.read_ms)} · ` +
-        `전달 ${ms(t.transfer)} (${t.mb.toFixed(1)} MB${slowPath ? ", 느린 경로" : ""}) · 올리기 ${ms(t.upload)}`,
+        `전달 ${ms(t.transfer)} (${t.mb.toFixed(1)} MB${slowPath ? ", base64" : ""}) · 올리기 ${ms(t.upload)}`,
     );
     loadRecent();
   } catch (e) {

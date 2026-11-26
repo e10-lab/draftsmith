@@ -1477,6 +1477,35 @@ fn display_update(state: State<'_, AppState>) -> Result<Response, String> {
     ))
 }
 
+/// 바이너리 응답이 화면에 ArrayBuffer 로 오는지 시험하는 4 바이트 (§70)
+#[tauri::command]
+fn probe_binary() -> Response {
+    Response::new(vec![68, 83, 66, 49])
+}
+
+/// 표시 데이터를 base64 글로 (바이너리가 숫자 배열로 오는 환경용, §70). `update` 면 `display_update` 와 같은 내용
+#[tauri::command]
+fn display_b64(update: bool, state: State<'_, AppState>) -> Result<(String, String), String> {
+    use base64::Engine as _;
+    let mut open = state.lock().map_err(err)?;
+    let open = &mut *open;
+    let d = open
+        .view
+        .as_ref()
+        .or(open.ed.as_ref().map(|e| &e.d))
+        .ok_or("열린 도면이 없습니다")?;
+    let s = display::segments_cached(d, &mut open.seg_cache);
+    let bytes = if update {
+        open.seg_cache
+            .patch_bytes(&s)
+            .unwrap_or_else(|| s.to_bytes())
+    } else {
+        s.to_bytes()
+    };
+    let e = base64::engine::general_purpose::STANDARD;
+    Ok((e.encode(bytes), e.encode(display::texts(d))))
+}
+
 /// 문자 표시 데이터 (바이너리, 형식은 `draftsmith_core::display::texts`)
 #[tauri::command]
 fn text_data(state: State<'_, AppState>) -> Result<Response, String> {
@@ -1662,6 +1691,8 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             set_shx_folder,
+            probe_binary,
+            display_b64,
             display_update,
             export_frames_pdf,
             count_text,

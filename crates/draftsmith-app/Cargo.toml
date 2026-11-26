@@ -12,6 +12,8 @@ draftsmith-core = { path = "../draftsmith-core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rfd = "0.17"
+# 바이너리 IPC 가 숫자 배열로 오는 환경에서 표시 데이터를 base64 글로 (§70)
+base64 = "0.22"
 tauri = { version = "2.12", features = [] }
 
 [build-dependencies]
