@@ -321,6 +321,21 @@ impl Step {
             *c.get(2).unwrap_or(&0.0),
         ])
     }
+    /// 3D 방향 (단위)
+    fn dir3(&self, v: Option<&V>) -> Option<[f64; 3]> {
+        let (n, a) = self.get(v?.r()?)?;
+        if n != "IFCDIRECTION" {
+            return None;
+        }
+        let c: Vec<f64> = a.first()?.list().iter().filter_map(V::n).collect();
+        let d = [
+            *c.first()?,
+            *c.get(1).unwrap_or(&0.0),
+            *c.get(2).unwrap_or(&0.0),
+        ];
+        let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        (l > 1e-12).then(|| [d[0] / l, d[1] / l, d[2] / l])
+    }
     fn dir(&self, v: Option<&V>) -> Option<Vec2> {
         let (n, a) = self.get(v?.r()?)?;
         if n != "IFCDIRECTION" {
@@ -452,6 +467,116 @@ impl Reader {
     }
 
     /// 몸체 항목 → (바닥 다각형(놓인 자리 안 좌표), 높이). 원은 다각형으로
+    /// 돌출 몸체를 3D 로 (제품 자리 안): (단면 꼭짓점들, 돌출 벡터 — 길이 포함). 돌출 자리 축이 기울어진 몸체
+    /// (가로로 밀어 낸 보 등)용 (§78)
+    fn solid3(&self, item: usize, depth: usize) -> Option<(Vec<[f64; 3]>, [f64; 3])> {
+        if depth > 16 {
+            return None;
+        }
+        let (n, a) = self.st.get(item)?;
+        match n {
+            "IFCEXTRUDEDAREASOLID" => {
+                let (o, x, y, z) = match a.get(1).and_then(V::r).and_then(|i| self.st.get(i)) {
+                    Some(("IFCAXIS2PLACEMENT3D", pa)) => {
+                        let p = pa
+                            .first()
+                            .and_then(V::r)
+                            .and_then(|i| self.st.point(i))
+                            .unwrap_or([0.0; 3]);
+                        let z = self.st.dir3(pa.get(1)).unwrap_or([0.0, 0.0, 1.0]);
+                        let x0 = self.st.dir3(pa.get(2)).unwrap_or(if z[2].abs() < 0.9 {
+                            [0.0, 0.0, 1.0]
+                        } else {
+                            [1.0, 0.0, 0.0]
+                        });
+                        // x 를 z 에 수직으로
+                        let k = x0[0] * z[0] + x0[1] * z[1] + x0[2] * z[2];
+                        let x = [x0[0] - k * z[0], x0[1] - k * z[1], x0[2] - k * z[2]];
+                        let l = (x[0] * x[0] + x[1] * x[1] + x[2] * x[2]).sqrt().max(1e-12);
+                        let x = [x[0] / l, x[1] / l, x[2] / l];
+                        let y = [
+                            z[1] * x[2] - z[2] * x[1],
+                            z[2] * x[0] - z[0] * x[2],
+                            z[0] * x[1] - z[1] * x[0],
+                        ];
+                        ([p[0] * self.k, p[1] * self.k, p[2] * self.k], x, y, z)
+                    }
+                    _ => ([0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]),
+                };
+                let d = self.st.dir3(a.get(2)).unwrap_or([0.0, 0.0, 1.0]);
+                let h = self.len(a.get(3)).unwrap_or(0.0).abs();
+                let world = |u: f64, v: f64, w: f64| {
+                    [
+                        u * x[0] + v * y[0] + w * z[0],
+                        u * x[1] + v * y[1] + w * z[1],
+                        u * x[2] + v * y[2] + w * z[2],
+                    ]
+                };
+                let dv = world(d[0] * h, d[1] * h, d[2] * h);
+                let ring = self.profile(a.first()?.r()?)?;
+                let pts = ring
+                    .into_iter()
+                    .map(|q| {
+                        let w = world(q.x, q.y, 0.0);
+                        [o[0] + w[0], o[1] + w[1], o[2] + w[2]]
+                    })
+                    .collect();
+                Some((pts, dv))
+            }
+            "IFCBOOLEANCLIPPINGRESULT" | "IFCBOOLEANRESULT" => {
+                self.solid3(a.get(1)?.r()?, depth + 1)
+            }
+            "IFCMAPPEDITEM" => {
+                let map = a.first()?.r()?;
+                let origin = self.axis(self.st.arg(map, 0).and_then(V::r));
+                let rep = self.st.arg(map, 1)?.r()?;
+                for it in self.st.arg(rep, 3)?.list() {
+                    if let Some((pts, dv)) = it.r().and_then(|i| self.solid3(i, depth + 1)) {
+                        let mv = |p: [f64; 3]| {
+                            let q = origin.at(Vec2::new(p[0], p[1]));
+                            [q.x, q.y, p[2] + origin.z]
+                        };
+                        let r = origin.rot(Vec2::new(dv[0], dv[1]));
+                        return Some((pts.into_iter().map(mv).collect(), [r.x, r.y, dv[2]]));
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// 가로로 밀어 낸 보의 (세계 시작·끝, 폭, 춤). 돌출이 거의 수평일 때만 (§78)
+    fn beam_axis(&mut self, args: &[V]) -> Option<(Vec2, Vec2, f64, f64)> {
+        let pl = self.product_place(args);
+        let reps = self.reps(args);
+        let body = reps
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case("Body"))
+            .or(reps.first())?
+            .1;
+        let (pts, dv) = self.solid3(body, 0)?;
+        let len = (dv[0] * dv[0] + dv[1] * dv[1] + dv[2] * dv[2]).sqrt();
+        let flat = dv[0].hypot(dv[1]);
+        if len < 1.0 || flat < 0.95 * len || pts.is_empty() {
+            return None;
+        }
+        let u = Vec2::new(dv[0] / flat, dv[1] / flat);
+        let v = Vec2::new(-u.y, u.x);
+        let n = pts.len() as f64;
+        let c = Vec2::new(
+            pts.iter().map(|p| p[0]).sum::<f64>() / n,
+            pts.iter().map(|p| p[1]).sum::<f64>() / n,
+        );
+        let side: Vec<f64> = pts.iter().map(|p| p[0] * v.x + p[1] * v.y).collect();
+        let zs: Vec<f64> = pts.iter().map(|p| p[2]).collect();
+        let span = |s: &[f64]| {
+            s.iter().cloned().fold(f64::MIN, f64::max) - s.iter().cloned().fold(f64::MAX, f64::min)
+        };
+        let end = Vec2::new(c.x + dv[0], c.y + dv[1]);
+        Some((pl.at(c), pl.at(end), span(&side), span(&zs)))
+    }
+
     fn footprint(&self, item: usize, depth: usize) -> Option<(Vec<Vec2>, f64)> {
         if depth > 16 {
             return None;
@@ -582,6 +707,19 @@ impl Reader {
             {
                 let arc = p.len() == 3 && self.is_arc(it);
                 return Some((pl.at(p[0]), pl.at(*p.last()?), arc.then(|| pl.at(p[1]))));
+            }
+        }
+        None
+    }
+
+    /// 'Axis' 표현의 꼭짓점들 (세계)
+    fn axis_points(&mut self, args: &[V]) -> Option<Vec<Vec2>> {
+        let pl = self.product_place(args);
+        for (n, it) in self.reps(args) {
+            if n.eq_ignore_ascii_case("Axis")
+                && let Some(p) = self.curve(it)
+            {
+                return Some(p.into_iter().map(|q| pl.at(q)).collect());
             }
         }
         None
@@ -740,6 +878,51 @@ fn run(r: &mut Reader, args: &[V]) -> Option<Run> {
         risers,
         height: h,
     })
+}
+
+/// 돌음 계단의 (중심, 중심선 위 시작점, 회전각) (§78). 중심선이 같은 호 여러 개(세 점씩 잇는 꼭짓점)면 그대로,
+/// 없으면 몸체 점들로: 중심은 둘레 상자 가운데, 회전은 각도 사이 가장 큰 틈을 뺀 나머지 (반시계), 시작은 틈 다음
+fn spiral_of(axis: Option<&[Vec2]>, ring: Option<&[Vec2]>) -> Option<(Vec2, Vec2, f64)> {
+    if let Some(p) = axis
+        && p.len() >= 3
+        && p.len() % 2 == 1
+    {
+        let probe = Wall {
+            a: p[0],
+            b: p[2],
+            bulge: Wall::bulge_through(p[0], p[1], p[2]),
+            ..Default::default()
+        };
+        if let Some((c, _, _, half)) = probe.arc() {
+            return Some((c, p[0], half * ((p.len() - 1) / 2) as f64));
+        }
+    }
+    let ring = ring?;
+    let mut b = crate::geom::Bbox::EMPTY;
+    ring.iter().for_each(|q| b.add(*q));
+    let c = b.center();
+    let mut ang: Vec<f64> = ring.iter().map(|q| (q.y - c.y).atan2(q.x - c.x)).collect();
+    ang.sort_by(f64::total_cmp);
+    let n = ang.len();
+    let (mut gap, mut after) = (0.0, ang[0]);
+    for k in 0..n {
+        let (x, y) = (
+            ang[k],
+            if k + 1 < n {
+                ang[k + 1]
+            } else {
+                ang[0] + std::f64::consts::TAU
+            },
+        );
+        if y - x > gap {
+            gap = y - x;
+            after = y;
+        }
+    }
+    let ds = ring.iter().map(|q| q.dist(c));
+    let rc = (ds.clone().fold(f64::MAX, f64::min) + ds.fold(0.0, f64::max)) / 2.0;
+    let start = Vec2::new(c.x + rc * after.cos(), c.y + rc * after.sin());
+    Some((c, start, std::f64::consts::TAU - gap))
 }
 
 /// 두 직선 (점 + 방향) 의 교점
@@ -1177,6 +1360,20 @@ pub fn read(text: &str) -> Result<Drawing, String> {
             .map(|(i, a)| (i, a.to_vec()))
             .collect();
     for (i, a) in &beams {
+        // 가로로 밀어 낸 몸체 (Revit 등): 돌출 방향이 보 길이, 단면이 폭·춤 (§78)
+        if let Some((pa, pb, w, h)) = r.beam_axis(a) {
+            let level = level_for(&mut r, *i, a);
+            let id = m.new_id();
+            m.beams.push(Beam {
+                id,
+                level,
+                a: pa,
+                b: pb,
+                width: if w > 1.0 { w } else { 300.0 },
+                depth: if h > 1.0 { h } else { 600.0 },
+            });
+            continue;
+        }
         let Some((ring, h, _)) = r.body(a) else {
             continue;
         };
@@ -1221,8 +1418,10 @@ pub fn read(text: &str) -> Result<Drawing, String> {
             .collect();
     let mut used = std::collections::HashSet::new();
     let mut runs: Vec<(usize, Vec<Run>)> = Vec::new();
+    let mut spirals: Vec<usize> = Vec::new();
     for (i, a) in &stairs {
         if a.get(8).and_then(V::e) == Some("SPIRAL_STAIR") {
+            spirals.push(*i);
             continue;
         }
         let mut fl: Vec<(f64, Run)> = Vec::new();
@@ -1243,6 +1442,64 @@ pub fn read(text: &str) -> Result<Drawing, String> {
             fl.push(f);
         }
         runs.push((*i, fl));
+    }
+    // 돌음 계단 (§78): 계단 자신과 줄기에서 중심선 호·몸체·단 수를 찾는다
+    for i in spirals {
+        let args = r.st.get(i).map(|(_, a)| a.to_vec()).unwrap_or_default();
+        let mut cands = vec![args.clone()];
+        for c in children.get(&i).cloned().unwrap_or_default() {
+            if let Some(("IFCSTAIRFLIGHT", ca)) = r.st.get(c).map(|(n, a)| (n, a.to_vec())) {
+                used.insert(c);
+                cands.push(ca);
+            }
+        }
+        let (mut axis, mut ring, mut risers) = (None, None, None);
+        for c in &cands {
+            if axis.is_none() {
+                axis = r.axis_points(c).filter(|p| p.len() >= 3);
+            }
+            if ring.is_none() {
+                ring = r.body(c).map(|b| b.0).filter(|p| p.len() >= 3);
+            }
+            if risers.is_none() {
+                risers = c
+                    .get(8)
+                    .and_then(V::n)
+                    .filter(|n| *n >= 1.0)
+                    .map(|n| n.round() as u32);
+            }
+        }
+        let level = level_for(&mut r, i, &args);
+        let Some((center, start, sw)) = spiral_of(axis.as_deref(), ring.as_deref()) else {
+            continue;
+        };
+        let rc = center.dist(start);
+        let width = ring
+            .as_ref()
+            .map(|p| {
+                let ds: Vec<f64> = p.iter().map(|q| q.dist(center)).collect();
+                ds.iter().cloned().fold(f64::MIN, f64::max)
+                    - ds.iter().cloned().fold(f64::MAX, f64::min)
+            })
+            .filter(|w| *w > 1.0 && *w < 2.0 * rc)
+            .unwrap_or(rc);
+        let lh = m
+            .levels
+            .iter()
+            .find(|l| l.id == level)
+            .map(|l| l.height)
+            .unwrap_or(3000.0);
+        let id = m.new_id();
+        m.stairs.push(Stair {
+            id,
+            level,
+            a: center,
+            b: start,
+            width,
+            risers: risers.unwrap_or(((lh / 175.0).round() as u32).max(2)),
+            mid: None,
+            spiral: Some(sw),
+        });
     }
     let loose: Vec<(usize, Vec<V>)> =
         r.st.of(&["IFCSTAIRFLIGHT"])
@@ -1367,9 +1624,14 @@ pub fn read(text: &str) -> Result<Drawing, String> {
         }
     }
 
-    if m.walls.is_empty() && m.rooms.is_empty() && m.columns.is_empty() {
+    if m.walls.is_empty()
+        && m.rooms.is_empty()
+        && m.columns.is_empty()
+        && m.stairs.is_empty()
+        && m.beams.is_empty()
+    {
         return Err(
-            "읽을 수 있는 벽·실·기둥이 없습니다 (평면 몸체가 밀어 올린 단면이 아니면 건너뜁니다)"
+            "읽을 수 있는 벽·실·기둥·계단·보가 없습니다 (평면 몸체가 밀어 올린 단면이 아니면 건너뜁니다)"
                 .into(),
         );
     }
@@ -1655,5 +1917,100 @@ ENDSEC;END-ISO-10303-21;";
         let lo = if w.a.y < w.b.y { w.a } else { w.b };
         assert!(lo.dist(Vec2::new(10000.0 - 100.0, 0.0)) < 1e-6, "{w:?}");
         assert_eq!(w.height, Some(2700.0));
+    }
+
+    /// 돌음 계단 왕복 (§78): 중심·시작점·폭·단 수·회전각이 같다 (반 바퀴 넘게)
+    #[test]
+    fn spiral_stair_round_trip() {
+        let mut d = crate::archgen::new_drawing();
+        let m = &mut d.arch;
+        let lv = m.ensure_level();
+        let sid = m.new_id();
+        m.stairs.push(Stair {
+            id: sid,
+            level: lv,
+            a: Vec2::new(5000.0, 5000.0),
+            b: Vec2::new(6200.0, 5000.0),
+            width: 1000.0,
+            risers: 15,
+            mid: None,
+            spiral: Some(1.5 * std::f64::consts::PI),
+        });
+        let text = crate::ifc::write(m, "돌음");
+        assert!(text.contains("IFCARCINDEX") && text.contains(".SPIRAL_STAIR."));
+        let back = read(&text).unwrap();
+        assert_eq!(back.arch.stairs.len(), 1, "{:?}", back.arch.stairs);
+        let (x, y) = (&m.stairs[0], &back.arch.stairs[0]);
+        assert!(x.a.dist(y.a) < 1e-3 && x.b.dist(y.b) < 1e-3, "{y:?}");
+        assert!((x.width - y.width).abs() < 1e-3, "{}", y.width);
+        assert_eq!(y.risers, 15);
+        assert!(
+            (x.spiral.unwrap() - y.spiral.unwrap()).abs() < 1e-6,
+            "{:?}",
+            y.spiral
+        );
+        // 시계 방향도
+        m.stairs[0].spiral = Some(-0.75 * std::f64::consts::PI);
+        let back = read(&crate::ifc::write(m, "돌음")).unwrap();
+        assert!((back.arch.stairs[0].spiral.unwrap() + 0.75 * std::f64::consts::PI).abs() < 1e-6);
+    }
+
+    /// 중심선 없는 돌음 계단 몸체: 각도 틈으로 회전 범위를 짐작한다 (§78)
+    #[test]
+    fn spiral_from_body_only() {
+        let c = Vec2::new(100.0, 200.0);
+        let sw = 1.5 * std::f64::consts::PI;
+        let t0 = 0.3;
+        let mut ring: Vec<Vec2> = (0..=30)
+            .map(|k| {
+                let t = t0 + sw * k as f64 / 30.0;
+                Vec2::new(c.x + 1700.0 * t.cos(), c.y + 1700.0 * t.sin())
+            })
+            .collect();
+        ring.extend((0..=30).rev().map(|k| {
+            let t = t0 + sw * k as f64 / 30.0;
+            Vec2::new(c.x + 700.0 * t.cos(), c.y + 700.0 * t.sin())
+        }));
+        let (cc, start, got) = spiral_of(None, Some(&ring)).unwrap();
+        // 중심은 둘레 상자 가운데라 정확하지 않다 — 회전각과 시작 방향만 대략
+        assert!((got - sw).abs() < 0.15, "{got}");
+        let a = (start.y - cc.y).atan2(start.x - cc.x);
+        assert!((a - t0).abs() < 0.3, "{a}");
+    }
+
+    /// 가로로 밀어 낸 보 (Revit 식): 돌출 방향이 보 길이, 단면이 폭·춤 (§78)
+    #[test]
+    fn horizontal_extruded_beam() {
+        let text = "ISO-10303-21;HEADER;ENDSEC;DATA;
+#1=IFCSIUNIT(*,.LENGTHUNIT.,.MILLI.,.METRE.);
+#2=IFCCARTESIANPOINT((0.,0.,0.));
+#3=IFCAXIS2PLACEMENT3D(#2,$,$);
+#4=IFCLOCALPLACEMENT($,#3);
+#5=IFCBUILDINGSTOREY('a',$,'1F',$,$,#4,$,$,.ELEMENT.,0.);
+#6=IFCCARTESIANPOINT((0.,0.));
+#7=IFCAXIS2PLACEMENT2D(#6,$);
+#8=IFCRECTANGLEPROFILEDEF(.AREA.,$,#7,600.,300.);
+#9=IFCDIRECTION((1.,0.,0.));
+#10=IFCDIRECTION((0.,0.,1.));
+#11=IFCAXIS2PLACEMENT3D(#2,#9,#10);
+#12=IFCDIRECTION((0.,0.,1.));
+#13=IFCEXTRUDEDAREASOLID(#8,#11,#12,5000.);
+#14=IFCSHAPEREPRESENTATION($,'Body','SweptSolid',(#13));
+#15=IFCPRODUCTDEFINITIONSHAPE($,$,(#14));
+#16=IFCCARTESIANPOINT((1000.,2000.,2700.));
+#17=IFCAXIS2PLACEMENT3D(#16,$,$);
+#18=IFCLOCALPLACEMENT(#4,#17);
+#19=IFCBEAM('b',$,'B',$,$,#18,#15,$,.BEAM.);
+#20=IFCRELCONTAINEDINSPATIALSTRUCTURE('c',$,$,$,(#19),#5);
+ENDSEC;END-ISO-10303-21;";
+        let d = read(text).unwrap();
+        assert_eq!(d.arch.beams.len(), 1);
+        let b = &d.arch.beams[0];
+        assert!(b.a.dist(Vec2::new(1000.0, 2000.0)) < 1e-6, "{b:?}");
+        assert!(b.b.dist(Vec2::new(6000.0, 2000.0)) < 1e-6, "{b:?}");
+        assert!(
+            (b.width - 300.0).abs() < 1e-6 && (b.depth - 600.0).abs() < 1e-6,
+            "{b:?}"
+        );
     }
 }

@@ -376,21 +376,54 @@ pub fn write(m: &ArchModel, project: &str) -> String {
                 w.local(Some(pl), a)
             };
             let mut parts = Vec::new();
-            if let Some((ro, ..)) = st.spiral_steps().map(|(ri, ro, s)| (ro, ri, s)) {
-                // 돌음 계단: 바깥 원 몸체만
-                let ring: Vec<Vec2> = (0..24)
-                    .map(|k| {
-                        let t = k as f64 * std::f64::consts::TAU / 24.0;
-                        Vec2::new(st.a.x + ro * t.cos(), st.a.y + ro * t.sin())
-                    })
-                    .collect();
-                let prof = w.polygon(&ring);
-                let shape = w.body(ctx, prof, l.height);
-                items.push(w.add(format!(
-                    "IFCSTAIR('{}',$,{},$,$,#{sp},#{shape},$,.SPIRAL_STAIR.)",
+            if let (Some((ri, ro, _)), Some(sw)) = (st.spiral_steps(), st.spiral) {
+                // 돌음 계단 (§78): 줄기 하나 — 몸체는 안·바깥 호 띠(호 그대로), 중심선은 호 둘(반 바퀴를 넘어도),
+                // 단 수는 줄기의 NumberOfRisers. 한 바퀴를 넘으면 평면 띠가 겹치므로 몸체는 한 바퀴 조금 못 미치게
+                let rc = st.a.dist(st.b);
+                let t0 = (st.b.y - st.a.y).atan2(st.b.x - st.a.x);
+                let at = |rad: f64, t: f64| Vec2::new(rad * t.cos(), rad * t.sin());
+                let band_sw = sw.signum() * sw.abs().min(std::f64::consts::TAU * 0.999);
+                let ts: Vec<f64> = (0..5).map(|k| t0 + band_sw * k as f64 / 4.0).collect();
+                let mut band: Vec<Vec2> = ts.iter().map(|&t| at(ro, t)).collect();
+                band.extend(ts.iter().rev().map(|&t| at(ri, t)));
+                let ax = w.place3(st.a, 0.0, Vec2::new(1.0, 0.0));
+                let lp = w.local(Some(sp), ax);
+                let curve = w.poly_curve(
+                    &band,
+                    &[
+                        &[1, 2, 3],
+                        &[3, 4, 5],
+                        &[5, 6],
+                        &[6, 7, 8],
+                        &[8, 9, 10],
+                        &[10, 1],
+                    ],
+                );
+                let prof = w.add(format!("IFCARBITRARYCLOSEDPROFILEDEF(.AREA.,$,#{curve})"));
+                let axis_pts: Vec<Vec2> =
+                    (0..5).map(|k| at(rc, t0 + sw * k as f64 / 4.0)).collect();
+                let axis = w.poly_curve(&axis_pts, &[&[1, 2, 3], &[3, 4, 5]]);
+                let shape = w.body_axis(ctx, prof, l.height, axis);
+                let tread = rc * sw.abs() / st.risers.max(1) as f64;
+                let flight = w.add(format!(
+                    "IFCSTAIRFLIGHT('{}',$,{},$,$,#{lp},#{shape},$,{},{},{},{},.SPIRAL.)",
+                    guid("flight", st.id * 16),
+                    s("돌음 계단 줄기"),
+                    st.risers,
+                    st.risers.saturating_sub(1),
+                    f(riser),
+                    f(tread)
+                ));
+                let stair = w.add(format!(
+                    "IFCSTAIR('{}',$,{},$,$,#{sp},$,$,.SPIRAL_STAIR.)",
                     guid("stair", st.id),
                     s("돌음 계단")
-                )));
+                ));
+                items.push(stair);
+                w.add(format!(
+                    "IFCRELAGGREGATES('{}',$,$,$,#{stair},(#{flight}))",
+                    guid("agg-stair", st.id)
+                ));
                 continue;
             }
             let Some((flights, landing)) = st.flights() else {
