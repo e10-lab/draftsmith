@@ -5,7 +5,8 @@
 //! manifest.json   {"format":"draftsmith","version":1,"app":"0.1.0","units":4}
 //! drawing.json    도면 모델 (레이어·객체·배치·건축 객체 …)
 //! ```
-//! 계획의 Loro 변경 이력(document.loro)은 공동작업(M5) 단계에서 이 묶음에 더한다.
+//! document.loro  변경 이력 (Loro, §85 — 있으면. 같은 파일에서 갈라진 사본을 합칠 때 쓴다)
+//! ```
 
 use std::io::{Read, Write};
 use std::path::Path;
@@ -35,6 +36,11 @@ pub fn is_dsmith(path: &Path) -> bool {
 
 /// 도면을 .dsmith 바이트로
 pub fn to_bytes(d: &Drawing) -> Result<Vec<u8>, String> {
+    to_bytes_with(d, None)
+}
+
+/// 도면과 변경 이력(있으면)을 .dsmith 바이트로 (§85)
+pub fn to_bytes_with(d: &Drawing, loro: Option<&[u8]>) -> Result<Vec<u8>, String> {
     let mut buf = std::io::Cursor::new(Vec::new());
     {
         let mut z = zip::ZipWriter::new(&mut buf);
@@ -56,6 +62,11 @@ pub fn to_bytes(d: &Drawing) -> Result<Vec<u8>, String> {
         z.start_file("drawing.json", opt.compression_level(Some(3)))
             .map_err(|e| e.to_string())?;
         z.write_all(&json).map_err(|e| e.to_string())?;
+        if let Some(b) = loro {
+            z.start_file("document.loro", opt.compression_level(Some(3)))
+                .map_err(|e| e.to_string())?;
+            z.write_all(b).map_err(|e| e.to_string())?;
+        }
         z.finish().map_err(|e| e.to_string())?;
     }
     Ok(buf.into_inner())
@@ -63,6 +74,11 @@ pub fn to_bytes(d: &Drawing) -> Result<Vec<u8>, String> {
 
 /// .dsmith 바이트에서 도면
 pub fn from_bytes(bytes: &[u8]) -> Result<Drawing, String> {
+    from_bytes_with(bytes).map(|x| x.0)
+}
+
+/// .dsmith 바이트에서 도면과 변경 이력 (없으면 None, §85)
+pub fn from_bytes_with(bytes: &[u8]) -> Result<(Drawing, Option<Vec<u8>>), String> {
     let mut z = zip::ZipArchive::new(std::io::Cursor::new(bytes))
         .map_err(|e| format!("DraftSmith 파일이 아닙니다: {e}"))?;
     let m: Manifest = {
@@ -82,17 +98,33 @@ pub fn from_bytes(bytes: &[u8]) -> Result<Drawing, String> {
             m.version
         ));
     }
-    let mut f = z
-        .by_name("drawing.json")
-        .map_err(|_| "drawing.json 이 없습니다".to_string())?;
-    let mut s = String::new();
-    f.read_to_string(&mut s).map_err(|e| e.to_string())?;
-    serde_json::from_str(&s).map_err(|e| format!("도면 데이터를 읽지 못했습니다: {e}"))
+    let d: Drawing = {
+        let mut f = z
+            .by_name("drawing.json")
+            .map_err(|_| "drawing.json 이 없습니다".to_string())?;
+        let mut s = String::new();
+        f.read_to_string(&mut s).map_err(|e| e.to_string())?;
+        serde_json::from_str(&s).map_err(|e| format!("도면 데이터를 읽지 못했습니다: {e}"))?
+    };
+    let loro = match z.by_name("document.loro") {
+        Ok(mut f) => {
+            let mut b = Vec::new();
+            f.read_to_end(&mut b).map_err(|e| e.to_string())?;
+            Some(b)
+        }
+        Err(_) => None,
+    };
+    Ok((d, loro))
 }
 
 /// 파일로 저장
 pub fn save(d: &Drawing, path: &Path) -> Result<(), String> {
-    let bytes = to_bytes(d)?;
+    save_with(d, None, path)
+}
+
+/// 도면과 변경 이력(있으면)을 파일로 (§85)
+pub fn save_with(d: &Drawing, loro: Option<&[u8]>, path: &Path) -> Result<(), String> {
+    let bytes = to_bytes_with(d, loro)?;
     // 쓰다가 실패해도 원래 파일이 남게: 옆에 쓴 뒤 바꿔치기
     let tmp = path.with_extension("dsmith.tmp");
     std::fs::write(&tmp, bytes).map_err(|e| e.to_string())?;
@@ -102,6 +134,11 @@ pub fn save(d: &Drawing, path: &Path) -> Result<(), String> {
 /// 파일에서 읽기
 pub fn load(path: &Path) -> Result<Drawing, String> {
     from_bytes(&std::fs::read(path).map_err(|e| e.to_string())?)
+}
+
+/// 파일에서 도면과 변경 이력 (§85)
+pub fn load_with(path: &Path) -> Result<(Drawing, Option<Vec<u8>>), String> {
+    from_bytes_with(&std::fs::read(path).map_err(|e| e.to_string())?)
 }
 
 #[cfg(test)]

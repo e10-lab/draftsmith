@@ -7,6 +7,7 @@
 //! - `dsmith ifc 도면.dsmith 출력.ifc` : 건축 객체를 IFC4 로
 //! - `dsmith demo 출력.dsmith` : 검증용 예제 건물
 //! - `dsmith export 도면 출력.dxf|dwg` : DXF·DWG 로 내보내기
+//! - `dsmith merge 갑.dsmith 을.dsmith 결과.dsmith` : 같은 파일에서 갈라진 두 사본 합치기 (변경 이력, §85)
 //! - `dsmith pdf 도면 출력.pdf [--paper A3] [--portrait] [--scale 100] [--mono] [--layout 이름]` : PDF 출력
 
 use std::path::PathBuf;
@@ -56,6 +57,12 @@ enum Cmd {
         /// 모든 층을 나란히 한 파일에
         #[arg(long)]
         all_levels: bool,
+    },
+    /// 같은 파일에서 갈라진 두 .dsmith 사본을 변경 이력으로 합치기 (구현 노트 §85)
+    Merge {
+        a: PathBuf,
+        b: PathBuf,
+        out: PathBuf,
     },
     /// PDF 로 출력
     Pdf {
@@ -397,6 +404,36 @@ fn main() -> Result<()> {
                 draftsmith_core::export::write(&d, &out).map_err(anyhow::Error::msg)?;
             }
             println!("{} 에 썼습니다", out.display());
+        }
+        Cmd::Merge { a, b, out } => {
+            use draftsmith_core::{crdt::Crdt, docfile};
+            let m = anyhow::Error::msg;
+            let (da, la) = docfile::load_with(&a).map_err(m)?;
+            let (db, lb) = docfile::load_with(&b).map_err(m)?;
+            if la.is_none() || lb.is_none() {
+                eprintln!(
+                    "주의: 변경 이력이 없는 파일이 있습니다 — 각자 지운 객체가 되살아나거나 같은 객체가 한쪽 것으로만 남을 수 있습니다"
+                );
+            }
+            let mut ca = match &la {
+                Some(x) => Crdt::from_bytes(x),
+                None => Crdt::new(&da),
+            }
+            .map_err(m)?;
+            let bb = match lb {
+                Some(x) => x,
+                None => Crdt::new(&db).and_then(|c| c.to_bytes()).map_err(m)?,
+            };
+            ca.merge(&bb).map_err(m)?;
+            let d = ca.drawing(&[&da, &db]).map_err(m)?;
+            docfile::save_with(&d, Some(&ca.to_bytes().map_err(m)?), &out).map_err(m)?;
+            println!(
+                "{} 에 썼습니다 (객체 갑 {} · 을 {} → {})",
+                out.display(),
+                da.entities.len(),
+                db.entities.len(),
+                d.entities.len()
+            );
         }
         Cmd::Ifc { file, out } => {
             let d = import::read_file(&file)?;

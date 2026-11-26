@@ -857,6 +857,18 @@ impl Drawing {
         n
     }
 
+    /// 새로 매길 번호의 시작점을 무작위로 크게 띄운다 (§85) — 같은 파일에서 갈라진 사본들이 새 객체에 같은 번호를
+    /// 매기지 않게. `salt` 는 편집기마다 다른 값(시각·프로세스 번호 등). 2^40 안이라 화면(JS 수)·DWG 핸들로 넉넉하다
+    pub fn salt_ids(&mut self, salt: u64) {
+        let mut h = salt.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        h = (h ^ (h >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        h = (h ^ (h >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        h ^= h >> 31;
+        let block = (h % (1 << 22)) << 18; // 2^40 안에서 2^18 개씩
+        let max = self.entities.iter().map(|e| e.id).max().unwrap_or(0);
+        self.next_id = self.next_id.max(max + 1).max(FIRST_ID) + block;
+    }
+
     /// 객체 고유 번호 → 지금 목록 번호
     pub fn index_of(&self, id: u64) -> Option<usize> {
         (id != 0).then(|| self.entities.iter().position(|e| e.id == id))?

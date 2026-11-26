@@ -25,6 +25,8 @@ flate2 = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 zip = { version = "9", default-features = false, features = ["deflate"] }
+# 변경 이력·파일 합치기 (CRDT, 구현 노트 §85) — MIT
+loro = "1.19"
 # 연속지적도 DBF 의 CP949 글자 — (Apache-2.0 OR MIT) AND BSD-3-Clause
 encoding_rs = "0.8"
 

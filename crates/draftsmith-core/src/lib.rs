@@ -10,6 +10,7 @@
 pub mod arch;
 pub mod archgen;
 pub mod block;
+pub mod crdt;
 pub mod ctb;
 pub mod curve;
 pub mod demo;

@@ -51,6 +51,10 @@ struct Open {
     shown_cache: draftsmith_core::shown::ShownCache,
     /// 지금 `view` 가 보이는 도면 캐시가 만든 것인가 (배치를 합친 종이 도면이면 아님)
     view_cached: bool,
+    /// 변경 이력 (Loro, §85) — 처음 저장할 때 만들고 그 뒤로는 바뀐 것만 맞춘다
+    crdt: Option<draftsmith_core::crdt::Crdt>,
+    /// 연 .dsmith 에 들어 있던 변경 이력 (아직 Loro 문서로 풀지 않음)
+    loro_in: Option<Vec<u8>>,
     /// 보이는 도면을 다시 만들 때마다 하나씩 (§74)
     era: u64,
     /// 표시 데이터 캐시를 마지막으로 맞춘 세대. 지금 세대와 같으면 그 원점을 문자 데이터에 쓴다
@@ -422,11 +426,23 @@ struct VpInfo {
 fn new_drawing(state: State<'_, AppState>) -> Result<DocState, String> {
     let mut open = state.lock().map_err(err)?;
     *open = Open {
-        ed: Some(Editor::new(archgen::new_drawing())),
+        ed: Some(editor(archgen::new_drawing())),
         ..Default::default()
     };
     open.refresh();
     state_of(&open, 0.0, Vec::new())
+}
+
+/// 편집기 — 새 번호의 시작점을 띄운다: 같은 파일을 다른 곳에서 고친 사본과 합칠 때 번호가 겹치지 않게 (§85)
+fn editor(d: Drawing) -> Editor {
+    let mut ed = Editor::new(d);
+    let salt = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|t| t.as_nanos() as u64)
+        .unwrap_or(0)
+        ^ ((std::process::id() as u64) << 32);
+    ed.d.salt_ids(salt);
+    ed
 }
 
 /// 도면을 읽어 앱에 들고, 상태를 돌려준다
@@ -439,18 +455,28 @@ async fn open_drawing(
     let t = Instant::now();
     let p = PathBuf::from(&path);
     // 읽기는 시간이 걸릴 수 있어 작업 스레드에서
-    let d = tauri::async_runtime::spawn_blocking(move || import::read_file(&p))
-        .await
-        .map_err(err)?
-        .map_err(err)?;
+    // .dsmith 면 변경 이력(§85)도 함께
+    let (d, loro_in) = tauri::async_runtime::spawn_blocking(move || {
+        if docfile::is_dsmith(&p) {
+            docfile::load_with(&p)
+        } else {
+            import::read_file(&p)
+                .map(|d| (d, None))
+                .map_err(|e| e.to_string())
+        }
+    })
+    .await
+    .map_err(err)?
+    .map_err(err)?;
     let read_ms = t.elapsed().as_secs_f64() * 1000.0;
     remember(&app, &path);
     let mut open = state.lock().map_err(err)?;
     let p = PathBuf::from(&path);
     *open = Open {
-        ed: Some(Editor::new(d)),
+        ed: Some(editor(d)),
         save_path: docfile::is_dsmith(&p).then(|| p.clone()),
         path: Some(p),
+        loro_in,
         ..Default::default()
     };
     open.refresh();
@@ -497,8 +523,18 @@ fn save_drawing(
             p
         }
     };
-    let ed = open.ed.as_mut().ok_or("열린 도면이 없습니다")?;
-    docfile::save(&ed.d, &target)?;
+    // 변경 이력 (§85): 처음이면 연 파일의 이력(없으면 지금 도면)에서 만들고, 바뀐 것만 맞춰 함께 저장
+    let open_ref = &mut *open;
+    let ed = open_ref.ed.as_mut().ok_or("열린 도면이 없습니다")?;
+    if open_ref.crdt.is_none() {
+        open_ref.crdt = Some(match open_ref.loro_in.take() {
+            Some(b) => draftsmith_core::crdt::Crdt::from_bytes(&b)?,
+            None => draftsmith_core::crdt::Crdt::new(&ed.d)?,
+        });
+    }
+    let c = open_ref.crdt.as_mut().unwrap();
+    c.sync(&ed.d)?;
+    docfile::save_with(&ed.d, Some(&c.to_bytes()?), &target)?;
     ed.dirty = false;
     open.save_path = Some(target.clone());
     open.path = Some(target.clone());
