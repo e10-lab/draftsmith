@@ -13,9 +13,37 @@ use crate::geom::Vec2;
 
 type Item = GeomWithData<Rectangle<[f64; 2]>, u32>;
 
-/// 객체 색인
+/// 객체 색인. 나무에는 객체마다 붙인 고정 번호(id)를 넣고 id → 객체 번호 표로 바꾼다.
+/// 가운데 객체가 늘거나 줄어 뒤 번호가 밀려도 나무는 그대로 두고 표만 고친다 (§71).
 pub struct PickIndex {
     tree: RTree<Item>,
+    /// 객체 번호 → (id, 넣은 상자. 꺼진 레이어·빈 상자면 None)
+    slots: Vec<(u32, Option<Item>)>,
+    /// id → 객체 번호 (지운 id 는 u32::MAX)
+    pos: Vec<u32>,
+}
+
+/// 객체의 고르기 상자 (꺼진 레이어·빈 모양이면 None)
+fn item_of(d: &Drawing, e: &crate::drawing::Entity, id: u32) -> Option<Item> {
+    if d.layers.get(e.layer as usize).is_some_and(|l| !l.visible) {
+        return None;
+    }
+    let b = match &e.shape {
+        Shape::Text(t) => {
+            let mut bb = crate::geom::Bbox::EMPTY;
+            for p in text_box(t) {
+                bb.add(p);
+            }
+            bb
+        }
+        s => s.bbox(),
+    };
+    (!b.is_empty()).then(|| {
+        GeomWithData::new(
+            Rectangle::from_corners([b.min.x, b.min.y], [b.max.x, b.max.y]),
+            id,
+        )
+    })
 }
 
 /// 점 p 에서 선분 ab 까지 거리
@@ -169,7 +197,7 @@ impl PickIndex {
             .tree
             .locate_in_envelope_intersecting(env)
             .filter_map(|it| {
-                let i = it.data as usize;
+                let i = self.pos[it.data as usize] as usize;
                 let e = &d.entities[i];
                 let b = match &e.shape {
                     Shape::Text(t) => {
@@ -203,32 +231,54 @@ impl PickIndex {
 
     /// 켜진 레이어 객체만 넣는다
     pub fn build(d: &Drawing) -> PickIndex {
-        let items: Vec<Item> = d
+        let slots: Vec<(u32, Option<Item>)> = d
             .entities
             .iter()
             .enumerate()
-            .filter(|(_, e)| d.layers.get(e.layer as usize).is_none_or(|l| l.visible))
-            .filter_map(|(i, e)| {
-                let b = match &e.shape {
-                    Shape::Text(t) => {
-                        let mut bb = crate::geom::Bbox::EMPTY;
-                        for p in text_box(t) {
-                            bb.add(p);
-                        }
-                        bb
-                    }
-                    s => s.bbox(),
-                };
-                (!b.is_empty()).then(|| {
-                    GeomWithData::new(
-                        Rectangle::from_corners([b.min.x, b.min.y], [b.max.x, b.max.y]),
-                        i as u32,
-                    )
-                })
-            })
+            .map(|(i, e)| (i as u32, item_of(d, e, i as u32)))
             .collect();
         PickIndex {
-            tree: RTree::bulk_load(items),
+            tree: RTree::bulk_load(slots.iter().filter_map(|s| s.1).collect()),
+            pos: (0..d.entities.len() as u32).collect(),
+            slots,
+        }
+    }
+
+    /// 편집 뒤: 옛 객체 `pre..old_end` 가 새 객체 `pre..new_end` 로 바뀌었다 (앞뒤는 같음, §71).
+    /// 바뀐 것이 많으면 새로 만든다. 레이어 켜고 끄기는 부르는 쪽이 새로 만든다.
+    pub fn update(&mut self, d: &Drawing, pre: usize, old_end: usize, new_end: usize) {
+        let (n_old, n_new) = (old_end - pre, new_end - pre);
+        if (n_old + n_new) * 3 > self.slots.len().max(1)
+            || self.pos.len() > 2 * d.entities.len() + 1024
+        {
+            *self = PickIndex::build(d);
+            return;
+        }
+        for (id, it) in &self.slots[pre..old_end] {
+            if let Some(it) = it {
+                self.tree.remove(it);
+            }
+            self.pos[*id as usize] = u32::MAX;
+        }
+        let first = self.pos.len() as u32;
+        let added: Vec<(u32, Option<Item>)> = (pre..new_end)
+            .map(|i| {
+                let id = first + (i - pre) as u32;
+                (id, item_of(d, &d.entities[i], id))
+            })
+            .collect();
+        for (_, it) in &added {
+            if let Some(it) = it {
+                self.tree.insert(*it);
+            }
+        }
+        self.pos.extend((pre..new_end).map(|i| i as u32));
+        self.slots.splice(pre..old_end, added);
+        // 뒤 객체 번호가 밀렸으면 표만 고친다
+        if n_old != n_new {
+            for (k, (id, _)) in self.slots.iter().enumerate().skip(new_end) {
+                self.pos[*id as usize] = k as u32;
+            }
         }
     }
 
@@ -238,7 +288,7 @@ impl PickIndex {
         let tol = radius / 4.0;
         let mut best: Option<(f64, usize)> = None;
         for it in self.tree.locate_in_envelope_intersecting(env) {
-            let i = it.data as usize;
+            let i = self.pos[it.data as usize] as usize;
             let dist = distance(&d.entities[i].shape, p, tol);
             if dist <= radius && best.is_none_or(|(bd, bi)| dist < bd || (dist == bd && i > bi)) {
                 best = Some((dist, i));
@@ -493,6 +543,65 @@ pub fn outline(shape: &Shape, tol: f64, limit: usize) -> Vec<(Vec2, Vec2)> {
     };
     out.truncate(limit);
     out
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+    use crate::snap::SnapCache;
+
+    /// 전체 범위 걸침 고르기 결과 + 객체마다 가운데 점 고르기
+    fn sig(idx: &PickIndex, d: &Drawing) -> (Vec<usize>, Vec<Option<usize>>) {
+        let mut b = crate::geom::Bbox::EMPTY;
+        d.entities.iter().for_each(|e| b.merge(&e.shape.bbox()));
+        let all = idx.in_box(d, &b, false);
+        let picks = d
+            .entities
+            .iter()
+            .step_by(7)
+            .map(|e| idx.pick(d, e.shape.bbox().center(), 50.0))
+            .collect();
+        (all, picks)
+    }
+
+    /// 증분으로 고친 고르기 색인이 새로 만든 것과 같은 답 (§71)
+    #[test]
+    fn update_matches_build() {
+        let d0 = crate::archgen::shown(&crate::demo::demo_building().unwrap());
+        let mut sc = SnapCache::default();
+        sc.update(&d0);
+        let mut idx = PickIndex::build(&d0);
+        let step = |sc: &mut SnapCache, idx: &mut PickIndex, d: &Drawing| {
+            sc.update(d);
+            let (pre, o, n) = sc.diff.expect("증분");
+            idx.update(d, pre, o, n);
+            assert_eq!(sig(idx, d), sig(&PickIndex::build(d), d));
+        };
+        let i = d0
+            .entities
+            .iter()
+            .position(|e| matches!(e.shape, Shape::Line { .. }))
+            .unwrap();
+        // 제자리 고치기
+        let mut d1 = d0.clone();
+        d1.entities[i].shape = d1.entities[i]
+            .shape
+            .transformed(&crate::geom::Affine::translate(10.0, 0.0));
+        step(&mut sc, &mut idx, &d1);
+        // 가운데 지우기 (뒤 번호가 밀린다)
+        let mut d2 = d1.clone();
+        d2.entities.remove(i);
+        step(&mut sc, &mut idx, &d2);
+        // 가운데 두 개 넣기
+        let mut d3 = d2.clone();
+        d3.entities.insert(i, d1.entities[i].clone());
+        d3.entities.insert(i, d0.entities[i].clone());
+        step(&mut sc, &mut idx, &d3);
+        // 끝에 더하기
+        let mut d4 = d3.clone();
+        d4.entities.push(d0.entities[i].clone());
+        step(&mut sc, &mut idx, &d4);
+    }
 }
 
 #[cfg(test)]

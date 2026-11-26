@@ -220,6 +220,21 @@ fn main() -> Result<()> {
                 ms(t6, t7),
                 ms(t7, t8)
             );
+            // 고르기 색인 (§71): 새로 만들기와, 스냅 캐시가 맞춘 범위로 고치기
+            let t9 = Instant::now();
+            let mut pi = draftsmith_core::pick::PickIndex::build(&d);
+            let t10 = Instant::now();
+            let _ = sc.update(&d);
+            if let Some((pre, o, n)) = sc.diff {
+                let t11 = Instant::now();
+                pi.update(&d, pre, o, n);
+                let t12 = Instant::now();
+                println!(
+                    "고르기 색인 {:8.1} ms · 편집 뒤 {:.1} ms",
+                    ms(t9, t10),
+                    ms(t11, t12)
+                );
+            }
         }
         Cmd::Pdf {
             file,

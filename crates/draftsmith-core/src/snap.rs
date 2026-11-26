@@ -181,6 +181,8 @@ pub struct SnapCache {
     index: Option<SnapIndex>,
     /// 마지막에 다시 셈한 객체 수 (측정용)
     pub changed: usize,
+    /// 마지막 갱신에서 바뀐 범위 (앞 같은 수, 옛 끝, 새 끝). 새로 만들었으면 None — 고르기 색인이 같이 쓴다 (§71)
+    pub diff: Option<(usize, usize, usize)>,
 }
 
 impl SnapCache {
@@ -210,6 +212,7 @@ impl SnapCache {
         let n_add: usize = added.iter().map(|v| v.len()).sum();
         let total = self.index.as_ref().map(|i| i.len()).unwrap_or(0);
         self.changed = new_mid.len();
+        self.diff = (!fresh).then_some((pre, old_mid.end, new_mid.end));
         if fresh || (removed + n_add) * 3 > total.max(1) {
             // 새로
             let items: Vec<Vec<Item>> = if fresh {

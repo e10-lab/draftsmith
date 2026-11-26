@@ -66,17 +66,20 @@ impl Open {
                 v
             }),
         };
-        let picks = match self.view.as_ref().or(self.ed.as_ref().map(|e| &e.d)) {
+        match self.view.as_ref().or(self.ed.as_ref().map(|e| &e.d)) {
             Some(d) => {
                 self.snaps.update(d);
-                Some(PickIndex::build(d))
+                // 스냅 캐시가 맞춘 바뀐 범위로 고르기 색인도 바뀐 객체만 (§71)
+                match (self.snaps.diff, self.picks.as_mut()) {
+                    (Some((pre, old_end, new_end)), Some(p)) => p.update(d, pre, old_end, new_end),
+                    _ => self.picks = Some(PickIndex::build(d)),
+                }
             }
             None => {
                 self.snaps = Default::default();
-                None
+                self.picks = None;
             }
-        };
-        self.picks = picks;
+        }
     }
 
     /// 화면 객체 번호 → (모형 객체 번호, 건축 객체 주인). 블록을 펼친 객체는 그 참조 번호로
