@@ -573,16 +573,29 @@ impl Reader {
     }
 
     /// 'Axis' 표현의 두 끝 (세계)
-    fn axis_line(&mut self, args: &[V]) -> Option<(Vec2, Vec2)> {
+    /// 중심선 (시작, 끝, 호면 가운데 점). 세 점 호 하나(IfcIndexedPolyCurve + IfcArcIndex)면 곡선 벽 (§77)
+    fn axis_line(&mut self, args: &[V]) -> Option<(Vec2, Vec2, Option<Vec2>)> {
         let pl = self.product_place(args);
         for (n, it) in self.reps(args) {
             if n.eq_ignore_ascii_case("Axis")
                 && let Some(p) = self.curve(it)
             {
-                return Some((pl.at(p[0]), pl.at(*p.last()?)));
+                let arc = p.len() == 3 && self.is_arc(it);
+                return Some((pl.at(p[0]), pl.at(*p.last()?), arc.then(|| pl.at(p[1]))));
             }
         }
         None
+    }
+
+    /// 다각 곡선이 호 조각 하나뿐인가
+    fn is_arc(&self, id: usize) -> bool {
+        self.st.get(id).is_some_and(|(n, a)| {
+            n == "IFCINDEXEDPOLYCURVE"
+                && a.get(1).is_some_and(|segs| {
+                    let l = segs.list();
+                    l.len() == 1 && matches!(&l[0], V::Typed(t, _) if t == "IFCARCINDEX")
+                })
+        })
     }
 }
 
@@ -889,8 +902,26 @@ pub fn read(text: &str) -> Result<Drawing, String> {
         let body = r.body(a);
         let axis = r.axis_line(a);
         let ob = body.as_ref().and_then(|b| oriented(&b.0));
+        let mut bulge = 0.0;
         let (pa, pb, thick) = match (axis, ob) {
-            (Some((p, q)), ob) => {
+            (Some((p, q, Some(mid))), _) => {
+                // 곡선 벽 (§77): 두께는 몸체 점들이 호 중심에서 떨어진 거리의 폭
+                bulge = Wall::bulge_through(p, mid, q);
+                let probe = Wall {
+                    a: p,
+                    b: q,
+                    bulge,
+                    ..Default::default()
+                };
+                let t = probe.arc().zip(body.as_ref()).and_then(|((c, ..), b)| {
+                    let ds: Vec<f64> = b.0.iter().map(|x| x.dist(c)).collect();
+                    let w = ds.iter().cloned().fold(f64::MIN, f64::max)
+                        - ds.iter().cloned().fold(f64::MAX, f64::min);
+                    (w > 1.0).then_some(w)
+                });
+                (p, q, t.unwrap_or(200.0))
+            }
+            (Some((p, q, None)), ob) => {
                 // 두께: 바닥 모양을 축에 수직으로 잰 폭
                 let t = body
                     .as_ref()
@@ -946,7 +977,7 @@ pub fn read(text: &str) -> Result<Drawing, String> {
             thickness: thick.max(1.0),
             height: body.as_ref().map(|b| b.1).filter(|h| *h > 1.0),
             kind,
-            bulge: 0.0,
+            bulge,
         });
         wall_of.insert(*i, id);
     }
@@ -1006,6 +1037,22 @@ pub fn read(text: &str) -> Result<Drawing, String> {
                 ((lo + hi) / 2.0, hi - lo)
             }
             None => ((pl.o.x - wall.a.x) * u.x + (pl.o.y - wall.a.y) * u.y, 0.0),
+        };
+        // 곡선 벽 (§77): 가운데는 몸체 가운데(없으면 놓인 점)를 중심선 호에 내린 호 길이
+        let center = if wall.arc().is_some() {
+            let c = match &shape {
+                Some((ring, ..)) if !ring.is_empty() => {
+                    let n = ring.len() as f64;
+                    Vec2::new(
+                        ring.iter().map(|p| p.x).sum::<f64>() / n,
+                        ring.iter().map(|p| p.y).sum::<f64>() / n,
+                    )
+                }
+                _ => Vec2::new(pl.o.x, pl.o.y),
+            };
+            wall.param(c).0
+        } else {
+            center
         };
         let width = r
             .len(a.get(9))
@@ -1441,6 +1488,62 @@ mod tests {
             c.at.dist(Vec2::new(3000.0, 2000.0)) < 1e-6 && (c.width - 500.0).abs() < 1e-6,
             "{c:?}"
         );
+    }
+
+    /// 곡선 벽 왕복 (§77): IfcWall 하나(호 띠 몸체·호 중심선)로 쓰고 다시 읽으면 같은 곡선 벽, 문은 호 위 그 자리
+    #[test]
+    fn curved_wall_round_trip() {
+        let mut d = crate::archgen::new_drawing();
+        let m = &mut d.arch;
+        let lv = m.ensure_level();
+        let wid = m.new_id();
+        // 반지름 5 m 반원 (중심 (5000, 0)), 두께 200
+        m.walls.push(Wall {
+            id: wid,
+            level: lv,
+            a: Vec2::new(0.0, 0.0),
+            b: Vec2::new(10000.0, 0.0),
+            thickness: 200.0,
+            height: None,
+            kind: WallKind::Exterior,
+            bulge: -1.0,
+        });
+        let oid = m.new_id();
+        let len = m.walls[0].length();
+        m.openings.push(Opening {
+            id: oid,
+            wall: wid,
+            kind: OpeningKind::Door,
+            offset: len / 3.0,
+            width: 900.0,
+            height: 2100.0,
+            sill: 0.0,
+            flip: false,
+            hinge_end: false,
+            mark: String::new(),
+        });
+        let text = crate::ifc::write(m, "곡선");
+        assert_eq!(
+            text.matches("IFCWALL(").count(),
+            1,
+            "곡선 벽은 IfcWall 하나"
+        );
+        assert!(text.contains("IFCARCINDEX"));
+        let back = read(&text).unwrap();
+        let (a, b) = (&m.walls[0], &back.arch.walls[0]);
+        assert_eq!(back.arch.walls.len(), 1);
+        assert!(a.a.dist(b.a) < 1e-3 && a.b.dist(b.b) < 1e-3, "{b:?}");
+        assert!((a.bulge - b.bulge).abs() < 1e-6, "{} {}", a.bulge, b.bulge);
+        assert!((a.thickness - b.thickness).abs() < 1e-3, "{}", b.thickness);
+        assert_eq!(back.arch.openings.len(), 1);
+        let o = &back.arch.openings[0];
+        assert!(
+            (o.offset - len / 3.0).abs() < 1.0,
+            "{} {}",
+            o.offset,
+            len / 3.0
+        );
+        assert!((o.width - 900.0).abs() < 1e-3);
     }
 
     /// 계단 왕복: 곧은·꺾인·U자 (§50)

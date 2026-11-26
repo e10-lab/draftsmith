@@ -3609,10 +3609,14 @@ mod tests {
                 .arc()
                 .is_none()
         );
-        // 3D·IFC 도 조각으로
+        // 3D 는 조각으로, IFC 는 벽 하나에 IfcWall 하나 — 곡선 벽은 호 몸체로 (§77)
         assert!(!crate::model3d::mesh(&ed.d.arch).tris.is_empty());
         let ifc = crate::ifc::write(&ed.d.arch, "곡선");
-        assert!(ifc.matches("IFCWALL(").count() > 2);
+        assert_eq!(ifc.matches("IFCWALL(").count(), ed.d.arch.walls.len());
+        assert_eq!(
+            ifc.contains("IFCARCINDEX"),
+            ed.d.arch.walls.iter().any(|x| x.arc().is_some())
+        );
     }
 
     /// 보: 숨은선 외곽, 속성 고치기, 3D·단면 (§52)

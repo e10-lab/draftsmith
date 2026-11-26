@@ -1,6 +1,7 @@
 //! IFC 내보내기 (M6, 구현 노트 §39): 건축 객체를 IFC4 (STEP 글) 로.
 //!
-//! 프로젝트 → 대지 → 건물 → 층(IfcBuildingStorey) 아래에 벽(IfcWall, 두께×길이 직사각형을 높이만큼 돌출),
+//! 프로젝트 → 대지 → 건물 → 층(IfcBuildingStorey) 아래에 벽(IfcWall, 두께×길이 직사각형을 높이만큼 돌출, 곡선 벽은
+//! 바깥·안쪽 호 띠를 돌출하고 중심선 호를 함께 — §77),
 //! 바닥판(IfcSlab, 실 경계 150 두께), 실(IfcSpace, 이름·층고 돌출), 기둥(IfcColumn), 문·창(IfcDoor·IfcWindow, 벽 두께
 //! 상자, 벽에 IfcOpeningElement 구멍을 내고 채움 관계로 잇는다 — §41). 단위는 mm. 한글 이름은 STEP 의 \X2\ 로 쓴다.
 
@@ -127,6 +128,48 @@ impl W {
             f(d.max(1.0))
         ))
     }
+    /// 점 목록과 조각들(호는 세 점, 선은 두 점 — 1 부터)로 된 IFC4 다각 곡선 (호를 그대로 담는다, §77)
+    fn poly_curve(&mut self, pts: &[Vec2], segs: &[&[usize]]) -> usize {
+        let list = pts
+            .iter()
+            .map(|p| format!("({},{})", f(p.x), f(p.y)))
+            .collect::<Vec<_>>()
+            .join(",");
+        let pl = self.add(format!("IFCCARTESIANPOINTLIST2D(({list}),$)"));
+        let segs = segs
+            .iter()
+            .map(|g| {
+                let ix = g
+                    .iter()
+                    .map(|i| i.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                if g.len() == 3 {
+                    format!("IFCARCINDEX(({ix}))")
+                } else {
+                    format!("IFCLINEINDEX(({ix}))")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        self.add(format!("IFCINDEXEDPOLYCURVE(#{pl},({segs}),.F.)"))
+    }
+    /// 몸체(프로필 돌출)와 중심선(Axis) 두 표현
+    fn body_axis(&mut self, ctx: usize, profile: usize, height: f64, axis: usize) -> usize {
+        let pos = self.place3(Vec2::default(), 0.0, Vec2::new(1.0, 0.0));
+        let up = self.dir3(0.0, 0.0, 1.0);
+        let solid = self.add(format!(
+            "IFCEXTRUDEDAREASOLID(#{profile},#{pos},#{up},{})",
+            f(height.max(1.0))
+        ));
+        let body = self.add(format!(
+            "IFCSHAPEREPRESENTATION(#{ctx},'Body','SweptSolid',(#{solid}))"
+        ));
+        let ax = self.add(format!(
+            "IFCSHAPEREPRESENTATION(#{ctx},'Axis','Curve2D',(#{axis}))"
+        ));
+        self.add(format!("IFCPRODUCTDEFINITIONSHAPE($,$,(#{ax},#{body}))"))
+    }
     fn polygon(&mut self, pts: &[Vec2]) -> usize {
         let mut ids: Vec<usize> = pts.iter().map(|p| self.pt2(p.x, p.y)).collect();
         ids.push(ids[0]);
@@ -142,9 +185,6 @@ impl W {
 
 /// 건축 객체 → IFC4 STEP 글
 pub fn write(m: &ArchModel, project: &str) -> String {
-    // 곡선 벽은 곧은 조각 벽들로 (§54)
-    let straight = m.straightened().0;
-    let m = &straight;
     let mut w = W { lines: Vec::new() };
     // 단위·좌표계
     let len = w.add("IFCSIUNIT(*,.LENGTHUNIT.,.MILLI.,.METRE.)".into());
@@ -206,10 +246,34 @@ pub fn write(m: &ArchModel, project: &str) -> String {
             if length < 1e-6 {
                 continue;
             }
-            let ax = w.place3(wl.a, 0.0, wl.dir());
-            let lp = w.local(Some(pl), ax);
-            let prof = w.rect(length / 2.0, 0.0, length, wl.thickness);
-            let shape = w.body(ctx, prof, wl.height.unwrap_or(l.height));
+            let h = wl.height.unwrap_or(l.height);
+            let arc = wl.arc();
+            let shape = if let Some((o, r, a0, sw)) = arc {
+                // 곡선 벽 (§77): 호 중심 자리에서 바깥 호·안쪽 호로 된 띠를 돌출, 중심선은 호 그대로
+                let ax = w.place3(o, 0.0, Vec2::new(1.0, 0.0));
+                let lp = w.local(Some(pl), ax);
+                let at = |rad: f64, t: f64| Vec2::new(rad * t.cos(), rad * t.sin());
+                let (ro, ri) = (r + wl.thickness / 2.0, (r - wl.thickness / 2.0).max(1.0));
+                let (am, a1) = (a0 + sw / 2.0, a0 + sw);
+                let band = [
+                    at(ro, a0),
+                    at(ro, am),
+                    at(ro, a1),
+                    at(ri, a1),
+                    at(ri, am),
+                    at(ri, a0),
+                ];
+                let curve = w.poly_curve(&band, &[&[1, 2, 3], &[3, 4], &[4, 5, 6], &[6, 1]]);
+                let prof = w.add(format!("IFCARBITRARYCLOSEDPROFILEDEF(.AREA.,$,#{curve})"));
+                let axis = w.poly_curve(&[at(r, a0), at(r, am), at(r, a1)], &[&[1, 2, 3]]);
+                (lp, w.body_axis(ctx, prof, h, axis))
+            } else {
+                let ax = w.place3(wl.a, 0.0, wl.dir());
+                let lp = w.local(Some(pl), ax);
+                let prof = w.rect(length / 2.0, 0.0, length, wl.thickness);
+                (lp, w.body(ctx, prof, h))
+            };
+            let (lp, shape) = shape;
             let name = format!("{} {}", wl.kind.label(), wl.id);
             let wall = w.add(format!(
                 "IFCWALL('{}',$,{},$,$,#{lp},#{shape},$,.STANDARD.)",
@@ -223,13 +287,22 @@ pub fn write(m: &ArchModel, project: &str) -> String {
                     OpeningKind::Door => (0.0, "door"),
                     OpeningKind::Window => (o.sill, "window"),
                 };
-                let at = Vec2::new(
-                    wl.a.x + wl.dir().x * o.offset,
-                    wl.a.y + wl.dir().y * o.offset,
-                );
-                let ax = w.place3(at, z, wl.dir());
+                // 곡선 벽이면 호 위 그 자리에서 접선 방향으로, 구멍은 호가 처진 만큼 더 두껍게 (§77)
+                let at = wl.point_at(o.offset);
+                let (dir, sag) = match arc {
+                    Some((_, r, a0, sw)) => {
+                        let t = a0 + sw * (o.offset / length);
+                        let k = sw.signum();
+                        (
+                            Vec2::new(-t.sin() * k, t.cos() * k),
+                            o.width * o.width / (8.0 * r),
+                        )
+                    }
+                    None => (wl.dir(), 0.0),
+                };
+                let ax = w.place3(at, z, dir);
                 let hole_pl = w.local(Some(pl), ax);
-                let prof = w.rect(0.0, 0.0, o.width, wl.thickness + 20.0);
+                let prof = w.rect(0.0, 0.0, o.width, wl.thickness + 20.0 + 2.0 * sag);
                 let shape = w.body(ctx, prof, o.height);
                 let hole = w.add(format!(
                     "IFCOPENINGELEMENT('{}',$,$,$,$,#{hole_pl},#{shape},$,.OPENING.)",
@@ -239,7 +312,7 @@ pub fn write(m: &ArchModel, project: &str) -> String {
                     "IFCRELVOIDSELEMENT('{}',$,$,$,#{wall},#{hole})",
                     guid("voids", o.id)
                 ));
-                let ax = w.place3(at, z, wl.dir());
+                let ax = w.place3(at, z, dir);
                 let lp = w.local(Some(pl), ax);
                 let prof = w.rect(0.0, 0.0, o.width, wl.thickness);
                 let shape = w.body(ctx, prof, o.height);

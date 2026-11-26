@@ -42,7 +42,7 @@ impl WallKind {
 }
 
 /// 벽 (중심선 a→b, 두께)
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Wall {
     pub id: u64,
     pub level: u64,
