@@ -285,7 +285,9 @@ async function redraw(keepView = false) {
   const update = keepView && viewer.hasData;
   let buf, textBuf;
   if (await binaryOk()) {
-    [buf, textBuf] = (await Promise.all([invoke(update ? "display_update" : "display_data"), invoke("text_data")])).map(toBuffer);
+    // 차례로: 표시 데이터가 캐시를 맞춘 뒤 문자 데이터가 그 원점을 쓴다 (도면 범위를 다시 재지 않게, §74)
+    buf = toBuffer(await invoke(update ? "display_update" : "display_data"));
+    textBuf = toBuffer(await invoke("text_data"));
   } else {
     // 바이너리가 숫자 배열로 오는 환경: base64 글로 받아 푼다 (숫자 배열보다 수십 배 빠름, §70)
     const [a, b] = await invoke("display_b64", { update });

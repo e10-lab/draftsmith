@@ -51,9 +51,22 @@ struct Open {
     shown_cache: draftsmith_core::shown::ShownCache,
     /// 지금 `view` 가 보이는 도면 캐시가 만든 것인가 (배치를 합친 종이 도면이면 아님)
     view_cached: bool,
+    /// 보이는 도면을 다시 만들 때마다 하나씩 (§74)
+    era: u64,
+    /// 표시 데이터 캐시를 마지막으로 맞춘 세대. 지금 세대와 같으면 그 원점을 문자 데이터에 쓴다
+    seg_era: Option<u64>,
 }
 
 impl Open {
+    /// 문자 데이터: 표시 데이터 캐시가 지금 도면에 맞춰져 있으면 그 원점으로 (범위를 다시 재지 않는다, §74)
+    fn texts(&self) -> Option<Vec<u8>> {
+        let d = self.shown()?;
+        Some(match self.seg_cache.origin() {
+            Some(o) if self.seg_era == Some(self.era) => display::texts_at(d, o),
+            _ => display::texts(d),
+        })
+    }
+
     /// 지금 화면에 보이는 도면
     fn shown(&self) -> Option<&Drawing> {
         self.view.as_ref().or(self.ed.as_ref().map(|e| &e.d))
@@ -61,6 +74,7 @@ impl Open {
 
     /// 편집한 뒤: 보이는 도면을 다시 만들고 스냅·고르기 색인도 다시
     fn refresh(&mut self) {
+        self.era += 1;
         // 지난 보이는 도면이 캐시가 만든 것이면 돌려주고 바뀐 객체 몫만 고치게 (§72)
         let prev = self
             .view
@@ -1468,9 +1482,9 @@ fn display_data(state: State<'_, AppState>) -> Result<Response, String> {
         .as_ref()
         .or(open.ed.as_ref().map(|e| &e.d))
         .ok_or("열린 도면이 없습니다")?;
-    Ok(Response::new(
-        display::segments_cached(d, &mut open.seg_cache).to_bytes(),
-    ))
+    let bytes = display::segments_cached(d, &mut open.seg_cache).to_bytes();
+    open.seg_era = Some(open.era);
+    Ok(Response::new(bytes))
 }
 
 /// 편집 뒤 표시 데이터: 바뀐 객체만 부분 갱신(`DSP1`)할 수 있으면 그것, 아니면 전체(`DSD3`) (§68).
@@ -1484,7 +1498,9 @@ fn display_update(state: State<'_, AppState>) -> Result<Response, String> {
         .as_ref()
         .or(open.ed.as_ref().map(|e| &e.d))
         .ok_or("열린 도면이 없습니다")?;
-    Ok(Response::new(display::update_bytes(d, &mut open.seg_cache)))
+    let bytes = display::update_bytes(d, &mut open.seg_cache);
+    open.seg_era = Some(open.era);
+    Ok(Response::new(bytes))
 }
 
 /// 바이너리 응답이 화면에 ArrayBuffer 로 오는지 시험하는 4 바이트 (§70)
@@ -1509,16 +1525,17 @@ fn display_b64(update: bool, state: State<'_, AppState>) -> Result<(String, Stri
     } else {
         display::segments_cached(d, &mut open.seg_cache).to_bytes()
     };
+    open.seg_era = Some(open.era);
+    let texts = open.texts().unwrap_or_default();
     let e = base64::engine::general_purpose::STANDARD;
-    Ok((e.encode(bytes), e.encode(display::texts(d))))
+    Ok((e.encode(bytes), e.encode(texts)))
 }
 
 /// 문자 표시 데이터 (바이너리, 형식은 `draftsmith_core::display::texts`)
 #[tauri::command]
 fn text_data(state: State<'_, AppState>) -> Result<Response, String> {
     let open = state.lock().map_err(err)?;
-    let d = open.shown().ok_or("열린 도면이 없습니다")?;
-    Ok(Response::new(display::texts(d)))
+    Ok(Response::new(open.texts().ok_or("열린 도면이 없습니다")?))
 }
 
 /// 표 (면적표·창호일람표·실별 마감표·법규 검토) — 건축 객체에서 만든다

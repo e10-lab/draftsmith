@@ -288,6 +288,11 @@ pub struct SegCache {
 }
 
 impl SegCache {
+    /// 마지막 갱신의 원점 (도면 범위 가운데). 문자 데이터가 같은 원점을 쓴다 (§74)
+    pub fn origin(&self) -> Option<Vec2> {
+        self.key.as_ref().map(|k| k.0.center())
+    }
+
     /// 바로 앞 갱신을 화면에 부분 갱신으로 보낼 수 있으면 그 바이너리 (`DSP1`). 바뀐 객체의 선분은 캐시에서 읽는다.
     /// 형식: 매직 · 범위 수 u32 · 범위마다 (선분 시작·수·삼각형 시작·수 u32 ×4, 좌표 f32, 색 u8×4, 굵기 u8, 삼각형 f32, 색 u8×4)
     pub fn patch_bytes(&self) -> Option<Vec<u8>> {
@@ -533,7 +538,11 @@ fn dash_chain(s: &mut Segments, pts: &[Vec2], dashes: &[f64], scale: f64, tol: f
 
 /// 문자 표시 데이터 (`DST1`). 꺼진 레이어는 뺀다. origin 은 [`segments`] 와 같다.
 pub fn texts(d: &Drawing) -> Vec<u8> {
-    let origin = d.bbox().center();
+    texts_at(d, d.bbox().center())
+}
+
+/// [`texts`] 를 이미 아는 원점으로 (도면 범위를 다시 재지 않으려고 — 실무 도면 7 ms, §74)
+pub fn texts_at(d: &Drawing, origin: Vec2) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(TEXT_MAGIC);
     out.extend_from_slice(&0u32.to_le_bytes());
@@ -761,6 +770,8 @@ mod cache_tests {
         );
         assert!(same(&segments_cached(&d3, &mut c), &full));
         // 객체가 늘면 부분 갱신 없음
+        // 문자 데이터는 캐시 원점으로 만들어도 같다 (§74)
+        assert_eq!(texts_at(&d3, c.origin().unwrap()), texts(&d3));
         let mut d4 = d3.clone();
         d4.entities.push(d4.entities[i].clone());
         assert!(same(&segments_cached(&d4, &mut c), &segments(&d4)));

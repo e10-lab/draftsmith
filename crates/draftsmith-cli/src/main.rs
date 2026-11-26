@@ -241,6 +241,18 @@ fn main() -> Result<()> {
                     ""
                 }
             );
+            // 문자 데이터 (§74)
+            let tt = Instant::now();
+            let tb = display::texts(&d2b);
+            let tt2 = Instant::now();
+            let _ = display::texts_at(&d2b, cache.origin().unwrap_or_default());
+            let tt3 = Instant::now();
+            println!(
+                "문자 데이터 {:8.1} ms ({} 바이트) · 캐시 원점으로 {:.1} ms",
+                ms(tt, tt2),
+                tb.len(),
+                ms(tt2, tt3)
+            );
             // 가운데 객체 하나 지우기 (뒤 객체 번호가 밀린다)
             let mut d3 = d2.clone();
             d3.entities.remove(d3.entities.len() / 2);
