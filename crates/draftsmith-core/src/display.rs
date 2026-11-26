@@ -267,6 +267,7 @@ fn emit(d: &Drawing, e: &Entity, tol: f64, s: &mut Segments, pieces: &mut Vec<Ve
 
 /// 객체별 표시 데이터 캐시 (§66): 편집 뒤 바뀌지 않은 객체는 전에 펼친 것을 그대로 붙인다.
 /// 도면 범위(원점·허용 오차가 범위에서 나온다)·레이어·선 종류가 바뀌면 모두 다시.
+/// 앞뒤 같은 객체를 맞춰(§73) 가운데 객체를 지우거나 넣어 뒤 번호가 밀려도 뒤 객체는 다시 펼치지 않는다.
 #[derive(Default)]
 pub struct SegCache {
     key: Option<(
@@ -274,7 +275,10 @@ pub struct SegCache {
         Vec<crate::drawing::Layer>,
         Vec<crate::drawing::LinePattern>,
     )>,
-    items: Vec<(Entity, Segments)>,
+    /// 객체마다 객체·펼친 것·범위 (따로 두어 범위만 훑을 때 메모리를 덜 읽는다)
+    ents: Vec<Entity>,
+    segs: Vec<Segments>,
+    bbs: Vec<Bbox>,
     /// 마지막에 다시 펼친 객체 수 (측정용)
     pub rebuilt: usize,
     /// 마지막 결과에서 객체마다 (선분 시작, 선분 수, 삼각형 시작, 삼각형 수)
@@ -284,9 +288,9 @@ pub struct SegCache {
 }
 
 impl SegCache {
-    /// 바로 앞 [`segments_cached`] 결과 `s` 를 화면에 부분 갱신으로 보낼 수 있으면 그 바이너리 (`DSP1`).
+    /// 바로 앞 갱신을 화면에 부분 갱신으로 보낼 수 있으면 그 바이너리 (`DSP1`). 바뀐 객체의 선분은 캐시에서 읽는다.
     /// 형식: 매직 · 범위 수 u32 · 범위마다 (선분 시작·수·삼각형 시작·수 u32 ×4, 좌표 f32, 색 u8×4, 굵기 u8, 삼각형 f32, 색 u8×4)
-    pub fn patch_bytes(&self, s: &Segments) -> Option<Vec<u8>> {
+    pub fn patch_bytes(&self) -> Option<Vec<u8>> {
         let ids = self.patch.as_ref()?;
         let mut out = Vec::new();
         out.extend_from_slice(b"DSP1");
@@ -296,15 +300,16 @@ impl SegCache {
             for v in [lo, ln, to, tn] {
                 out.extend_from_slice(&(v as u32).to_le_bytes());
             }
-            for v in &s.coords[lo * 4..(lo + ln) * 4] {
+            let s = &self.segs[i];
+            for v in &s.coords {
                 out.extend_from_slice(&v.to_le_bytes());
             }
-            out.extend_from_slice(&s.colors[lo * 4..(lo + ln) * 4]);
-            out.extend(s.weights[lo..lo + ln].iter().map(|&w| w.min(255) as u8));
-            for v in &s.tris[to * 6..(to + tn) * 6] {
+            out.extend_from_slice(&s.colors);
+            out.extend(s.weights.iter().map(|&w| w.min(255) as u8));
+            for v in &s.tris {
                 out.extend_from_slice(&v.to_le_bytes());
             }
-            out.extend_from_slice(&s.tri_colors[to * 4..(to + tn) * 4]);
+            out.extend_from_slice(&s.tri_colors);
         }
         Some(out)
     }
@@ -322,65 +327,160 @@ impl Segments {
     }
 }
 
-/// [`segments`] 와 같은 결과를, 바뀌지 않은 객체는 캐시에서
-pub fn segments_cached(d: &Drawing, cache: &mut SegCache) -> Segments {
-    let bbox = d.bbox();
+/// 캐시를 지금 도면에 맞춘다: 바뀐 객체만 다시 펼치고, 부분 갱신이 되는지 정한다. (원점, 범위)
+fn refresh(d: &Drawing, cache: &mut SegCache) -> (Vec2, Bbox) {
+    let new = &d.entities;
+    let styled = cache
+        .key
+        .as_ref()
+        .is_some_and(|(_, l, t)| *l == d.layers && *t == d.linetypes);
+    // 앞뒤 같은 객체 맞추기 (§73)
+    let old_n = cache.ents.len();
+    let (mut pre, mut old_end, mut new_end) = (0, 0, new.len());
+    if styled {
+        let (p, suf) = crate::drawing::align(&cache.ents, new);
+        pre = p;
+        (old_end, new_end) = (old_n - suf, new.len() - suf);
+    }
+    // 범위: 맞춘 앞뒤는 기억한 범위로, 가운데만 새로 (전체를 다시 재면 실무 도면 8 ms)
+    let mid_bb: Vec<Bbox> = new[pre..new_end].iter().map(|e| e.shape.bbox()).collect();
+    let mut bbox = Bbox::EMPTY;
+    if styled {
+        for b in cache.bbs[..pre].iter().chain(&cache.bbs[old_end..]) {
+            bbox.merge(b);
+        }
+    }
+    mid_bb.iter().for_each(|b| bbox.merge(b));
+    let same = styled && cache.key.as_ref().is_some_and(|(b, _, _)| *b == bbox);
+    let mut mid_bb = mid_bb;
+    if !same {
+        if styled {
+            // 범위가 바뀌어 모두 다시 — 앞뒤 객체 범위는 기억한 것으로
+            let mut all: Vec<Bbox> = cache.bbs[..pre].to_vec();
+            all.append(&mut mid_bb);
+            all.extend_from_slice(&cache.bbs[old_end..]);
+            mid_bb = all;
+        }
+        cache.ents.clear();
+        cache.segs.clear();
+        cache.bbs.clear();
+        (pre, old_end, new_end) = (0, 0, new.len());
+        cache.key = Some((bbox, d.layers.clone(), d.linetypes.clone()));
+    }
     let diag = bbox.width().hypot(bbox.height()).max(1e-9);
     let tol = diag / 20_000.0;
     let origin = bbox.center();
-    let same = cache
-        .key
-        .as_ref()
-        .is_some_and(|(b, l, t)| *b == bbox && *l == d.layers && *t == d.linetypes);
     // 부분 갱신은 범위·레이어·객체 수가 같고, 다시 펼친 객체의 선분·삼각형 수가 그대로일 때만 (§68)
-    let mut patch =
-        (same && cache.items.len() == d.entities.len() && cache.layout.len() == d.entities.len())
-            .then(Vec::new);
-    if !same {
-        cache.items.clear();
-        cache.key = Some((bbox, d.layers.clone(), d.linetypes.clone()));
-    }
-    let mut s = Segments {
-        origin,
-        bbox,
-        ..Default::default()
-    };
-    let mut pieces: Vec<Vec<Vec2>> = Vec::new();
-    cache.rebuilt = 0;
-    let mut layout = Vec::with_capacity(d.entities.len());
-    for (i, e) in d.entities.iter().enumerate() {
-        let hit = cache.items.get(i).is_some_and(|(c, _)| c == e);
-        if !hit {
-            if let Some(p) = patch.as_mut() {
-                p.push(i);
-            }
-            let mut p = Segments {
-                origin,
-                bbox,
-                ..Default::default()
-            };
-            emit(d, e, tol, &mut p, &mut pieces);
-            if i < cache.items.len() {
-                cache.items[i] = (e.clone(), p);
-            } else {
-                cache.items.push((e.clone(), p));
-            }
-            cache.rebuilt += 1;
+    let mut patch = (same && old_n == new.len() && cache.layout.len() == new.len()).then(Vec::new);
+    let mut scratch: Vec<Vec<Vec2>> = Vec::new();
+    // 가운데: 같은 자리의 옛 객체와 같으면 그대로, 아니면 그 자리에서 다시 펼친다.
+    // 목록을 통째로 빼고 넣으면 큰 도면에서 항목 옮기기만 수십 ms 라, 객체 수가 달라진 만큼만 넣고 뺀다
+    let (old_len, new_len) = (old_end - pre, new_end - pre);
+    let common = old_len.min(new_len);
+    let mut made = |i: usize, e: &Entity, bb: Bbox, rebuilt: &mut usize| {
+        let mut p = Segments {
+            origin,
+            bbox,
+            ..Default::default()
+        };
+        emit(d, e, tol, &mut p, &mut scratch);
+        *rebuilt += 1;
+        if let Some(pt) = patch.as_mut() {
+            pt.push(i);
         }
-        let (ln, tn) = (s.len(), s.tri_count());
-        s.append(&cache.items[i].1);
-        layout.push((ln, s.len() - ln, tn, s.tri_count() - tn));
+        (e.clone(), p, bb)
+    };
+    let mut rebuilt = 0;
+    let mut bbs = mid_bb.into_iter();
+    for (k, bb) in bbs.by_ref().take(common).enumerate() {
+        let i = pre + k;
+        if cache.ents[i] != new[i] {
+            let (e, p, b) = made(i, &new[i], bb, &mut rebuilt);
+            (cache.ents[i], cache.segs[i], cache.bbs[i]) = (e, p, b);
+        }
     }
-    cache.items.truncate(d.entities.len());
-    // 다시 펼친 객체의 자리가 그대로인지
+    if new_len > old_len {
+        let add: Vec<(Entity, Segments, Bbox)> = bbs
+            .enumerate()
+            .map(|(k, bb)| {
+                let i = pre + common + k;
+                made(i, &new[i], bb, &mut rebuilt)
+            })
+            .collect();
+        let at = pre + common;
+        let (mut es, mut ps, mut bs) = (Vec::new(), Vec::new(), Vec::new());
+        for (e, p, b) in add {
+            es.push(e);
+            ps.push(p);
+            bs.push(b);
+        }
+        cache.ents.splice(at..at, es);
+        cache.segs.splice(at..at, ps);
+        cache.bbs.splice(at..at, bs);
+    } else if old_len > new_len {
+        cache.ents.drain(pre + common..old_end);
+        cache.segs.drain(pre + common..old_end);
+        cache.bbs.drain(pre + common..old_end);
+    }
+    cache.rebuilt = rebuilt;
+    // 부분 갱신은 다시 펼친 객체의 선분·삼각형 수가 그대로일 때만 (그러면 모든 객체 자리가 그대로)
     if let Some(p) = &patch
-        && p.iter().any(|&i| cache.layout.get(i) != layout.get(i))
+        && p.iter().any(|&i| {
+            cache
+                .layout
+                .get(i)
+                .is_none_or(|l| (l.1, l.3) != (cache.segs[i].len(), cache.segs[i].tri_count()))
+        })
     {
         patch = None;
     }
     cache.patch = patch;
+    (origin, bbox)
+}
+
+/// 캐시의 객체별 결과를 이어 붙인 표시 데이터 (객체마다 자리도 기억)
+fn assemble(cache: &mut SegCache, origin: Vec2, bbox: Bbox) -> Segments {
+    // 크기를 먼저 세어 한 번에 잡는다
+    let (nl, nt) = cache
+        .segs
+        .iter()
+        .fold((0, 0), |(l, t), c| (l + c.len(), t + c.tri_count()));
+    let mut s = Segments {
+        origin,
+        bbox,
+        coords: Vec::with_capacity(nl * 4),
+        colors: Vec::with_capacity(nl * 4),
+        weights: Vec::with_capacity(nl),
+        acis: Vec::with_capacity(nl),
+        tris: Vec::with_capacity(nt * 6),
+        tri_colors: Vec::with_capacity(nt * 4),
+        tri_acis: Vec::with_capacity(nt),
+        ..Default::default()
+    };
+    let mut layout = Vec::with_capacity(cache.segs.len());
+    for c in &cache.segs {
+        let (ln, tn) = (s.len(), s.tri_count());
+        s.append(c);
+        layout.push((ln, s.len() - ln, tn, s.tri_count() - tn));
+    }
     cache.layout = layout;
     s
+}
+
+/// [`segments`] 와 같은 결과를, 바뀌지 않은 객체는 캐시에서
+pub fn segments_cached(d: &Drawing, cache: &mut SegCache) -> Segments {
+    let (origin, bbox) = refresh(d, cache);
+    assemble(cache, origin, bbox)
+}
+
+/// 편집 뒤 화면에 보낼 바이너리: 부분 갱신(`DSP1`)이 되면 바뀐 객체 것만 (전체를 이어 붙이지 않는다, §73),
+/// 아니면 전체(`DSD3`). 화면이 바로 앞 결과를 들고 있을 때만 쓴다
+pub fn update_bytes(d: &Drawing, cache: &mut SegCache) -> Vec<u8> {
+    let (origin, bbox) = refresh(d, cache);
+    match cache.patch_bytes() {
+        Some(b) => b,
+        None => assemble(cache, origin, bbox).to_bytes(),
+    }
 }
 
 /// 한 조각에 들어갈 수 있는 무늬 반복 수. 넘으면 (화면에서 어차피 실선처럼 보이므로) 실선으로 그린다.
@@ -639,17 +739,52 @@ mod cache_tests {
         assert!(same(&segments_cached(&d2, &mut c), &segments(&d2)));
         assert_eq!(c.rebuilt, d2.entities.len());
         // 부분 갱신 (§68): 색만 바꾼 객체 하나 → 범위 하나, 새로 다 펼친 뒤엔 없음
-        assert!(c.patch_bytes(&segments(&d2)).is_none());
+        assert!(c.patch_bytes().is_none());
         let mut d3 = d2.clone();
         d3.entities[i].color = Some([9, 9, 9]);
-        let s3 = segments_cached(&d3, &mut c);
-        let p = c.patch_bytes(&s3).unwrap();
+        let _ = segments_cached(&d2, &mut c);
+        let p = update_bytes(&d3, &mut c);
         assert_eq!(&p[0..4], b"DSP1");
-        assert_eq!(u32::from_le_bytes(p[4..8].try_into().unwrap()), 1);
+        let u = |k: usize| u32::from_le_bytes(p[k..k + 4].try_into().unwrap()) as usize;
+        assert_eq!(u(4), 1);
+        // 묶음의 선분이 새로 만든 전체의 그 자리와 같다
+        let (lo, ln) = (u(8), u(12));
+        let full = segments(&d3);
+        let got: Vec<f32> = p[24..24 + ln * 16]
+            .chunks(4)
+            .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+            .collect();
+        assert_eq!(got, full.coords[lo * 4..(lo + ln) * 4]);
+        assert_eq!(
+            p[24 + ln * 16..24 + ln * 20],
+            full.colors[lo * 4..(lo + ln) * 4]
+        );
+        assert!(same(&segments_cached(&d3, &mut c), &full));
         // 객체가 늘면 부분 갱신 없음
         let mut d4 = d3.clone();
         d4.entities.push(d4.entities[i].clone());
-        let s4 = segments_cached(&d4, &mut c);
-        assert!(c.patch_bytes(&s4).is_none());
+        assert!(same(&segments_cached(&d4, &mut c), &segments(&d4)));
+        assert!(c.patch_bytes().is_none());
+        // 가운데 지우기·넣기 (§73): 뒤 번호가 밀려도 뒤 객체는 다시 안 펼침
+        let mut d5 = d4.clone();
+        d5.entities.remove(i);
+        assert!(same(&segments_cached(&d5, &mut c), &segments(&d5)));
+        assert_eq!(c.rebuilt, 0);
+        let mut d6 = d5.clone();
+        d6.entities.insert(i, d4.entities[i].clone());
+        d6.entities.insert(1, d4.entities[i].clone());
+        assert!(same(&segments_cached(&d6, &mut c), &segments(&d6)));
+        assert!(c.rebuilt <= i + 2, "{}", c.rebuilt);
+        // 범위가 넓어지는 객체를 더하면 모두 다시 (그래도 같은 결과)
+        let mut d7 = d6.clone();
+        d7.entities.push(crate::drawing::Entity {
+            shape: Shape::Line {
+                a: Vec2::new(-1e6, -1e6),
+                b: Vec2::new(1e6, 1e6),
+            },
+            ..d6.entities[i].clone()
+        });
+        assert!(same(&segments_cached(&d7, &mut c), &segments(&d7)));
+        assert_eq!(c.rebuilt, d7.entities.len());
     }
 }

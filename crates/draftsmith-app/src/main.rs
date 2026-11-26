@@ -1484,12 +1484,7 @@ fn display_update(state: State<'_, AppState>) -> Result<Response, String> {
         .as_ref()
         .or(open.ed.as_ref().map(|e| &e.d))
         .ok_or("열린 도면이 없습니다")?;
-    let s = display::segments_cached(d, &mut open.seg_cache);
-    Ok(Response::new(
-        open.seg_cache
-            .patch_bytes(&s)
-            .unwrap_or_else(|| s.to_bytes()),
-    ))
+    Ok(Response::new(display::update_bytes(d, &mut open.seg_cache)))
 }
 
 /// 바이너리 응답이 화면에 ArrayBuffer 로 오는지 시험하는 4 바이트 (§70)
@@ -1509,13 +1504,10 @@ fn display_b64(update: bool, state: State<'_, AppState>) -> Result<(String, Stri
         .as_ref()
         .or(open.ed.as_ref().map(|e| &e.d))
         .ok_or("열린 도면이 없습니다")?;
-    let s = display::segments_cached(d, &mut open.seg_cache);
     let bytes = if update {
-        open.seg_cache
-            .patch_bytes(&s)
-            .unwrap_or_else(|| s.to_bytes())
+        display::update_bytes(d, &mut open.seg_cache)
     } else {
-        s.to_bytes()
+        display::segments_cached(d, &mut open.seg_cache).to_bytes()
     };
     let e = base64::engine::general_purpose::STANDARD;
     Ok((e.encode(bytes), e.encode(display::texts(d))))

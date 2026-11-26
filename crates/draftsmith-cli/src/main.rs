@@ -223,6 +223,38 @@ fn main() -> Result<()> {
                 ms(t4, t5),
                 cache.rebuilt
             );
+            // 앱이 편집 뒤 보내는 것 (§73): 부분 갱신이면 바뀐 객체 것만
+            let mut d2b = d2.clone();
+            if let Some(e) = d2b.entities.get_mut(1) {
+                e.color = Some([4, 5, 6]);
+            }
+            let tu = Instant::now();
+            let ub = display::update_bytes(&d2b, &mut cache);
+            let tu2 = Instant::now();
+            println!(
+                "편집 뒤 보낼 데이터 {:8.1} ms ({} 바이트{})",
+                ms(tu, tu2),
+                ub.len(),
+                if ub.starts_with(b"DSP1") {
+                    ", 부분 갱신"
+                } else {
+                    ""
+                }
+            );
+            // 가운데 객체 하나 지우기 (뒤 객체 번호가 밀린다)
+            let mut d3 = d2.clone();
+            d3.entities.remove(d3.entities.len() / 2);
+            let tb = Instant::now();
+            let _ = d3.bbox();
+            let tb2 = Instant::now();
+            let _ = display::segments_cached(&d3, &mut cache);
+            let tb3 = Instant::now();
+            println!(
+                "가운데 지운 뒤 선분 (캐시) {:8.1} ms — 다시 펼친 객체 {} (범위 계산 {:.1} ms)",
+                ms(tb2, tb3),
+                cache.rebuilt,
+                ms(tb, tb2)
+            );
             // 스냅 색인 (§69): 새로 만들기와, 한 객체를 바꾼 뒤 고치기
             let mut sc = draftsmith_core::snap::SnapCache::default();
             let t6 = Instant::now();

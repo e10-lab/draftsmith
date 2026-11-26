@@ -463,4 +463,51 @@ mod tests {
         assert_eq!(c.changed, d5.entities.len());
         drop(s);
     }
+    /// 실무 도면으로: 여러 자리의 객체를 고치기·지우기·넣기 해도 새로 만든 것과 같다.
+    /// `DSMITH_REAL=도면 DSMITH_SHX=폴더 cargo test --release -p draftsmith-core real_drawing -- --ignored`
+    #[test]
+    #[ignore]
+    fn real_drawing() {
+        let Ok(path) = std::env::var("DSMITH_REAL") else {
+            return;
+        };
+        if let Ok(dir) = std::env::var("DSMITH_SHX") {
+            crate::shx::set_folder(Some(dir.into()));
+        }
+        let mut d = crate::import::read_file(std::path::Path::new(&path)).unwrap();
+        let mut c = ShownCache::default();
+        let mut s = check(&mut c, &d, None);
+        let n = d.entities.len();
+        // 종류별로 하나씩 (블록 참조·글자·선·폴리선·가리개)
+        let pick =
+            |d: &Drawing, f: &dyn Fn(&Shape) -> bool| d.entities.iter().position(|e| f(&e.shape));
+        let mv = crate::geom::Affine::translate(37.0, -11.0);
+        let mut steps = 0;
+        for f in [
+            &(|s: &Shape| matches!(s, Shape::Insert { .. })) as &dyn Fn(&Shape) -> bool,
+            &|s| matches!(s, Shape::Text(_)),
+            &|s| matches!(s, Shape::Line { .. }),
+            &|s| matches!(s, Shape::Polyline { .. }),
+            &|s| matches!(s, Shape::Wipeout { .. }),
+        ] {
+            let Some(i) = pick(&d, f) else { continue };
+            // 옮기기
+            d.entities[i].shape = d.entities[i].shape.transformed(&mv);
+            s = check(&mut c, &d, Some(s));
+            // 복사해 끝에 더하기, 가운데에 넣기
+            let e = d.entities[i].clone();
+            d.entities.push(e.clone());
+            s = check(&mut c, &d, Some(s));
+            d.entities.insert(n / 3, e);
+            s = check(&mut c, &d, Some(s));
+            // 지우기
+            d.entities.remove(i);
+            s = check(&mut c, &d, Some(s));
+            steps += 4;
+        }
+        eprintln!(
+            "실무 도면 {} 객체, 편집 {steps} 번 모두 같음",
+            d.entities.len()
+        );
+    }
 }
