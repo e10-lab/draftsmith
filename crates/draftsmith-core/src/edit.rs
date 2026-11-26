@@ -123,7 +123,7 @@ fn run_new(d: &mut Drawing, op: &mut Op) {
             let mut mine = std::collections::HashSet::new();
             for e in items.iter_mut() {
                 if e.id == 0 || used.contains(&e.id) || !mine.insert(e.id) {
-                    e.id = d.next_id.max(1);
+                    e.id = d.next_id.max(crate::drawing::FIRST_ID);
                     d.next_id = e.id + 1;
                     mine.insert(e.id);
                 } else {
@@ -989,6 +989,7 @@ mod tests {
             b: Vec2::new(x + 10.0, 0.0),
         };
         let ids = |e: &Editor| e.d.entities.iter().map(|x| x.id).collect::<Vec<_>>();
+        const F: u64 = crate::drawing::FIRST_ID;
         // 열 때: 번호 없는 객체와 겹치는 번호에 새 번호
         let mut d = Drawing::default();
         let l0 = d.layer_index("0");
@@ -1004,28 +1005,28 @@ mod tests {
             });
         }
         let mut e = Editor::new(d);
-        assert_eq!(ids(&e), vec![8, 7, 9]);
-        assert_eq!(e.d.next_id, 10);
+        assert_eq!(ids(&e), vec![F, 7, F + 1]);
+        assert_eq!(e.d.next_id, F + 2);
         // 더하기·복사는 새 번호, 옮기기는 그대로
         e.add_shapes(vec![line(60.0)]);
         e.copy(&[0, 1], &Affine::translate(0.0, 5.0));
         e.transform(&[1], &Affine::translate(1.0, 0.0));
-        assert_eq!(ids(&e), vec![8, 7, 9, 10, 11, 12]);
-        assert_eq!(e.d.index_of(12), Some(5));
+        assert_eq!(ids(&e), vec![F, 7, F + 1, F + 2, F + 3, F + 4]);
+        assert_eq!(e.d.index_of(F + 4), Some(5));
         // 지우고 되돌리면 같은 번호, 다시 하면 다시 빠진다
         e.remove(&[1]);
-        assert_eq!(ids(&e), vec![8, 9, 10, 11, 12]);
+        assert_eq!(ids(&e), vec![F, F + 1, F + 2, F + 3, F + 4]);
         e.undo();
-        assert_eq!(ids(&e), vec![8, 7, 9, 10, 11, 12]);
+        assert_eq!(ids(&e), vec![F, 7, F + 1, F + 2, F + 3, F + 4]);
         e.redo();
         e.undo();
         e.undo(); // 옮기기 되돌림 — 번호 그대로
-        assert_eq!(ids(&e), vec![8, 7, 9, 10, 11, 12]);
+        assert_eq!(ids(&e), vec![F, 7, F + 1, F + 2, F + 3, F + 4]);
         // 자르기처럼 한 객체가 여럿이 되면 첫 조각은 그 번호, 나머지는 새 번호
         let r = e.reshape(vec![(0, vec![line(0.0), line(3.0), line(6.0)])]);
-        assert_eq!(e.d.entities[0].id, 8);
+        assert_eq!(e.d.entities[0].id, F);
         let more: Vec<u64> = e.d.entities[r].iter().map(|x| x.id).collect();
-        assert_eq!(more, vec![13, 14]);
+        assert_eq!(more, vec![F + 5, F + 6]);
         // 파일로 저장했다 열어도 같은 번호
         let back = crate::docfile::from_bytes(&crate::docfile::to_bytes(&e.d).unwrap()).unwrap();
         let e2 = Editor::new(back);

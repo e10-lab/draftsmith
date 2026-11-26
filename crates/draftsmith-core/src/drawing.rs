@@ -18,6 +18,10 @@ pub struct Layer {
     pub visible: bool,
 }
 
+/// 새로 매기는 객체 고유 번호의 시작 (§82·§83). 내보낼 때 번호를 핸들로 쓰므로 새 DWG·DXF 문서가 기본 표·객체에
+/// 쓰는 핸들(0x30 까지)보다 넉넉히 크게
+pub const FIRST_ID: u64 = 0x1000;
+
 /// 작도 객체 하나
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Entity {
@@ -839,7 +843,7 @@ impl Drawing {
     /// 번호가 없거나(0) 앞 객체와 겹치는 객체에 새 고유 번호를 준다 (§82). 새로 준 수
     pub fn assign_ids(&mut self) -> usize {
         let max = self.entities.iter().map(|e| e.id).max().unwrap_or(0);
-        self.next_id = self.next_id.max(max + 1).max(1);
+        self.next_id = self.next_id.max(max + 1).max(FIRST_ID);
         let mut seen = std::collections::HashSet::with_capacity(self.entities.len());
         let mut n = 0;
         for e in self.entities.iter_mut() {

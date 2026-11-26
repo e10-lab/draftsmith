@@ -343,13 +343,23 @@ fn style_of(d: &Drawing, s: &str) -> String {
     }
 }
 
-fn put(doc: &mut CadDocument, d: &Drawing, e: &Entity, owner: Option<acadrust::types::Handle>) {
+/// `handle` 이 0 이 아니면 첫 객체의 핸들로 (모형 객체의 고유 번호, §83)
+fn put(
+    doc: &mut CadDocument,
+    d: &Drawing,
+    e: &Entity,
+    owner: Option<acadrust::types::Handle>,
+    handle: u64,
+) {
     let layer = d
         .layers
         .get(e.layer as usize)
         .map(|l| l.name.clone())
         .unwrap_or_else(|| "0".into());
-    for mut c in to_cad(e) {
+    for (k, mut c) in to_cad(e).into_iter().enumerate() {
+        if k == 0 && handle != 0 {
+            c.common_mut().handle = acadrust::types::Handle::new(handle);
+        }
         // 글자 스타일 (§60-1)
         match (&mut c, &e.shape) {
             (EntityType::Text(x), Shape::Text(t)) => x.style = style_of(d, &t.style),
@@ -404,6 +414,11 @@ pub fn to_document(model: &Drawing) -> CadDocument {
         crate::archgen::with_arch_owned(model).unwrap_or_else(|| (model.clone(), Vec::new()));
     let base = model.entities.len();
     let mut doc = CadDocument::new();
+    // 모형 객체 고유 번호를 핸들로 쓰려고 (§83): 새 문서가 기본 표·객체에 쓴 핸들(0x30 까지)보다 큰 번호만 쓰고,
+    // 이 뒤에 만드는 표·블록 핸들은 모든 번호보다 크게
+    let floor = doc.allocate_handle().value();
+    let max_id = model.entities.iter().map(|e| e.id).max().unwrap_or(0);
+    doc.header.handle_seed = doc.header.handle_seed.max(max_id + 1);
     for p in &d.linetypes {
         let mut lt = LineType::new(p.name.clone());
         for &x in &p.dashes {
@@ -461,7 +476,7 @@ pub fn to_document(model: &Drawing) -> CadDocument {
     for b in &model.blocks {
         let h = block_record(&mut doc, &b.name);
         for e in &b.entities {
-            put(&mut doc, &d, e, Some(h));
+            put(&mut doc, &d, e, Some(h), 0);
         }
         // 속성 정의 ATTDEF (§49)
         for a in &b.attdefs {
@@ -481,8 +496,15 @@ pub fn to_document(model: &Drawing) -> CadDocument {
     }
     // 모형 객체 (블록 참조는 INSERT 로)
     // 모형 객체는 모형에서 (무늬 해치를 HATCH 그대로, §45)
+    // 고유 번호를 핸들로 (§83): 기본 핸들보다 크고 처음 나온 번호만 — 핸들 계수를 미리 올려 두어 표·블록과 겹치지 않는다
+    let mut used = std::collections::HashSet::new();
     for e in &model.entities {
-        put(&mut doc, &d, e, None);
+        let h = if e.id >= floor && used.insert(e.id) {
+            e.id
+        } else {
+            0
+        };
+        put(&mut doc, &d, e, None, h);
     }
     // 덧붙인 객체: 블록 펼친 것은 빼고, 치수는 치수 객체마다 모은다
     let mut dims: Vec<(u64, Vec<&Entity>)> = Vec::new();
@@ -493,7 +515,7 @@ pub fn to_document(model: &Drawing) -> CadDocument {
                 Some((_, v)) => v.push(e),
                 None => dims.push((id, vec![e])),
             },
-            _ => put(&mut doc, &d, e, None),
+            _ => put(&mut doc, &d, e, None, 0),
         }
     }
     // 치수: 모양은 익명 블록 *D 에 (다른 프로그램이 그대로 그린다), 값·정의점은 DIMENSION 에
@@ -508,7 +530,7 @@ pub fn to_document(model: &Drawing) -> CadDocument {
             let name = format!("*D{}", n + 1);
             let h = block_record(&mut doc, &name);
             for e in &parts {
-                put(&mut doc, &d, e, Some(h));
+                put(&mut doc, &d, e, Some(h), 0);
             }
             let mut dim = match dm.kind {
                 K::Radius => Dimension::Radius(DimensionRadius::new(v3(a), v3(b))),
@@ -560,7 +582,7 @@ pub fn to_document(model: &Drawing) -> CadDocument {
         let name = format!("*D{}", n + 1);
         let h = block_record(&mut doc, &name);
         for e in &parts {
-            put(&mut doc, &d, e, Some(h));
+            put(&mut doc, &d, e, Some(h), 0);
         }
         let mut base = match dm.rotation {
             Some(r) => {
@@ -992,6 +1014,50 @@ mod tests {
             assert!(ds.file.contains("malgun") && ds.count == 1, "{ext} {ds:?}");
             std::fs::remove_dir_all(&dir).ok();
         }
+    }
+
+    /// 객체 고유 번호는 핸들로 나가 다시 읽어도 같다 (§83). 새 문서의 기본 핸들과 겹치는 작은 번호는 새 핸들
+    #[test]
+    fn entity_ids_survive_export() {
+        let mut d = crate::archgen::new_drawing();
+        let line = |id: u64, y: f64| Entity {
+            id,
+            layer: 0,
+            color: None,
+            aci: None,
+            linetype: None,
+            weight: None,
+            shape: Shape::Line {
+                a: Vec2::new(0.0, y),
+                b: Vec2::new(1000.0, y),
+            },
+        };
+        d.entities = vec![line(0x20, 0.0), line(0x5000, 100.0), line(0x1001, 200.0)];
+        d.next_id = 0x5001;
+        let dir = std::env::temp_dir().join(format!("dsmith-ids-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for ext in ["dxf", "dwg"] {
+            let p = dir.join(format!("i.{ext}"));
+            write(&d, &p).unwrap();
+            let back = crate::import::read_file(&p).unwrap();
+            assert_eq!(back.entities.len(), 3, "{ext}");
+            let ids: Vec<u64> = back.entities.iter().map(|e| e.id).collect();
+            // y 로 맞춰 본다
+            let id_at = |y: f64| {
+                back.entities
+                    .iter()
+                    .find(|e| matches!(e.shape, Shape::Line { a, .. } if (a.y - y).abs() < 1e-6))
+                    .map(|e| e.id)
+                    .unwrap()
+            };
+            assert_eq!(
+                (id_at(100.0), id_at(200.0)),
+                (0x5000, 0x1001),
+                "{ext} {ids:X?}"
+            );
+            assert_ne!(id_at(0.0), 0x20, "{ext}");
+        }
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
