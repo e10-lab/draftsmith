@@ -6,7 +6,7 @@
 //! 글자·채움은 자르지 않는다 (글자 뒤 가리개는 보통 글자보다 뒤에 그려 글자 밑 선을 지우는 용도).
 
 use crate::curve;
-use crate::drawing::{Drawing, Shape};
+use crate::drawing::{Drawing, Entity, Shape};
 use crate::fill;
 use crate::geom::{Bbox, Vec2};
 
@@ -117,76 +117,95 @@ fn cut(chs: &[Vec<Vec2>], ring: &[Vec2]) -> Option<Vec<(Vec2, Vec2)>> {
     changed.then_some(out)
 }
 
+/// 가리개 하나 (고리와 그 범위)
+#[derive(Debug, Clone, PartialEq)]
+pub struct Wipe {
+    pub ring: Vec<Vec2>,
+    pub bbox: Bbox,
+}
+
+/// 가리개 모양이면 그 고리 (점 셋 이상)
+pub fn wipe_of(s: &Shape) -> Option<Wipe> {
+    match s {
+        Shape::Wipeout { ring } if ring.len() >= 3 => {
+            let mut b = Bbox::EMPTY;
+            ring.iter().for_each(|p| b.add(*p));
+            Some(Wipe {
+                ring: ring.clone(),
+                bbox: b,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// 객체 하나를 그보다 뒤(위)에 그린 가리개들로 자른다. 잘렸으면 참. 가리개 자신은 자르지 않는다
+pub fn clip<'a>(e: &mut Entity, later: impl IntoIterator<Item = &'a Wipe>) -> bool {
+    if matches!(e.shape, Shape::Wipeout { .. }) {
+        return false;
+    }
+    let eb = e.shape.bbox();
+    let mut over = later
+        .into_iter()
+        .filter(|w| {
+            let b = &w.bbox;
+            b.min.x <= eb.max.x && b.max.x >= eb.min.x && b.min.y <= eb.max.y && b.max.y >= eb.min.y
+        })
+        .peekable();
+    if over.peek().is_none() {
+        return false;
+    }
+    let tol = (eb.width().max(eb.height()) * 1e-3).max(1e-6);
+    let Some(mut chs) = chains(&e.shape, tol) else {
+        return false;
+    };
+    let mut any = false;
+    for w in over {
+        if let Some(segs) = cut(&chs, &w.ring) {
+            any = true;
+            chs = segs.into_iter().map(|(a, b)| vec![a, b]).collect();
+        }
+    }
+    if any {
+        e.shape = Shape::Segments {
+            lines: chs.into_iter().map(|c| (c[0], c[1])).collect(),
+        };
+    }
+    any
+}
+
+/// 가리개 자신은 보이지 않게 (번호는 그대로)
+pub fn hide(e: &mut Entity) {
+    if matches!(e.shape, Shape::Wipeout { .. }) {
+        e.shape = Shape::Segments { lines: Vec::new() };
+    }
+}
+
 /// 보이는 도면의 가리개를 풀어 앞의 선을 자른다. 자른 객체 수
 pub fn apply(d: &mut Drawing) -> usize {
-    let wipes: Vec<(usize, Vec<Vec2>, Bbox)> = d
+    let wipes: Vec<(usize, Wipe)> = d
         .entities
         .iter()
         .enumerate()
-        .filter_map(|(i, e)| match &e.shape {
-            Shape::Wipeout { ring } if ring.len() >= 3 => {
-                let mut b = Bbox::EMPTY;
-                ring.iter().for_each(|p| b.add(*p));
-                Some((i, ring.clone(), b))
-            }
-            _ => None,
-        })
+        .filter_map(|(i, e)| wipe_of(&e.shape).map(|w| (i, w)))
         .collect();
     let mut n = 0;
-    if !wipes.is_empty() {
+    if let Some(last) = wipes.last().map(|w| w.0) {
         // 마지막 가리개보다 앞의 객체만 (자기보다 뒤·위에 있는 가리개만 가린다)
-        let last = wipes[wipes.len() - 1].0;
         for j in 0..last {
-            let e = &d.entities[j];
-            if matches!(e.shape, Shape::Wipeout { .. }) {
-                continue;
-            }
-            let eb = e.shape.bbox();
-            let over: Vec<&(usize, Vec<Vec2>, Bbox)> = wipes
-                .iter()
-                .filter(|(i, _, b)| {
-                    *i > j
-                        && b.min.x <= eb.max.x
-                        && b.max.x >= eb.min.x
-                        && b.min.y <= eb.max.y
-                        && b.max.y >= eb.min.y
-                })
-                .collect();
-            if over.is_empty() {
-                continue;
-            }
-            let tol = (eb.width().max(eb.height()) * 1e-3).max(1e-6);
-            let Some(mut chs) = chains(&e.shape, tol) else {
-                continue;
-            };
-            let mut any = false;
-            for (_, ring, _) in over {
-                if let Some(segs) = cut(&chs, ring) {
-                    any = true;
-                    chs = segs.into_iter().map(|(a, b)| vec![a, b]).collect();
-                }
-            }
-            if any {
-                d.entities[j].shape = Shape::Segments {
-                    lines: chs.into_iter().map(|c| (c[0], c[1])).collect(),
-                };
+            let later = wipes.iter().filter(|(i, _)| *i > j).map(|(_, w)| w);
+            if clip(&mut d.entities[j], later) {
                 n += 1;
             }
         }
     }
-    // 가리개 자신은 보이지 않게 (번호는 그대로)
-    for e in d.entities.iter_mut() {
-        if matches!(e.shape, Shape::Wipeout { .. }) {
-            e.shape = Shape::Segments { lines: Vec::new() };
-        }
-    }
+    d.entities.iter_mut().for_each(hide);
     n
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::drawing::Entity;
 
     fn ent(shape: Shape) -> Entity {
         Entity {

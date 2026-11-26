@@ -33,6 +33,7 @@ pub mod pick;
 pub mod sample;
 pub mod section;
 pub mod sheet;
+pub mod shown;
 pub mod shp;
 pub mod shx;
 pub mod snap;

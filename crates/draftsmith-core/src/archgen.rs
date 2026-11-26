@@ -125,7 +125,7 @@ struct DimLook {
 }
 
 /// 생성한 객체 하나의 주인 (종류, 번호)
-type Owner = (&'static str, u64);
+pub(crate) type Owner = (&'static str, u64);
 
 struct Gen<'a> {
     d: &'a mut Drawing,
@@ -380,20 +380,26 @@ pub fn with_arch_owned(d: &Drawing) -> Option<(Drawing, Vec<(String, u64)>)> {
     with_arch_scaled(d, 100.0)
 }
 
-/// 축척별 표현 (§42): 글자·그리드 기호는 축척에 맞춰 (종이 위 2.5 mm 등), 1:200 보다 작으면 문 열림 호·창호 기호·
-/// 실 면적 글자를 뺀다
-pub fn with_arch_scaled(d: &Drawing, scale: f64) -> Option<(Drawing, Vec<(String, u64)>)> {
+/// 보이는 도면을 따로 만들어야 하나 (건축 객체·블록 참조·해치·가리개·SHX 글자가 있으면). 아니면 모형 그대로 보인다
+pub fn needs_shown(d: &Drawing) -> bool {
     let has_special = d.entities.iter().any(|e| {
         matches!(
             e.shape,
             Shape::Insert { .. } | Shape::Hatch { .. } | Shape::Wipeout { .. }
         )
     });
-    // SHX 글꼴 폴더가 있고 가져온 글자 스타일이 있으면 글자를 SHX 획으로 (§59)
     let shx = crate::shx::folder().is_some() && !d.fonts.is_empty();
-    if d.arch.is_empty() && !has_special && !shx {
+    !d.arch.is_empty() || has_special || shx
+}
+
+/// 축척별 표현 (§42): 글자·그리드 기호는 축척에 맞춰 (종이 위 2.5 mm 등), 1:200 보다 작으면 문 열림 호·창호 기호·
+/// 실 면적 글자를 뺀다
+pub fn with_arch_scaled(d: &Drawing, scale: f64) -> Option<(Drawing, Vec<(String, u64)>)> {
+    if !needs_shown(d) {
         return None;
     }
+    // SHX 글꼴 폴더가 있고 가져온 글자 스타일이 있으면 글자를 SHX 획으로 (§59)
+    let shx = crate::shx::folder().is_some() && !d.fonts.is_empty();
     let mut out = d.clone();
     let made = generate_scaled(&mut out, scale);
     let owners = made
@@ -428,10 +434,6 @@ fn generate(d: &mut Drawing) -> Vec<(Entity, Owner)> {
 }
 
 fn generate_scaled(d: &mut Drawing, scale: f64) -> Vec<(Entity, Owner)> {
-    let scale = if scale > 0.0 { scale } else { 100.0 };
-    let coarse = scale >= 200.0 - 1e-9;
-    let k = scale / 100.0;
-    let m = d.arch.clone();
     // 블록 참조 펼치기 (§30)
     let mut blocks = Vec::new();
     for (i, e) in d.entities.iter().enumerate() {
@@ -443,7 +445,20 @@ fn generate_scaled(d: &mut Drawing, scale: f64) -> Vec<(Entity, Owner)> {
             );
         }
     }
-    let mut g = Gen { d, out: blocks };
+    generate_arch(d, scale, blocks)
+}
+
+/// 건축 객체가 만드는 선 (`out` 뒤에 붙여서). 레이어·선 종류가 없으면 `d` 에 더한다
+pub(crate) fn generate_arch(
+    d: &mut Drawing,
+    scale: f64,
+    out: Vec<(Entity, Owner)>,
+) -> Vec<(Entity, Owner)> {
+    let scale = if scale > 0.0 { scale } else { 100.0 };
+    let coarse = scale >= 200.0 - 1e-9;
+    let k = scale / 100.0;
+    let m = d.arch.clone();
+    let mut g = Gen { d, out };
     let level = m.active_level;
     // 벽·문·창은 곡선 벽을 곧은 조각으로 나눈 모델로 그리고, 조각의 주인은 원래 벽으로 (§54)
     let (sm, seg_of) = m.straightened();

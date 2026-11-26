@@ -47,6 +47,10 @@ struct Open {
     owners: Vec<(String, u64)>,
     /// 객체별 표시 데이터 캐시 — 편집 뒤 바뀐 객체만 다시 펼친다 (§66)
     seg_cache: display::SegCache,
+    /// 보이는 도면 캐시 — 편집 뒤 바뀐 모형 객체 몫만 다시 (§72)
+    shown_cache: draftsmith_core::shown::ShownCache,
+    /// 지금 `view` 가 보이는 도면 캐시가 만든 것인가 (배치를 합친 종이 도면이면 아님)
+    view_cached: bool,
 }
 
 impl Open {
@@ -57,12 +61,20 @@ impl Open {
 
     /// 편집한 뒤: 보이는 도면을 다시 만들고 스냅·고르기 색인도 다시
     fn refresh(&mut self) {
+        // 지난 보이는 도면이 캐시가 만든 것이면 돌려주고 바뀐 객체 몫만 고치게 (§72)
+        let prev = self
+            .view
+            .take()
+            .filter(|_| self.view_cached)
+            .map(|v| (v, std::mem::take(&mut self.owners)));
         self.owners.clear();
+        self.view_cached = false;
         self.view = match (&self.ed, self.sheet) {
             (None, _) => None,
             (Some(e), Some(i)) => sheet::compose(&e.d, i),
-            (Some(e), None) => archgen::with_arch_owned(&e.d).map(|(v, o)| {
+            (Some(e), None) => self.shown_cache.update(&e.d, 100.0, prev).map(|(v, o)| {
                 self.owners = o;
+                self.view_cached = true;
                 v
             }),
         };

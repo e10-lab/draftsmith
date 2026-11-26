@@ -186,10 +186,25 @@ fn main() -> Result<()> {
                 bytes.len() as f64 / 1e6
             );
             println!("읽기        {:8.1} ms", ms(t0, tr));
+            // 보이는 도면 캐시 (§72): 한 객체를 바꾼 뒤 바뀐 몫만
+            let mut shc = draftsmith_core::shown::ShownCache::default();
+            let first = shc.update(&model, 100.0, None);
+            let mut m2 = model.clone();
+            let k = m2.entities.len() / 2;
+            if let Some(e) = m2.entities.get_mut(k) {
+                e.color = Some([1, 2, 3]);
+            }
+            let tc = Instant::now();
+            let second = shc.update(&m2, 100.0, first);
+            let tc2 = Instant::now();
+            // 앱은 결과를 다음 편집에 다시 쓰므로 버리는 시간은 재지 않는다
+            drop(second);
             println!(
-                "보이는 도면 {:8.1} ms (편집마다 다시 — {:.1} ms)",
+                "보이는 도면 {:8.1} ms (편집마다 다시 — {:.1} ms · 캐시 {:.1} ms, 다시 처리한 모형 객체 {})",
                 ms(tr, t1),
-                ms(t1, tv) / 3.0
+                ms(t1, tv) / 3.0,
+                ms(tc, tc2),
+                shc.changed
             );
             println!("선분 펼치기 {:8.1} ms", ms(t1, t2));
             println!("바이너리    {:8.1} ms", ms(t2, t3));

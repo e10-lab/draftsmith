@@ -671,41 +671,44 @@ pub fn lay(t: &TextShape, main: Option<&Font>, big: Option<&Font>) -> Option<Lai
     any.then_some(out)
 }
 
-/// 보이는 도면의 글자 중 SHX 글꼴이 폴더에 있는 것을 획으로 바꾼다 (자리는 그대로 — 번호가 안 바뀜).
-/// SHX 에 없는 글자는 내장 글꼴 글자로 맨 뒤에 붙는다. 바꾼 글자 수
-pub fn apply(d: &mut Drawing) -> usize {
-    if folder().is_none() || d.fonts.is_empty() {
-        return 0;
+/// 글자 스타일 → SHX 글꼴 짝 (폴더에 있는 것만). 보이는 도면 단계가 객체마다 쓴다 (§59·§72)
+pub struct Styles(HashMap<String, FontPair>);
+
+impl Styles {
+    /// 폴더가 없거나 쓸 글꼴이 하나도 없으면 None
+    pub fn of(d: &Drawing) -> Option<Styles> {
+        if folder().is_none() || d.fonts.is_empty() {
+            return None;
+        }
+        let styles: HashMap<String, FontPair> = d
+            .fonts
+            .iter()
+            .map(|f| {
+                (
+                    f.style.to_ascii_lowercase(),
+                    (font(&f.font), font(&f.big_font)),
+                )
+            })
+            .filter(|(_, (a, b))| a.is_some() || b.is_some())
+            .collect();
+        (!styles.is_empty()).then_some(Styles(styles))
     }
-    // 스타일 → (기본 글꼴, 큰 글꼴)
-    let styles: HashMap<String, FontPair> = d
-        .fonts
-        .iter()
-        .map(|f| {
-            (
-                f.style.to_ascii_lowercase(),
-                (font(&f.font), font(&f.big_font)),
-            )
-        })
-        .filter(|(_, (a, b))| a.is_some() || b.is_some())
-        .collect();
-    if styles.is_empty() {
-        return 0;
-    }
-    let mut extra: Vec<Entity> = Vec::new();
-    let mut n = 0;
-    for e in d.entities.iter_mut() {
-        let Shape::Text(t) = &e.shape else { continue };
+
+    /// 글자 객체 하나를 획으로 (자리는 그대로). SHX 에 없는 글자는 `extra` 에 내장 글꼴 글자로. 바꿨으면 참
+    pub fn stroke(&self, e: &mut Entity, extra: &mut Vec<Entity>) -> bool {
+        let Shape::Text(t) = &e.shape else {
+            return false;
+        };
         let key = if t.style.is_empty() {
             "standard".to_string()
         } else {
             t.style.to_ascii_lowercase()
         };
-        let Some((m, b)) = styles.get(&key) else {
-            continue;
+        let Some((m, b)) = self.0.get(&key) else {
+            return false;
         };
         let Some(laid) = lay(t, m.as_deref(), b.as_deref()) else {
-            continue;
+            return false;
         };
         for r in laid.rest {
             extra.push(Entity {
@@ -714,7 +717,22 @@ pub fn apply(d: &mut Drawing) -> usize {
             });
         }
         e.shape = Shape::Segments { lines: laid.lines };
-        n += 1;
+        true
+    }
+}
+
+/// 보이는 도면의 글자 중 SHX 글꼴이 폴더에 있는 것을 획으로 바꾼다 (자리는 그대로 — 번호가 안 바뀜).
+/// SHX 에 없는 글자는 내장 글꼴 글자로 맨 뒤에 붙는다. 바꾼 글자 수
+pub fn apply(d: &mut Drawing) -> usize {
+    let Some(styles) = Styles::of(d) else {
+        return 0;
+    };
+    let mut extra: Vec<Entity> = Vec::new();
+    let mut n = 0;
+    for e in d.entities.iter_mut() {
+        if styles.stroke(e, &mut extra) {
+            n += 1;
+        }
     }
     d.entities.extend(extra);
     n
