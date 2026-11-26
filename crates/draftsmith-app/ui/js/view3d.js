@@ -1,4 +1,4 @@
-// 3D 보기 (M6, 구현 노트 §24). Rust `model_3d` 가 준 DSM3 삼각형을 WebGL2 로 그린다.
+// 3D 보기 (M6, 구현 노트 §24). Rust `model_3d` 가 준 DSM4 삼각형(꼭짓점 법선, §79)을 WebGL2 로 그린다.
 // 끌기: 돌려 보기, Shift·가운데 끌기: 옮기기, 휠: 가까이·멀리. 유리(반투명)는 불투명 면 뒤에 따로 그린다.
 
 const VS = `#version 300 es
@@ -101,16 +101,16 @@ export class View3D {
     // 불투명 먼저, 반투명 뒤에
     const order = [];
     for (let i = 0; i < n; i++) order.push(i);
-    const alpha = (i) => dv.getUint8(24 + i * 52 + 51);
+    const alpha = (i) => dv.getUint8(24 + i * 76 + 75);
     order.sort((a, b) => (alpha(a) === 255 ? 0 : 1) - (alpha(b) === 255 ? 0 : 1));
     const pos = new Float32Array(n * 9), nrm = new Float32Array(n * 9), col = new Uint8Array(n * 12);
     let opaque = 0;
     order.forEach((t, k) => {
-      const o = 24 + t * 52;
+      const o = 24 + t * 76;
       for (let j = 0; j < 9; j++) pos[k * 9 + j] = dv.getFloat32(o + j * 4, true);
-      for (let v = 0; v < 3; v++) for (let j = 0; j < 3; j++) nrm[k * 9 + v * 3 + j] = dv.getFloat32(o + 36 + j * 4, true);
-      for (let v = 0; v < 3; v++) for (let j = 0; j < 4; j++) col[k * 12 + v * 4 + j] = dv.getUint8(o + 48 + j);
-      if (dv.getUint8(o + 51) === 255) opaque++;
+      for (let j = 0; j < 9; j++) nrm[k * 9 + j] = dv.getFloat32(o + 36 + j * 4, true);
+      for (let v = 0; v < 3; v++) for (let j = 0; j < 4; j++) col[k * 12 + v * 4 + j] = dv.getUint8(o + 72 + j);
+      if (dv.getUint8(o + 75) === 255) opaque++;
     });
     const gl = this.gl;
     gl.bindVertexArray(this.vao);
