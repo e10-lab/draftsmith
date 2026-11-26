@@ -550,6 +550,121 @@ impl Shape {
     }
 }
 
+/// 폭 있는 폴리선 `orig` 을 평행 복사(간격 띄우기)한 폴리선에 폭을 되붙인다 (§76): 꼭짓점 수가 같으면 꼭짓점마다 그대로
+pub fn rewiden_parallel(orig: &Shape, new: Shape) -> Shape {
+    if let (
+        Shape::Wide {
+            points: op,
+            closed: oc,
+            widths,
+        },
+        Shape::Polyline { points, closed },
+    ) = (orig, &new)
+        && points.len() == op.len()
+        && closed == oc
+    {
+        return Shape::Wide {
+            points: points.clone(),
+            closed: *closed,
+            widths: widths.clone(),
+        };
+    }
+    rewiden(orig, new)
+}
+
+/// 폭 있는 폴리선 `orig` 을 편집해 나온 폴리선(또는 선)에 폭을 되붙인다 (§76). 폭이 모두 같으면 [`Shape::widen`] 과 같다.
+/// 아니면 새 변 양 끝 폭을 원래 폴리선에서 그 변 가운데가 가장 가까운 변의 그 자리 폭(시작 → 끝 길이 비례)으로 —
+/// 자르면 잘린 자리 폭, 모깎기 호는 앞뒤 변 폭을 잇는다
+pub fn rewiden(orig: &Shape, new: Shape) -> Shape {
+    let Shape::Wide {
+        points: op,
+        closed: oc,
+        widths: ow,
+    } = orig
+    else {
+        return new;
+    };
+    let w0 = ow.first().map(|w| w.0).unwrap_or(0.0);
+    if ow.iter().all(|w| w.0 == w0 && w.1 == w0) {
+        return new.widen(w0);
+    }
+    let (points, closed) = match new {
+        Shape::Polyline { points, closed } => (points, closed),
+        Shape::Line { a, b } => (vec![(a, 0.0), (b, 0.0)], false),
+        other => return other,
+    };
+    let n = points.len();
+    // 원래 변들을 잘게 펼쳐 (변 번호, 변 안 비율 시작·끝, 점 둘)
+    let on = op.len();
+    let osegs = if *oc { on } else { on.saturating_sub(1) };
+    let mut subs: Vec<(usize, f64, f64, Vec2, Vec2)> = Vec::new();
+    for j in 0..osegs {
+        let (p, g) = op[j];
+        let q = op[(j + 1) % on].0;
+        let mut pts = Vec::new();
+        let tol = (p.dist(q) * 1e-3).max(1e-9);
+        crate::curve::bulge_points(p, q, g, tol, &mut pts);
+        pts.push(q);
+        let len: f64 = pts
+            .windows(2)
+            .map(|w| w[0].dist(w[1]))
+            .sum::<f64>()
+            .max(1e-300);
+        let mut acc = 0.0;
+        for w in pts.windows(2) {
+            let l = w[0].dist(w[1]);
+            subs.push((j, acc / len, (acc + l) / len, w[0], w[1]));
+            acc += l;
+        }
+    }
+    // 점 x 에서 가장 가까운 원래 자리 (변 번호, 비율). `only` 면 그 변에서만
+    let near = |x: Vec2, only: Option<usize>| -> (usize, f64) {
+        let mut best = (f64::INFINITY, 0usize, 0.0);
+        for &(j, f0, f1, a, b) in &subs {
+            if only.is_some_and(|o| o != j) {
+                continue;
+            }
+            let (dx, dy) = (b.x - a.x, b.y - a.y);
+            let l2 = dx * dx + dy * dy;
+            let t = if l2 < 1e-300 {
+                0.0
+            } else {
+                (((x.x - a.x) * dx + (x.y - a.y) * dy) / l2).clamp(0.0, 1.0)
+            };
+            let d = x.dist(Vec2::new(a.x + dx * t, a.y + dy * t));
+            if d < best.0 {
+                best = (d, j, f0 + (f1 - f0) * t);
+            }
+        }
+        (best.1, best.2)
+    };
+    let width_at = |j: usize, f: f64| ow[j].0 + (ow[j].1 - ow[j].0) * f;
+    let segs = if closed { n } else { n.saturating_sub(1) };
+    let mut widths = vec![(0.0, 0.0); n];
+    for (i, w) in widths.iter_mut().enumerate().take(segs) {
+        let (p, g) = points[i];
+        let q = points[(i + 1) % n].0;
+        // 변 가운데 (호면 호 위 가운데)
+        let mut mid = Vec::new();
+        crate::curve::bulge_points(p, q, g, (p.dist(q) * 1e-2).max(1e-9), &mut mid);
+        mid.push(q);
+        let m = if mid.len() > 2 {
+            mid[mid.len() / 2]
+        } else {
+            p.lerp(q, 0.5)
+        };
+        let (j, _) = near(m, None);
+        let (_, fa) = near(p, Some(j));
+        let (_, fb) = near(q, Some(j));
+        *w = (width_at(j, fa), width_at(j, fb));
+    }
+    Shape::Wide {
+        points,
+        closed,
+        widths,
+    }
+}
+
 /// 두 객체 목록의 같은 앞부분·뒷부분 길이 (겹치지 않게) — 편집 뒤 바뀐 가운데만 다시 셈하려고 (§69)
 pub fn align(old: &[Entity], new: &[Entity]) -> (usize, usize) {
     let n = old.len().min(new.len());
@@ -815,8 +930,79 @@ mod wide_tests {
             s => panic!("{s:?}"),
         }
     }
-}
 
+    /// 폭이 변하는 폴리선을 고친 뒤 폭 되붙이기 (§76)
+    #[test]
+    fn rewiden_keeps_varying_widths() {
+        let pl = |pts: &[(f64, f64, f64)]| Shape::Polyline {
+            points: pts.iter().map(|&(x, y, g)| (Vec2::new(x, y), g)).collect(),
+            closed: false,
+        };
+        let widths = |s: &Shape| match s {
+            Shape::Wide { widths, .. } => widths.clone(),
+            s => panic!("{s:?}"),
+        };
+        let close =
+            |a: (f64, f64), b: (f64, f64)| (a.0 - b.0).abs() < 1e-6 && (a.1 - b.1).abs() < 1e-6;
+        // 화살표처럼 가늘어지는 ㄱ자: 변 0 은 1 → 3, 변 1 은 3 → 5
+        let orig = Shape::Wide {
+            points: vec![
+                (Vec2::new(0.0, 0.0), 0.0),
+                (Vec2::new(10.0, 0.0), 0.0),
+                (Vec2::new(10.0, 10.0), 0.0),
+            ],
+            closed: false,
+            widths: vec![(1.0, 3.0), (3.0, 5.0), (0.0, 0.0)],
+        };
+        // 자르기: 변 1 가운데에서 끝 — 잘린 자리 폭 4
+        let w = widths(&rewiden(
+            &orig,
+            pl(&[(0.0, 0.0, 0.0), (10.0, 0.0, 0.0), (10.0, 5.0, 0.0)]),
+        ));
+        assert!(close(w[0], (1.0, 3.0)) && close(w[1], (3.0, 4.0)), "{w:?}");
+        // 선 하나로 줄면 (변 0 의 앞 절반)
+        let w = widths(&rewiden(
+            &orig,
+            Shape::Line {
+                a: Vec2::new(0.0, 0.0),
+                b: Vec2::new(5.0, 0.0),
+            },
+        ));
+        assert!(close(w[0], (1.0, 2.0)), "{w:?}");
+        // 모깎기: 꼭짓점이 늘어도 앞뒤 변은 제 폭 (호 양 끝도 그 자리 폭)
+        let g = (std::f64::consts::FRAC_PI_4 / 2.0).tan();
+        let w = widths(&rewiden(
+            &orig,
+            pl(&[
+                (0.0, 0.0, 0.0),
+                (8.0, 0.0, g),
+                (10.0, 2.0, 0.0),
+                (10.0, 10.0, 0.0),
+            ]),
+        ));
+        assert!(close(w[0], (1.0, 2.6)) && close(w[2], (3.4, 5.0)), "{w:?}");
+        // 평행 복사는 꼭짓점 수가 같으면 그대로
+        let w = widths(&rewiden_parallel(
+            &orig,
+            pl(&[(0.0, 1.0, 0.0), (9.0, 1.0, 0.0), (9.0, 10.0, 0.0)]),
+        ));
+        assert_eq!(w, vec![(1.0, 3.0), (3.0, 5.0), (0.0, 0.0)]);
+        // 폭이 고르면 전처럼 고정 폭
+        let even = Shape::Wide {
+            points: vec![(Vec2::new(0.0, 0.0), 0.0), (Vec2::new(10.0, 0.0), 0.0)],
+            closed: false,
+            widths: vec![(2.0, 2.0); 2],
+        };
+        let w = widths(&rewiden(
+            &even,
+            pl(&[(0.0, 0.0, 0.0), (4.0, 0.0, 0.0), (9.0, 0.0, 0.0)]),
+        ));
+        assert_eq!(w, vec![(2.0, 2.0); 3]);
+        // 실제 간격 띄우기 경로
+        let off = crate::edit::offset_shape(&orig, 0.5, Vec2::new(5.0, 5.0)).unwrap();
+        assert_eq!(widths(&off), vec![(1.0, 3.0), (3.0, 5.0), (0.0, 0.0)]);
+    }
+}
 #[cfg(test)]
 mod text_style_tests {
     use super::*;

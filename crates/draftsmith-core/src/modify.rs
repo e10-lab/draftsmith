@@ -291,7 +291,7 @@ fn rebuild(orig: &Shape, ps: &[Piece]) -> Option<Shape> {
         return None;
     }
     // 폭 있는 폴리선: 폴리선으로 만들고 대표 폭을 되붙인다 (§67)
-    if let Some((thin, w)) = orig.thin() {
+    if let Some((thin, _)) = orig.thin() {
         let r = rebuild(&thin, ps)?;
         let r = match r {
             Shape::Line { a, b } => Shape::Polyline {
@@ -301,7 +301,7 @@ fn rebuild(orig: &Shape, ps: &[Piece]) -> Option<Shape> {
             Shape::Arc { .. } => return Some(r),
             other => other,
         };
-        return Some(r.widen(w));
+        return Some(crate::drawing::rewiden(orig, r));
     }
     let arc_shape = |p: &Piece| match *p {
         Piece::Arc { c, r, s, sw } => {
@@ -790,8 +790,8 @@ pub enum Corner {
 
 /// 폴리선의 고른 점에서 가장 가까운 꼭짓점(앞뒤 변이 직선인 것)을 모깎기·모따기한 폴리선
 pub fn corner_polyline(s: &Shape, pick: Vec2, c: Corner) -> Result<Shape, String> {
-    if let Some((thin, w)) = s.thin() {
-        return corner_polyline(&thin, pick, c).map(|r| r.widen(w));
+    if let Some((thin, _)) = s.thin() {
+        return corner_polyline(&thin, pick, c).map(|r| crate::drawing::rewiden(s, r));
     }
     let Shape::Polyline { points, closed } = s else {
         return Err("폴리선이 아닙니다".into());
@@ -1006,6 +1006,21 @@ mod wide_edit_tests {
             Shape::Wide { points, widths, .. } => {
                 assert_eq!(points[1].0, Vec2::new(1000.0, 300.0));
                 assert_eq!(widths.len(), 2);
+            }
+            s => panic!("{s:?}"),
+        }
+        // 가늘어지는 폴리선 (0 → 100) 을 가운데에서 자르면 잘린 자리 폭 50 (§76)
+        d.entities[0].shape = Shape::Wide {
+            points: vec![(Vec2::new(0.0, 0.0), 0.0), (Vec2::new(1000.0, 0.0), 0.0)],
+            closed: false,
+            widths: vec![(0.0, 100.0), (0.0, 0.0)],
+        };
+        match &trim(&d, 0, Vec2::new(800.0, 0.0)).unwrap()[0] {
+            Shape::Wide { widths, .. } => {
+                assert!(
+                    (widths[0].0).abs() < 1e-9 && (widths[0].1 - 50.0).abs() < 1e-6,
+                    "{widths:?}"
+                )
             }
             s => panic!("{s:?}"),
         }

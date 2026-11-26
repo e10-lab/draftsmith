@@ -192,58 +192,11 @@ fn emit(d: &Drawing, e: &Entity, tol: f64, s: &mut Segments, pieces: &mut Vec<Ve
         Shape::Wipeout { .. } => return,
         Shape::Hatch { .. } => return,
         Shape::Insert { .. } => return,
-        Shape::Line { a, b } => pieces.push(vec![*a, *b]),
-        Shape::Polyline { points, closed } => {
-            if dash.is_some() {
-                // 꼭짓점마다 무늬를 새로 시작
-                let n = points.len();
-                let last = if *closed { n } else { n.saturating_sub(1) };
-                for i in 0..last {
-                    let (p, g) = points[i];
-                    let q = points[(i + 1) % n].0;
-                    let mut piece = Vec::new();
-                    curve::bulge_points(p, q, g, tol, &mut piece);
-                    piece.push(q);
-                    pieces.push(piece);
-                }
-            } else {
-                let mut pts = curve::polyline_points(points, *closed, tol);
-                if *closed && pts.len() > 2 {
-                    pts.push(pts[0]);
-                }
-                pieces.push(pts);
-            }
-        }
-        Shape::Circle { center, radius } => {
-            let mut pts = Vec::new();
-            let (u, v) = (Vec2::new(*radius, 0.0), Vec2::new(0.0, *radius));
-            curve::ellipse_points(*center, u, v, 0.0, TAU, tol, &mut pts);
-            pieces.push(pts);
-        }
-        Shape::Arc {
-            center,
-            radius,
-            start,
-            end,
-        } => {
-            let mut pts = Vec::new();
-            let (u, v) = (Vec2::new(*radius, 0.0), Vec2::new(0.0, *radius));
-            let sweep = curve::ccw_sweep(*start, *end);
-            curve::ellipse_points(*center, u, v, *start, sweep, tol, &mut pts);
-            pieces.push(pts);
-        }
-        Shape::Ellipse {
-            center,
-            u,
-            v,
-            start,
-            end,
-        } => {
-            let mut pts = Vec::new();
-            let sweep = curve::ccw_sweep(*start, *end);
-            curve::ellipse_points(*center, *u, *v, *start, sweep, tol, &mut pts);
-            pieces.push(pts);
-        }
+        Shape::Line { .. }
+        | Shape::Polyline { .. }
+        | Shape::Circle { .. }
+        | Shape::Arc { .. }
+        | Shape::Ellipse { .. } => line_chains(&e.shape, dash.is_some(), tol, pieces),
         Shape::Fill { loops } => {
             let t = fill::triangulate(loops);
             for tri in t.as_chunks::<3>().0 {
@@ -493,11 +446,83 @@ pub const MAX_DASH_REPEATS: f64 = 2_000.0;
 
 /// 꺾은선을 따라 대시 무늬를 그린다. 무늬는 꺾은선 처음에서 시작하고, 꺾인 곳을 지나는 대시는 꺾인 채로 이어진다.
 fn dash_chain(s: &mut Segments, pts: &[Vec2], dashes: &[f64], scale: f64, tol: f64, col: [u8; 4]) {
+    if !dash_lines(pts, dashes, scale, tol, &mut |a, b| s.push(a, b, col)) {
+        s.strip(pts, false, col);
+    }
+}
+
+/// 선·곡선 모양 → 그릴 꺾은선들. 점선이면 폴리선은 꼭짓점마다 따로 (무늬를 새로 시작). 가리개 자르기도 쓴다 (§75)
+pub(crate) fn line_chains(shape: &Shape, dashed: bool, tol: f64, pieces: &mut Vec<Vec<Vec2>>) {
+    match shape {
+        Shape::Line { a, b } => pieces.push(vec![*a, *b]),
+        Shape::Polyline { points, closed } => {
+            if dashed {
+                // 꼭짓점마다 무늬를 새로 시작
+                let n = points.len();
+                let last = if *closed { n } else { n.saturating_sub(1) };
+                for i in 0..last {
+                    let (p, g) = points[i];
+                    let q = points[(i + 1) % n].0;
+                    let mut piece = Vec::new();
+                    curve::bulge_points(p, q, g, tol, &mut piece);
+                    piece.push(q);
+                    pieces.push(piece);
+                }
+            } else {
+                let mut pts = curve::polyline_points(points, *closed, tol);
+                if *closed && pts.len() > 2 {
+                    pts.push(pts[0]);
+                }
+                pieces.push(pts);
+            }
+        }
+        Shape::Circle { center, radius } => {
+            let mut pts = Vec::new();
+            let (u, v) = (Vec2::new(*radius, 0.0), Vec2::new(0.0, *radius));
+            curve::ellipse_points(*center, u, v, 0.0, TAU, tol, &mut pts);
+            pieces.push(pts);
+        }
+        Shape::Arc {
+            center,
+            radius,
+            start,
+            end,
+        } => {
+            let mut pts = Vec::new();
+            let (u, v) = (Vec2::new(*radius, 0.0), Vec2::new(0.0, *radius));
+            let sweep = curve::ccw_sweep(*start, *end);
+            curve::ellipse_points(*center, u, v, *start, sweep, tol, &mut pts);
+            pieces.push(pts);
+        }
+        Shape::Ellipse {
+            center,
+            u,
+            v,
+            start,
+            end,
+        } => {
+            let mut pts = Vec::new();
+            let sweep = curve::ccw_sweep(*start, *end);
+            curve::ellipse_points(*center, *u, *v, *start, sweep, tol, &mut pts);
+            pieces.push(pts);
+        }
+        _ => {}
+    }
+}
+
+/// 꺾은선 하나를 무늬대로 끊은 선분들을 `push` 로. 무늬가 너무 잘거나(허용 오차의 두 배 이하) 반복이 너무 많으면
+/// 끊지 않고 거짓 (그러면 실선으로)
+pub(crate) fn dash_lines(
+    pts: &[Vec2],
+    dashes: &[f64],
+    scale: f64,
+    tol: f64,
+    push: &mut dyn FnMut(Vec2, Vec2),
+) -> bool {
     let period: f64 = dashes.iter().map(|x| x.abs()).sum::<f64>() * scale;
     let len: f64 = pts.windows(2).map(|w| w[0].dist(w[1])).sum();
     if pts.len() < 2 || period <= tol * 2.0 || len / period > MAX_DASH_REPEATS {
-        s.strip(pts, false, col);
-        return;
+        return false;
     }
     let dot = (tol * 0.5).max(period * 1e-3);
     // 무늬 상태: 지금 요소 번호, 남은 길이, 선인지
@@ -516,12 +541,12 @@ fn dash_chain(s: &mut Segments, pts: &[Vec2], dashes: &[f64], scale: f64, tol: f
             if remain <= 0.0 {
                 // 점(길이 0): 진행 방향으로 아주 짧게 찍고 다음 요소로
                 if on {
-                    s.push(at(t), at((t + dot).min(l)), col);
+                    push(at(t), at((t + dot).min(l)));
                 }
             } else {
                 let step = remain.min(l - t);
                 if on {
-                    s.push(at(t), at(t + step), col);
+                    push(at(t), at(t + step));
                 }
                 t += step;
                 remain -= step;
@@ -534,6 +559,7 @@ fn dash_chain(s: &mut Segments, pts: &[Vec2], dashes: &[f64], scale: f64, tol: f
             on = dashes[di] >= 0.0;
         }
     }
+    true
 }
 
 /// 문자 표시 데이터 (`DST1`). 꺼진 레이어는 뺀다. origin 은 [`segments`] 와 같다.

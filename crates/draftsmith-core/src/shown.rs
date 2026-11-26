@@ -40,6 +40,8 @@ pub struct ShownCache {
     blocks: Vec<Block>,
     zero: Option<usize>,
     fonts: Vec<FontUse>,
+    /// 선 종류 무늬 (가리개에 잘린 점선이 무늬를 쓴다, §75)
+    linetypes: Vec<crate::drawing::LinePattern>,
     shx: Option<PathBuf>,
     /// 지난번 모형 객체
     src: Vec<Entity>,
@@ -120,6 +122,7 @@ impl ShownCache {
             || self.zero != zero
             || self.shx != shx
             || self.fonts != d.fonts
+            || self.linetypes != d.linetypes
             || self.blocks != d.blocks;
         let (mut pre, mut old_end, mut new_end) = (0, self.src.len(), d.entities.len());
         if !fresh {
@@ -231,12 +234,12 @@ impl ShownCache {
             let wipes = &self.wipes;
             let later = |at: Pos| wipes.iter().filter(move |(p, _)| *p > at).map(|(_, w)| w);
             for (i, e) in ents.iter_mut().enumerate().take(new_end).skip(pre) {
-                wipeout::clip(e, later((0, i, 0)));
+                wipeout::clip(e, later((0, i, 0)), &d.linetypes);
             }
             let mut m = exp_at;
             for j in pre..new_end {
                 for k in 0..self.pieces[j].exp {
-                    wipeout::clip(&mut ents[m + k], later((1, j, k)));
+                    wipeout::clip(&mut ents[m + k], later((1, j, k)), &d.linetypes);
                 }
                 m += self.pieces[j].exp;
             }
@@ -321,6 +324,7 @@ impl ShownCache {
             self.src = d.entities.clone();
             self.blocks = d.blocks.clone();
             self.fonts = d.fonts.clone();
+            self.linetypes = d.linetypes.clone();
             self.zero = zero;
             self.shx = shx;
             self.valid = true;
