@@ -100,6 +100,21 @@ fn dxf_config(failsafe: bool) -> acadrust::DxfReaderConfiguration {
     }
 }
 
+/// 채운 화살촉 (§88): 끝 `tip`, `from` 쪽으로 길이 `size`, 폭 size/3
+fn arrowhead(tip: Vec2, from: Vec2, size: f64) -> Shape {
+    let l = tip.dist(from).max(1e-12);
+    let (ux, uy) = ((from.x - tip.x) / l, (from.y - tip.y) / l);
+    let base = Vec2::new(tip.x + ux * size, tip.y + uy * size);
+    let w = size / 6.0;
+    Shape::Fill {
+        loops: vec![vec![
+            tip,
+            Vec2::new(base.x - uy * w, base.y + ux * w),
+            Vec2::new(base.x + uy * w, base.y - ux * w),
+        ]],
+    }
+}
+
 fn v2(v: &Vector3) -> Vec2 {
     Vec2::new(v.x, v.y)
 }
@@ -155,6 +170,21 @@ struct Converter<'a> {
     arrow_mode: bool,
     /// 지금 넣는 맨 위 객체의 DWG·DXF 핸들 — 객체 고유 번호로 (§82)
     cur_handle: u64,
+    /// 끝없는 선(XLINE·RAY, §88): 다 읽은 뒤 다른 객체 범위로 잘라 넣는다 — (레이어, 색, 선 종류·굵기·색 번호·핸들, 기준점, 방향, 반직선인가)
+    pending_lines: Vec<PendingLine>,
+}
+
+/// 다 읽은 뒤 잘라 넣을 끝없는 선 (§88)
+struct PendingLine {
+    layer: u32,
+    color: Option<[u8; 3]>,
+    lt: Option<LineStyle>,
+    w: Option<u16>,
+    aci: Option<u8>,
+    handle: u64,
+    at: Vec2,
+    dir: Vec2,
+    ray: bool,
 }
 
 impl<'a> Converter<'a> {
@@ -165,6 +195,152 @@ impl<'a> Converter<'a> {
         let i = self.d.layer_index(name);
         self.layer_ids.insert(name.to_string(), i);
         i
+    }
+
+    /// 끝없는 선을 미뤄 둔다 (§88)
+    fn defer_line(
+        &mut self,
+        layer: u32,
+        color: Option<[u8; 3]>,
+        t: &Affine,
+        at: &Vector3,
+        dir: &Vector3,
+        ray: bool,
+    ) {
+        let p = t.apply(v2(at));
+        let q = t.apply(Vec2::new(at.x + dir.x, at.y + dir.y));
+        let d = Vec2::new(q.x - p.x, q.y - p.y);
+        let l = d.x.hypot(d.y);
+        if l < 1e-12 {
+            self.skip(if ray {
+                "RAY(방향 없음)"
+            } else {
+                "XLINE(방향 없음)"
+            });
+            return;
+        }
+        self.pending_lines.push(PendingLine {
+            layer,
+            color,
+            lt: self.cur_lt,
+            w: self.cur_w,
+            aci: self.cur_aci,
+            handle: self.cur_handle,
+            at: p,
+            dir: Vec2::new(d.x / l, d.y / l),
+            ray,
+        });
+    }
+
+    /// 미뤄 둔 끝없는 선을 다른 객체 범위(긴 변의 10 % 씩 넓혀)로 잘라 넣는다. 범위가 없으면 기준점 둘레 1 만
+    fn flush_infinite_lines(&mut self) {
+        let lines = std::mem::take(&mut self.pending_lines);
+        if lines.is_empty() {
+            return;
+        }
+        let mut b = self.d.bbox();
+        if b.is_empty() {
+            for l in &lines {
+                b.add(l.at);
+            }
+        }
+        let size = b.width().max(b.height());
+        let m = if size > 1e-9 { size * 0.1 } else { 10_000.0 };
+        let (lo, hi) = (
+            Vec2::new(b.min.x - m, b.min.y - m),
+            Vec2::new(b.max.x + m, b.max.y + m),
+        );
+        for l in lines {
+            // 상자와 만나는 매개변수 구간 (slab)
+            let (mut t0, mut t1) = (f64::NEG_INFINITY, f64::INFINITY);
+            for (p, d, a, c) in [(l.at.x, l.dir.x, lo.x, hi.x), (l.at.y, l.dir.y, lo.y, hi.y)] {
+                if d.abs() < 1e-12 {
+                    if p < a || p > c {
+                        t0 = 1.0;
+                        t1 = 0.0;
+                    }
+                } else {
+                    let (u, v) = ((a - p) / d, (c - p) / d);
+                    t0 = t0.max(u.min(v));
+                    t1 = t1.min(u.max(v));
+                }
+            }
+            if l.ray {
+                t0 = t0.max(0.0);
+            }
+            if t1 <= t0 {
+                continue;
+            }
+            let at = |t: f64| Vec2::new(l.at.x + l.dir.x * t, l.at.y + l.dir.y * t);
+            (self.cur_lt, self.cur_w, self.cur_aci, self.cur_handle) = (l.lt, l.w, l.aci, l.handle);
+            self.push(
+                l.layer,
+                l.color,
+                Shape::Line {
+                    a: at(t0),
+                    b: at(t1),
+                },
+                &Affine::IDENTITY,
+            );
+        }
+    }
+
+    /// 다중 지시선 (§88): 지시선마다 꺾은선(끝은 이음점) + 화살촉, 글 내용이 있으면 글자
+    fn multileader(
+        &mut self,
+        x: &acadrust::entities::MultiLeader,
+        layer: u32,
+        color: Option<[u8; 3]>,
+        t: &Affine,
+    ) {
+        let c = &x.context;
+        let size = (x.arrowhead_size * c.scale_factor.max(1e-9)).max(0.0);
+        let mut any = false;
+        for root in &c.leader_roots {
+            for line in &root.lines {
+                let mut pts: Vec<Vec2> = line.points.iter().map(v2).collect();
+                pts.push(v2(&root.connection_point));
+                pts.dedup_by(|a, b| a.dist(*b) < 1e-9);
+                if pts.len() < 2 {
+                    continue;
+                }
+                any = true;
+                if size > 0.0 {
+                    self.push(layer, color, arrowhead(pts[0], pts[1], size), t);
+                }
+                self.push(
+                    layer,
+                    color,
+                    Shape::Polyline {
+                        points: pts.into_iter().map(|p| (p, 0.0)).collect(),
+                        closed: false,
+                    },
+                    t,
+                );
+            }
+        }
+        if c.has_text_contents && !c.text_string.trim().is_empty() {
+            any = true;
+            let value = plain_mtext(&c.text_string);
+            let shape = Shape::Text(TextShape {
+                style: String::new(),
+                at: v2(&c.text_location),
+                height: if c.text_height > 0.0 {
+                    c.text_height
+                } else {
+                    2.5
+                },
+                rotation: c.text_rotation,
+                width_factor: 1.0,
+                halign: 0.0,
+                valign: VAlign::Top,
+                value,
+            });
+            self.push(layer, color, shape, t);
+        }
+        if !any {
+            self.skip("MULTILEADER(빈 것)");
+        }
     }
 
     fn skip(&mut self, kind: &str) {
@@ -502,6 +678,133 @@ impl<'a> Converter<'a> {
                 return;
             }
             EntityType::Insert(x) => return self.insert(x, layer, color, t),
+            // 점 (§88): 길이 0 선분 묶음 — 고르기·스냅(끝점)이 되고, 화면에는 AutoCAD 기본(PDMODE 0)처럼 거의 안 보인다
+            EntityType::Point(x) => {
+                let p = v2(&x.location);
+                Shape::Segments {
+                    lines: vec![(p, p)],
+                }
+            }
+            // 끝없는 선 (§88): 다 읽은 뒤 범위로 잘라 넣는다
+            EntityType::XLine(x) => {
+                return self.defer_line(layer, color, t, &x.base_point, &x.direction, false);
+            }
+            EntityType::Ray(x) => {
+                return self.defer_line(layer, color, t, &x.base_point, &x.direction, true);
+            }
+            // 3D 면 (§88): 평면에 비춘 닫힌 꺾은선
+            EntityType::Face3D(x) => {
+                let mut pts = vec![
+                    v2(&x.first_corner),
+                    v2(&x.second_corner),
+                    v2(&x.third_corner),
+                    v2(&x.fourth_corner),
+                ];
+                pts.dedup_by(|a, b| a.dist(*b) < 1e-9);
+                if pts.len() > 2 && pts[0].dist(*pts.last().unwrap()) < 1e-9 {
+                    pts.pop();
+                }
+                if pts.len() < 2 {
+                    self.skip("3DFACE(빈 것)");
+                    return;
+                }
+                Shape::Polyline {
+                    points: pts.into_iter().map(|p| (p, 0.0)).collect(),
+                    closed: true,
+                }
+            }
+            // 지시선 (§88): 꺾은선 + 첫 점의 채운 화살촉. 글은 따로 있는 MTEXT 가 그린다
+            EntityType::Leader(x) => {
+                let pts: Vec<Vec2> = x.vertices.iter().map(v2).collect();
+                if pts.len() < 2 {
+                    self.skip("LEADER(빈 것)");
+                    return;
+                }
+                if x.arrow_enabled {
+                    let size = if x.arrow_size > 0.0 {
+                        x.arrow_size
+                    } else {
+                        (pts[0].dist(pts[1]) * 0.2).max(1e-6)
+                    };
+                    self.push(layer, color, arrowhead(pts[0], pts[1], size), t);
+                }
+                Shape::Polyline {
+                    points: pts.into_iter().map(|p| (p, 0.0)).collect(),
+                    closed: false,
+                }
+            }
+            EntityType::MultiLeader(x) => return self.multileader(x, layer, color, t),
+            // 다중선 (§88): 스타일 요소마다 꼭짓점의 꺾임 방향으로 떨어진 꺾은선
+            EntityType::MLine(x) => {
+                let n = x
+                    .vertices
+                    .iter()
+                    .map(|v| v.segments.len())
+                    .min()
+                    .unwrap_or(0);
+                let closed = x.flags.contains(acadrust::entities::MLineFlags::CLOSED);
+                let mut any = false;
+                for k in 0..n {
+                    let pts: Vec<(Vec2, f64)> = x
+                        .vertices
+                        .iter()
+                        .map(|v| {
+                            let d = v.segments[k].parameters.first().copied().unwrap_or(0.0);
+                            (
+                                Vec2::new(
+                                    v.position.x + v.miter.x * d,
+                                    v.position.y + v.miter.y * d,
+                                ),
+                                0.0,
+                            )
+                        })
+                        .collect();
+                    if pts.len() >= 2 {
+                        any = true;
+                        self.push(
+                            layer,
+                            color,
+                            Shape::Polyline {
+                                points: pts,
+                                closed,
+                            },
+                            t,
+                        );
+                    }
+                }
+                if !any {
+                    self.skip("MLINE(빈 것)");
+                }
+                return;
+            }
+            // 그림 (§88): 파일은 그리지 못하고 그 자리 테두리만
+            EntityType::RasterImage(x) => {
+                let o = v2(&x.insertion_point);
+                let u = Vec2::new(x.u_vector.x * x.size.x, x.u_vector.y * x.size.x);
+                let v = Vec2::new(x.v_vector.x * x.size.y, x.v_vector.y * x.size.y);
+                Shape::Polyline {
+                    points: vec![
+                        (o, 0.0),
+                        (Vec2::new(o.x + u.x, o.y + u.y), 0.0),
+                        (Vec2::new(o.x + u.x + v.x, o.y + u.y + v.y), 0.0),
+                        (Vec2::new(o.x + v.x, o.y + v.y), 0.0),
+                    ],
+                    closed: true,
+                }
+            }
+            // 붙여 넣은 객체(엑셀 표 등, §88): 그 자리 테두리만
+            EntityType::Ole2Frame(x) => {
+                let (a, b) = (v2(&x.upper_left_corner), v2(&x.lower_right_corner));
+                Shape::Polyline {
+                    points: vec![
+                        (a, 0.0),
+                        (Vec2::new(b.x, a.y), 0.0),
+                        (b, 0.0),
+                        (Vec2::new(a.x, b.y), 0.0),
+                    ],
+                    closed: true,
+                }
+            }
             // 블록 안 속성 정의는 그리지 않는다 (AutoCAD 와 같게) — 블록 참조로 살리면 속성 정의로 남는다 (§49)
             EntityType::AttributeDefinition(_) if !self.stack.is_empty() => return,
             other => {
@@ -1267,8 +1570,60 @@ fn spline_entity_points(x: &acadrust::entities::Spline) -> Vec<Vec2> {
         };
         curve::spline_points(x.degree.max(1) as usize, &x.knots, &ctrl, w, 16)
     } else {
-        x.fit_points.iter().map(v2).collect()
+        fit_curve(
+            &x.fit_points.iter().map(v2).collect::<Vec<_>>(),
+            x.flags.closed,
+            16,
+        )
     }
+}
+
+/// 맞춤점만 있는 스플라인 (§88): 맞춤점을 모두 지나는 매끈한 곡선 — 구심 Catmull-Rom, 구간마다 `n` 조각.
+/// AutoCAD 의 맞춤(3 차 B-스플라인 보간)과 똑같지는 않지만 모양이 가깝다. 점이 둘 이하면 그대로
+fn fit_curve(p: &[Vec2], closed: bool, n: usize) -> Vec<Vec2> {
+    let m = p.len();
+    if m < 3 {
+        return p.to_vec();
+    }
+    // 끝 밖의 가상 점: 닫혔으면 이어서, 아니면 끝 점을 반대로 비춘 점
+    let at = |i: isize| -> Vec2 {
+        if closed {
+            p[i.rem_euclid(m as isize) as usize]
+        } else if i < 0 {
+            Vec2::new(2.0 * p[0].x - p[1].x, 2.0 * p[0].y - p[1].y)
+        } else if i as usize >= m {
+            Vec2::new(2.0 * p[m - 1].x - p[m - 2].x, 2.0 * p[m - 1].y - p[m - 2].y)
+        } else {
+            p[i as usize]
+        }
+    };
+    let spans = if closed { m } else { m - 1 };
+    let mut out = Vec::with_capacity(spans * n + 1);
+    for i in 0..spans as isize {
+        let (p0, p1, p2, p3) = (at(i - 1), at(i), at(i + 1), at(i + 2));
+        // 구심 매개변수 (거리의 제곱근)
+        let dt = |a: Vec2, b: Vec2| a.dist(b).sqrt().max(1e-9);
+        let (t1, t2, t3) = {
+            let t1 = dt(p0, p1);
+            let t2 = t1 + dt(p1, p2);
+            (t1, t2, t2 + dt(p2, p3))
+        };
+        let lerp = |a: Vec2, b: Vec2, ta: f64, tb: f64, t: f64| {
+            let k = (t - ta) / (tb - ta);
+            Vec2::new(a.x + (b.x - a.x) * k, a.y + (b.y - a.y) * k)
+        };
+        for k in 0..n {
+            let t = t1 + (t2 - t1) * k as f64 / n as f64;
+            let a1 = lerp(p0, p1, 0.0, t1, t);
+            let a2 = lerp(p1, p2, t1, t2, t);
+            let a3 = lerp(p2, p3, t2, t3, t);
+            let b1 = lerp(a1, a2, 0.0, t2, t);
+            let b2 = lerp(a2, a3, t1, t3, t);
+            out.push(lerp(b1, b2, t1, t2, t));
+        }
+    }
+    out.push(if closed { p[0] } else { p[m - 1] });
+    out
 }
 
 /// 해치 경계 고리들 (해치 OCS 좌표). 곡선 변은 경계 크기의 1/5000 오차로 펼친다.
@@ -1481,6 +1836,7 @@ pub fn from_document(doc: &CadDocument) -> Drawing {
         cur_aci: None,
         arrow_mode: false,
         cur_handle: 0,
+        pending_lines: Vec::new(),
     };
     // 선 종류 무늬 (대시가 있는 것만 — CONTINUOUS 등 실선은 넣지 않는다)
     for lt in doc.line_types.iter() {
@@ -1587,6 +1943,8 @@ pub fn from_document(doc: &CadDocument) -> Drawing {
             });
         }
     }
+    // 끝없는 선은 다른 객체 범위(조금 넓혀)로 잘라 넣는다 (§88)
+    c.flush_infinite_lines();
     // 한 객체가 여럿으로 펼쳐져 겹친 번호·번호 없는 객체에 새 번호 (§82)
     c.d.assign_ids();
     c.d
@@ -1724,6 +2082,46 @@ mod tests {
         let t = crate::archgen::tables(&d);
         let g = t.tables.iter().find(|x| x.name == "글꼴").unwrap();
         assert!(g.rows[0][4].contains("SHX"));
+    }
+
+    /// 가끔 나오는 종류 (§88): 점·끝없는 선·3D 면·지시선·다중 지시선·다중선·그림·맞춤점 스플라인을 건너뛰지 않는다
+    #[test]
+    fn rarer_entity_kinds() {
+        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/ezdxf-kinds.dxf");
+        let d = read_file(&p).unwrap();
+        assert!(d.skipped.is_empty(), "{:?}", d.skipped);
+        // 끝없는 선은 다른 객체 범위 (긴 변 160 의 10 % 씩) 안으로 잘렸다
+        let b = d.bbox();
+        assert!(b.width() < 250.0 && b.height() < 250.0, "{b:?}");
+        // 지시선 글, 여러 줄 문자
+        let texts: Vec<String> = d
+            .entities
+            .iter()
+            .filter_map(|e| match &e.shape {
+                Shape::Text(t) => Some(t.value.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(texts.iter().any(|t| t.contains("지시선 글")), "{texts:?}");
+        // 화살촉 (지시선·다중 지시선) 둘 + SOLID 하나 = 채움 셋
+        let fills = d
+            .entities
+            .iter()
+            .filter(|e| matches!(e.shape, Shape::Fill { .. }))
+            .count();
+        assert_eq!(fills, 3);
+        // 다중선은 나란한 두 꺾은선, 맞춤점 스플라인은 맞춤점을 지나는 매끈한 곡선
+        let spline = d
+            .entities
+            .iter()
+            .find_map(|e| match &e.shape {
+                Shape::Polyline { points, .. } if points.len() > 20 => Some(points.clone()),
+                _ => None,
+            })
+            .expect("스플라인");
+        for f in [Vec2::new(20.0, 90.0), Vec2::new(40.0, 80.0)] {
+            assert!(spline.iter().any(|(p, _)| p.dist(f) < 1e-9), "{f:?}");
+        }
     }
 
     /// 객체 고유 번호는 DWG·DXF 핸들 (§82): 다시 가져와도 같고, 겹치지 않는다
