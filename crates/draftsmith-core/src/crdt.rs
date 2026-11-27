@@ -4,7 +4,9 @@
 //! (`dsmith merge`). 나중에 동기화 서버(M5)가 이 문서의 증분을 주고받는다.
 //!
 //! 구성 (§80 측정에서 가벼웠던 꼴):
-//! - `entities` 맵: 고유 번호(16 진 글) → 객체 JSON 글. 객체 하나가 바뀌면 그 칸만 다시 쓴다 (마지막에 쓴 것이 이김)
+//! - `entities` 맵: 고유 번호(16 진 글) → 객체 JSON 의 지문(8 바이트). 객체 하나가 바뀌면 그 칸만 다시 쓴다 (마지막에 쓴 것이
+//!   이김). 내용은 `drawing.json` 에 — 도면을 만들 때 같은 번호·같은 지문의 객체를 사본들에서 찾는다 (§87: 내용을 넣으면
+//!   10 만 객체에서 이력 6.8 MB)
 //! - `order` 목록: 그리는 순서 (고유 번호 글). 넣기·지우기는 목록 연산이라 동시에 해도 합쳐진다
 //! - `meta` 맵: 객체 밖 필드(레이어·블록·건축 객체 …) 이름 → 그 JSON 의 지문(FNV-1a 64, 16 진). 바뀐 필드만 쓴다.
 //!   내용은 `drawing.json` 에만 있고, 도면을 만들 때 지문이 맞는 사본의 필드를 쓴다 — 실무 도면은 블록 정의 JSON 이
@@ -19,14 +21,29 @@ use crate::drawing::{Drawing, Entity};
 /// 도면의 Loro 문서와, 마지막으로 맞춘 내용 (다음에 바뀐 것만 쓰려고)
 pub struct Crdt {
     doc: LoroDoc,
-    /// 고유 번호 → 마지막으로 쓴 JSON
-    ents: HashMap<u64, String>,
+    /// 고유 번호 → 마지막으로 쓴 객체 지문
+    ents: HashMap<u64, u64>,
     order: Vec<u64>,
     /// 필드 이름 → 지문
     meta: HashMap<String, String>,
 }
 
-/// 내용 지문 (FNV-1a 64) — 판이 바뀌어도 같은 값이라 파일에 남겨도 된다
+/// 내용 지문 값 (FNV-1a 64) — 판이 바뀌어도 같은 값이라 파일에 남겨도 된다
+fn fnv(s: &str) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in s.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    h
+}
+
+/// 객체 지문
+fn ent_digest(e: &Entity) -> Result<u64, String> {
+    Ok(fnv(&serde_json::to_string(e).map_err(|e| e.to_string())?))
+}
+
+/// 내용 지문 (16 진 글)
 fn digest(s: &str) -> String {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in s.bytes() {
@@ -130,8 +147,10 @@ impl Crdt {
         self.ents.clear();
         if let LoroValue::Map(m) = self.entities().get_value() {
             for (k, v) in m.iter() {
-                if let (Ok(id), LoroValue::String(s)) = (u64::from_str_radix(k, 16), v) {
-                    self.ents.insert(id, s.to_string());
+                if let (Ok(id), LoroValue::Binary(b)) = (u64::from_str_radix(k, 16), v)
+                    && let Ok(h) = <[u8; 8]>::try_from(&b[..])
+                {
+                    self.ents.insert(id, u64::from_le_bytes(h));
                 }
             }
         }
@@ -180,11 +199,11 @@ impl Crdt {
                 continue;
             }
             now.push(e.id);
-            let s = serde_json::to_string(e).map_err(|e| e.to_string())?;
-            if self.ents.get(&e.id) != Some(&s) {
-                ents.insert(&key(e.id), s.as_str())
+            let h = ent_digest(e)?;
+            if self.ents.get(&e.id) != Some(&h) {
+                ents.insert(&key(e.id), h.to_le_bytes().to_vec())
                     .map_err(|e| e.to_string())?;
-                self.ents.insert(e.id, s);
+                self.ents.insert(e.id, h);
                 n += 1;
             }
         }
@@ -309,10 +328,27 @@ impl Crdt {
         }
         text.push_str("\"entities\":[]}");
         let mut d: Drawing = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+        // 객체: 같은 번호·같은 지문인 것을 사본들에서 (번호마다 사본 순서대로 보며)
+        let by_id: Vec<HashMap<u64, &Entity>> = sources
+            .iter()
+            .map(|s| s.entities.iter().map(|e| (e.id, e)).collect())
+            .collect();
         for id in &self.order {
-            if let Some(s) = self.ents.get(id) {
-                let e: Entity = serde_json::from_str(s).map_err(|e| e.to_string())?;
-                d.entities.push(e);
+            let Some(want) = self.ents.get(id) else {
+                continue;
+            };
+            let mut found = None;
+            for m in &by_id {
+                if let Some(e) = m.get(id)
+                    && ent_digest(e)? == *want
+                {
+                    found = Some((*e).clone());
+                    break;
+                }
+            }
+            match found {
+                Some(e) => d.entities.push(e),
+                None => return Err(format!("객체 {id:x} 의 내용이 어느 사본에도 없습니다")),
             }
         }
         d.next_id = d
