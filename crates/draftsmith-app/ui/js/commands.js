@@ -71,6 +71,7 @@ export const COMMANDS = [
   ["pdf", "PDF 저장", ["PDF", "PLOT", "출력"], "파일"],
   ["journal", "변경 기록 저장", ["JOURNAL", "변경기록"], "협업"],
   ["merge", "변경 기록 합치기", ["MERGE", "합치기"], "협업"],
+  ["mergecopy", "다른 사본과 합치기", ["MERGECOPY", "사본합치기"], "협업"],
 ];
 
 const CHO = "ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ";

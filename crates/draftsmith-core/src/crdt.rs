@@ -322,6 +322,26 @@ impl Crdt {
     }
 }
 
+/// 편집 중인 도면에 다른 사본을 합친다 (§86): 이력을 지금 도면에 맞추고 상대 이력(없으면 상대 도면으로 새로)을 합쳐,
+/// 합친 도면으로 바꾼다(되돌릴 수 있다). 합친 뒤 객체 수
+pub fn merge_into(
+    ed: &mut crate::edit::Editor,
+    c: &mut Crdt,
+    other: &Drawing,
+    theirs: Option<&[u8]>,
+) -> Result<usize, String> {
+    c.sync(&ed.d)?;
+    let bytes = match theirs {
+        Some(b) => b.to_vec(),
+        None => Crdt::new(other)?.to_bytes()?,
+    };
+    c.merge(&bytes)?;
+    let merged = c.drawing(&[&ed.d, other])?;
+    let n = merged.entities.len();
+    ed.replace_drawing(merged);
+    Ok(n)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -443,5 +463,50 @@ mod tests {
         let (_, none) =
             crate::docfile::from_bytes_with(&crate::docfile::to_bytes(&ed.d).unwrap()).unwrap();
         assert!(none.is_none());
+    }
+
+    /// 편집기에서 합친 도면으로 바꾸면 되돌릴 수 있다 (§86)
+    #[test]
+    fn editor_replace_drawing_undo() {
+        let mut a = Editor::new(crate::archgen::new_drawing());
+        a.add_shapes(vec![line(0.0), line(100.0)]);
+        let before = a.d.entities.clone();
+        let mut other = a.d.clone();
+        other.entities.remove(0);
+        other.entities.push(Entity {
+            id: 0x7777,
+            ..other.entities[0].clone()
+        });
+        a.replace_drawing(other.clone());
+        assert_eq!(a.d.entities, other.entities);
+        a.undo();
+        assert_eq!(a.d.entities, before);
+        a.redo();
+        assert_eq!(a.d.entities, other.entities);
+    }
+
+    /// 편집 중인 도면에 사본 합치기 — 앱의 「다른 사본과 합치기」 (§86)
+    #[test]
+    fn merge_into_editor() {
+        let mut base = Editor::new(crate::archgen::new_drawing());
+        base.add_shapes(vec![line(0.0), line(100.0)]);
+        let file = Crdt::new(&base.d).unwrap().to_bytes().unwrap();
+        // 내 쪽: 선 하나 더 (저장 안 한 편집도 합칠 때 맞춘다)
+        let mut me = Editor::new(base.d.clone());
+        me.d.salt_ids(11);
+        me.add_shapes(vec![line(300.0)]);
+        let mut mine = Crdt::from_bytes(&file).unwrap();
+        // 상대: 첫 선 지우고 저장
+        let mut they = Editor::new(base.d.clone());
+        they.d.salt_ids(22);
+        they.remove(&[0]);
+        let mut tc = Crdt::from_bytes(&file).unwrap();
+        tc.sync(&they.d).unwrap();
+        let n = merge_into(&mut me, &mut mine, &they.d, Some(&tc.to_bytes().unwrap())).unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(ys(&me.d), vec![100.0, 300.0]);
+        // 되돌리면 합치기 전
+        me.undo();
+        assert_eq!(ys(&me.d), vec![0.0, 100.0, 300.0]);
     }
 }

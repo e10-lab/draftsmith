@@ -643,6 +643,45 @@ impl Editor {
         true
     }
 
+    /// 도면 내용을 통째로 바꾼다 (사본 합치기 결과 등, §86). 객체·레이어·건축 객체·배치·블록은 되돌릴 수 있는 한 작업으로,
+    /// 나머지 필드(선 종류·글꼴 등)는 바로. 새 번호 시작점은 지금 것과 새 도면 것 중 큰 쪽 (띄워 둔 시작점을 지킨다)
+    pub fn replace_drawing(&mut self, mut d: Drawing) {
+        let items: Vec<(usize, Entity)> = self.d.entities.iter().cloned().enumerate().collect();
+        let mut ops = Vec::new();
+        if !items.is_empty() {
+            ops.push(Op::Remove { items });
+        }
+        if !d.entities.is_empty() {
+            ops.push(Op::Add {
+                start: 0,
+                items: std::mem::take(&mut d.entities),
+            });
+        }
+        ops.push(Op::Layers {
+            old: self.d.layers.clone(),
+            new: std::mem::take(&mut d.layers),
+        });
+        ops.push(Op::Arch {
+            old: Box::new(self.d.arch.clone()),
+            new: Box::new(std::mem::take(&mut d.arch)),
+        });
+        ops.push(Op::Layouts {
+            old: self.d.layouts.clone(),
+            new: std::mem::take(&mut d.layouts),
+        });
+        ops.push(Op::Blocks {
+            old: self.d.blocks.clone(),
+            new: std::mem::take(&mut d.blocks),
+        });
+        let next = self.d.next_id.max(d.next_id);
+        self.d.linetypes = d.linetypes;
+        self.d.fonts = d.fonts;
+        self.d.units = d.units;
+        self.d.current_layer = d.current_layer;
+        self.run(Op::Batch(ops));
+        self.d.next_id = self.d.next_id.max(next);
+    }
+
     /// 객체 더하기 (현재 레이어, 레이어 색). 더한 번호 범위
     pub fn add_shapes(&mut self, shapes: Vec<Shape>) -> std::ops::Range<usize> {
         let layer = self

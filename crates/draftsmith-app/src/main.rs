@@ -71,6 +71,20 @@ impl Open {
         })
     }
 
+    /// 변경 이력을 지금 도면에 맞춰서 (§85). 처음이면 연 파일의 이력(없으면 지금 도면)에서 만든다
+    fn crdt_synced(&mut self) -> Result<&mut draftsmith_core::crdt::Crdt, String> {
+        let ed = self.ed.as_ref().ok_or("열린 도면이 없습니다")?;
+        if self.crdt.is_none() {
+            self.crdt = Some(match self.loro_in.take() {
+                Some(b) => draftsmith_core::crdt::Crdt::from_bytes(&b)?,
+                None => draftsmith_core::crdt::Crdt::new(&ed.d)?,
+            });
+        }
+        let c = self.crdt.as_mut().unwrap();
+        c.sync(&ed.d)?;
+        Ok(c)
+    }
+
     /// 지금 화면에 보이는 도면
     fn shown(&self) -> Option<&Drawing> {
         self.view.as_ref().or(self.ed.as_ref().map(|e| &e.d))
@@ -523,18 +537,10 @@ fn save_drawing(
             p
         }
     };
-    // 변경 이력 (§85): 처음이면 연 파일의 이력(없으면 지금 도면)에서 만들고, 바뀐 것만 맞춰 함께 저장
-    let open_ref = &mut *open;
-    let ed = open_ref.ed.as_mut().ok_or("열린 도면이 없습니다")?;
-    if open_ref.crdt.is_none() {
-        open_ref.crdt = Some(match open_ref.loro_in.take() {
-            Some(b) => draftsmith_core::crdt::Crdt::from_bytes(&b)?,
-            None => draftsmith_core::crdt::Crdt::new(&ed.d)?,
-        });
-    }
-    let c = open_ref.crdt.as_mut().unwrap();
-    c.sync(&ed.d)?;
-    docfile::save_with(&ed.d, Some(&c.to_bytes()?), &target)?;
+    // 변경 이력 (§85): 지금 도면에 맞춰 함께 저장
+    let loro = open.crdt_synced()?.to_bytes()?;
+    let ed = open.ed.as_mut().ok_or("열린 도면이 없습니다")?;
+    docfile::save_with(&ed.d, Some(&loro), &target)?;
     ed.dirty = false;
     open.save_path = Some(target.clone());
     open.path = Some(target.clone());
@@ -1710,6 +1716,47 @@ fn merge_journal(state: State<'_, AppState>) -> Result<Option<MergeOut>, String>
     }))
 }
 
+#[derive(Serialize)]
+struct CopyMergeOut {
+    /// 합치기 전·후 객체 수
+    before: usize,
+    after: usize,
+    /// 고른 사본에 변경 이력이 없었다 (각자 지운 객체가 되살아날 수 있다)
+    no_history: bool,
+    state: DocState,
+}
+
+/// 다른 사본(.dsmith)과 합치기 (§86): 같은 파일에서 갈라진 사본의 편집을 변경 이력으로 합친다. 되돌릴 수 있다. 취소하면 null
+#[tauri::command]
+fn merge_copy(state: State<'_, AppState>) -> Result<Option<CopyMergeOut>, String> {
+    let mut open = state.lock().map_err(err)?;
+    let mut dlg = rfd::FileDialog::new()
+        .set_title("다른 사본과 합치기")
+        .add_filter("DraftSmith 도면", &[docfile::EXT]);
+    if let Some(dir) = open.path.as_ref().and_then(|p| p.parent()) {
+        dlg = dlg.set_directory(dir);
+    }
+    let Some(path) = dlg.pick_file() else {
+        return Ok(None);
+    };
+    let (other, loro) = docfile::load_with(&path)?;
+    let no_history = loro.is_none();
+    let before = open.ed.as_ref().map(|e| e.d.entities.len()).unwrap_or(0);
+    open.crdt_synced()?;
+    let o = &mut *open;
+    let (Some(ed), Some(c)) = (o.ed.as_mut(), o.crdt.as_mut()) else {
+        return Err("열린 도면이 없습니다".into());
+    };
+    let after = draftsmith_core::crdt::merge_into(ed, c, &other, loro.as_deref())?;
+    open.refresh();
+    Ok(Some(CopyMergeOut {
+        before,
+        after,
+        no_history,
+        state: state_of(&open, 0.0, Vec::new())?,
+    }))
+}
+
 /// IFC 내보내기 (§39). 취소하면 null
 #[tauri::command]
 fn export_ifc(state: State<'_, AppState>) -> Result<Option<String>, String> {
@@ -1819,6 +1866,7 @@ fn main() {
             display_data,
             text_data,
             indices_of_uids,
+            merge_copy,
             arch_tables,
             export_table_csv,
             model_3d,

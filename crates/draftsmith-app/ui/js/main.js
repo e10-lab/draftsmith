@@ -578,6 +578,19 @@ async function mergeJournal() {
   }
 }
 
+// 같은 파일에서 갈라진 다른 사본(.dsmith)의 편집을 변경 이력으로 합친다 (§86)
+async function mergeCopy() {
+  try {
+    const r = await invoke("merge_copy");
+    if (!r) return status("취소했습니다");
+    await setDoc(r.state, true);
+    status(`사본 합침: 객체 ${fmt(r.before)} → ${fmt(r.after)} 개 (되돌리기 가능)` +
+      (r.no_history ? " · 고른 사본에 변경 기록이 없어 각자 지운 객체가 되살아났을 수 있습니다" : ""));
+  } catch (e) {
+    status(`합치지 못했습니다: ${e}`);
+  }
+}
+
 // ── 명령 실행 ─────────────────────────────────────────────────────────────────
 let orthoOn = false;
 function setToggle(id, on) {
@@ -626,6 +639,7 @@ async function run(id) {
     case "sheetlist": return addSheet(true);
     case "journal": return app.doc && saveJournal();
     case "merge": return app.doc && mergeJournal();
+    case "mergecopy": return app.doc && mergeCopy();
     case "palette": return palette.show();
     case "shx": return shxFolder();
     case "find": return findReplace();
