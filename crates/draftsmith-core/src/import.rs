@@ -2122,6 +2122,17 @@ mod tests {
         for f in [Vec2::new(20.0, 90.0), Vec2::new(40.0, 80.0)] {
             assert!(spline.iter().any(|(p, _)| p.dist(f) < 1e-9), "{f:?}");
         }
+        // 내보냈다 다시 읽어도 건너뛴 것 없이 같은 종류들, 점은 POINT 로 나간다
+        let dir = std::env::temp_dir().join(format!("dsmith-kinds-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("k.dxf");
+        crate::export::write(&d, &out).unwrap();
+        let text = std::fs::read_to_string(&out).unwrap();
+        assert!(text.lines().any(|l| l.trim() == "POINT"));
+        let back = read_file(&out).unwrap();
+        assert!(back.skipped.is_empty(), "{:?}", back.skipped);
+        assert_eq!(back.counts(), d.counts());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// 객체 고유 번호는 DWG·DXF 핸들 (§82): 다시 가져와도 같고, 겹치지 않는다

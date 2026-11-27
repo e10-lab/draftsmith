@@ -214,6 +214,12 @@ fn to_cad(e: &Entity) -> Vec<EntityType> {
             }
             vec![EntityType::Hatch(Box::new(h))]
         }
+        // 점 (§88): 길이 0 선분 하나 → POINT
+        Shape::Segments { lines } if lines.len() == 1 && lines[0].0 == lines[0].1 => {
+            let mut p = acadrust::entities::Point::new();
+            p.location = v3(lines[0].0);
+            vec![EntityType::Point(p)]
+        }
         Shape::Segments { lines } => lines
             .iter()
             .map(|(a, b)| EntityType::Line(Line::from_coords(a.x, a.y, 0.0, b.x, b.y, 0.0)))
