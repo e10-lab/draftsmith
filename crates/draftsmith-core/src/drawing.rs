@@ -867,6 +867,8 @@ impl Drawing {
         let block = (h % (1 << 22)) << 18; // 2^40 안에서 2^18 개씩
         let max = self.entities.iter().map(|e| e.id).max().unwrap_or(0);
         self.next_id = self.next_id.max(max + 1).max(FIRST_ID) + block;
+        // 건축 객체 번호도 (§91) — 두 사람이 동시에 그린 벽이 같은 번호를 받지 않게
+        self.arch.next_id = self.arch.next_id.max(1) + block;
     }
 
     /// 객체 고유 번호 → 지금 목록 번호

@@ -165,9 +165,10 @@ pub fn force_by_id(d: &Drawing, op: &Op) -> Op {
             old: d.current_layer,
             new: *new,
         },
-        Op::Arch { new, .. } => Op::Arch {
+        // 건축 모델: 바뀐 객체만 지금 모델에 얹는다 (§91)
+        Op::Arch { old, new } => Op::Arch {
             old: Box::new(d.arch.clone()),
-            new: new.clone(),
+            new: Box::new(arch_merge(old, new, &d.arch, &HashSet::new())),
         },
         Op::Layouts { new, .. } => Op::Layouts {
             old: d.layouts.clone(),
@@ -260,11 +261,12 @@ impl Room {
     }
 }
 
-/// 객체 밖 필드 종류 (마지막에 쓴 것이 이기는 것들)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// 객체 밖 필드 종류 (마지막에 쓴 것이 이기는 것들). 건축 객체는 하나씩(§91)
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Field {
     Layers,
-    Arch,
+    /// 건축 모델의 (필드 이름, 객체 번호 — 번호 목록이 아닌 필드면 None)
+    Arch(String, Option<u64>),
     Layouts,
     Blocks,
 }
@@ -273,7 +275,11 @@ enum Field {
 fn fields(op: &Op, out: &mut Vec<Field>) {
     match op {
         Op::Layers { .. } => out.push(Field::Layers),
-        Op::Arch { .. } => out.push(Field::Arch),
+        Op::Arch { old, new } => out.extend(
+            arch_keys(old, new)
+                .into_iter()
+                .map(|(k, id)| Field::Arch(k, id)),
+        ),
         Op::Layouts { .. } => out.push(Field::Layouts),
         Op::Blocks { .. } => out.push(Field::Blocks),
         Op::Batch(ops) => ops.iter().for_each(|o| fields(o, out)),
@@ -293,17 +299,144 @@ pub fn shareable(op: &Op) -> Option<Op> {
     }
 }
 
-/// 받은 작업에서 내가 아직 서버 확인을 못 받은 필드 종류의 바꾸기를 뺀다 — 내 것이 서버에 나중에 닿아 이길 것이므로
-fn without_fields(op: &Op, skip: &[Field]) -> Option<Op> {
-    let mut f = Vec::new();
-    fields(op, &mut f);
+/// 받은 작업에서 내가 아직 서버 확인을 못 받은 필드 종류(건축 객체는 그 객체)의 바꾸기를 뺀다 — 내 것이 서버에 나중에
+/// 닿아 이길 것이므로. 건축 모델 작업은 그 객체들만 빼고 나머지를 지금 모델에 얹는다
+fn without_fields(d: &Drawing, op: &Op, skip: &[Field]) -> Option<Op> {
     match op {
         Op::Batch(ops) => Some(Op::Batch(
-            ops.iter().filter_map(|o| without_fields(o, skip)).collect(),
+            ops.iter()
+                .filter_map(|o| without_fields(d, o, skip))
+                .collect(),
         )),
-        _ if f.iter().any(|x| skip.contains(x)) => None,
-        o => Some(o.clone()),
+        Op::Arch { old, new } => {
+            let keys: HashSet<(String, Option<u64>)> = skip
+                .iter()
+                .filter_map(|f| match f {
+                    Field::Arch(k, id) => Some((k.clone(), *id)),
+                    _ => None,
+                })
+                .collect();
+            Some(Op::Arch {
+                old: Box::new(d.arch.clone()),
+                new: Box::new(arch_merge(old, new, &d.arch, &keys)),
+            })
+        }
+        o => {
+            let mut f = Vec::new();
+            fields(o, &mut f);
+            (!f.iter().any(|x| skip.contains(x))).then(|| o.clone())
+        }
     }
+}
+
+/// 건축 모델 두 판 사이에 바뀐 것: (필드 이름, 번호 목록이면 바뀐 객체 번호) (§91)
+fn arch_keys(
+    old: &crate::arch::ArchModel,
+    new: &crate::arch::ArchModel,
+) -> Vec<(String, Option<u64>)> {
+    let (Ok(serde_json::Value::Object(o)), Ok(serde_json::Value::Object(n))) =
+        (serde_json::to_value(old), serde_json::to_value(new))
+    else {
+        return vec![("*".into(), None)];
+    };
+    let mut out = Vec::new();
+    for (k, nv) in &n {
+        let ov = o.get(k).unwrap_or(&serde_json::Value::Null);
+        if ov == nv || PERSONAL.contains(&k.as_str()) {
+            continue;
+        }
+        match (by_id(ov), by_id(nv)) {
+            (Some(om), Some(nm)) => {
+                for (id, x) in &nm {
+                    if om.get(id) != Some(x) {
+                        out.push((k.clone(), Some(*id)));
+                    }
+                }
+                for id in om.keys().filter(|id| !nm.contains_key(id)) {
+                    out.push((k.clone(), Some(*id)));
+                }
+            }
+            _ => out.push((k.clone(), None)),
+        }
+    }
+    out
+}
+
+/// 사람마다 따로인 건축 모델 필드 — 지금 보는 층 (현재 레이어와 같다)
+const PERSONAL: [&str; 1] = ["active_level"];
+
+/// 번호(`id`)가 있는 객체들의 목록이면 번호 → 객체
+fn by_id(v: &serde_json::Value) -> Option<std::collections::BTreeMap<u64, &serde_json::Value>> {
+    let a = v.as_array()?;
+    a.iter()
+        .map(|x| Some((x.get("id")?.as_u64()?, x)))
+        .collect()
+}
+
+/// 건축 모델 3 자 합치기 (§91): `old` → `new` 로 바뀐 것만 지금 모델 `cur` 에 얹는다. 번호 목록(벽·문·창·실 …)은 객체
+/// 하나씩(더하기·지우기·바꾸기), 그 밖의 필드는 통째로, `next_id` 는 큰 쪽. `skip` 의 것은 건너뛴다
+pub(crate) fn arch_merge(
+    old: &crate::arch::ArchModel,
+    new: &crate::arch::ArchModel,
+    cur: &crate::arch::ArchModel,
+    skip: &HashSet<(String, Option<u64>)>,
+) -> crate::arch::ArchModel {
+    use serde_json::Value;
+    let (Ok(Value::Object(o)), Ok(Value::Object(n)), Ok(Value::Object(mut c))) = (
+        serde_json::to_value(old),
+        serde_json::to_value(new),
+        serde_json::to_value(cur),
+    ) else {
+        return new.clone();
+    };
+    for (k, nv) in &n {
+        let ov = o.get(k).unwrap_or(&Value::Null);
+        if ov == nv || PERSONAL.contains(&k.as_str()) {
+            continue;
+        }
+        if k == "next_id" {
+            let m = nv
+                .as_u64()
+                .unwrap_or(0)
+                .max(c.get(k).and_then(Value::as_u64).unwrap_or(0));
+            c.insert(k.clone(), Value::from(m));
+            continue;
+        }
+        let cv = c.get(k).cloned().unwrap_or(Value::Null);
+        match (by_id(ov), by_id(nv), cv.as_array()) {
+            (Some(om), Some(nm), Some(ca)) => {
+                let mut list: Vec<Value> = ca.clone();
+                let pos = |list: &Vec<Value>, id: u64| {
+                    list.iter()
+                        .position(|x| x.get("id").and_then(Value::as_u64) == Some(id))
+                };
+                for (id, x) in &nm {
+                    if om.get(id) == Some(x) || skip.contains(&(k.clone(), Some(*id))) {
+                        continue;
+                    }
+                    match pos(&list, *id) {
+                        Some(i) => list[i] = (*x).clone(),
+                        None => list.push((*x).clone()),
+                    }
+                }
+                for id in om.keys().filter(|id| !nm.contains_key(id)) {
+                    if skip.contains(&(k.clone(), Some(*id))) {
+                        continue;
+                    }
+                    if let Some(i) = pos(&list, *id) {
+                        list.remove(i);
+                    }
+                }
+                c.insert(k.clone(), Value::Array(list));
+            }
+            _ => {
+                if !skip.contains(&(k.clone(), None)) {
+                    c.insert(k.clone(), nv.clone());
+                }
+            }
+        }
+    }
+    serde_json::from_value(Value::Object(c)).unwrap_or_else(|_| new.clone())
 }
 
 /// 앱 쪽 상태: 서버 확인을 아직 못 받은 내 작업들
@@ -339,7 +472,7 @@ impl Client {
             }
             Msg::Applied { op } => {
                 let skip: Vec<Field> = self.pending.iter().flat_map(|p| p.1.clone()).collect();
-                let Some(op) = without_fields(op, &skip) else {
+                let Some(op) = without_fields(&ed.d, op, &skip) else {
                     return false;
                 };
                 let f = force_by_id(&ed.d, &op);
@@ -561,5 +694,108 @@ mod tests {
         w.settle();
         w.same();
         assert_eq!(w.room.ed.d.entities.len(), 5);
+    }
+
+    /// 모두 같아야 하는 건축 모델 (번호 시작점·지금 보는 층은 사람마다)
+    fn shared(m: &crate::arch::ArchModel) -> crate::arch::ArchModel {
+        crate::arch::ArchModel {
+            next_id: 0,
+            active_level: 0,
+            ..m.clone()
+        }
+    }
+
+    /// 앱 k 의 건축 모델을 바꾼다 (모델 통째 작업 — 앱의 건축 편집과 같다)
+    fn arch_edit(w: &mut World, k: usize, f: impl FnOnce(&mut crate::arch::ArchModel)) {
+        w.edit(k, |e| {
+            let old = e.d.arch.clone();
+            let mut new = old.clone();
+            f(&mut new);
+            e.run(Op::Arch {
+                old: Box::new(old),
+                new: Box::new(new),
+            });
+        });
+    }
+
+    fn walled() -> World {
+        let mut w = World::new();
+        // 벽 둘이 있는 도면에서 시작
+        let mut m = crate::arch::ArchModel::default();
+        let lv = m.ensure_level();
+        for y in [0.0, 5000.0] {
+            let id = m.new_id();
+            m.walls.push(crate::arch::Wall {
+                id,
+                level: lv,
+                a: Vec2::new(0.0, y),
+                b: Vec2::new(6000.0, y),
+                thickness: 200.0,
+                ..Default::default()
+            });
+        }
+        w.room.ed.d.arch = m.clone();
+        for (k, a) in w.apps.iter_mut().enumerate() {
+            a.d.arch = m.clone();
+            a.d.salt_ids(k as u64 + 7);
+        }
+        w
+    }
+
+    /// 건축 객체 (§91): 다른 벽을 동시에 고치면 둘 다 남는다, 같은 벽은 어느 차례로 닿아도 모두 같다,
+    /// 동시에 새 벽을 그려도 번호가 겹치지 않는다
+    #[test]
+    fn arch_objects_merge() {
+        let mut w = walled();
+        arch_edit(&mut w, 0, |m| m.walls[0].thickness = 300.0);
+        arch_edit(&mut w, 1, |m| m.walls[1].thickness = 400.0);
+        w.settle();
+        let t: Vec<f64> = w.room.ed.d.arch.walls.iter().map(|x| x.thickness).collect();
+        assert_eq!(t, vec![300.0, 400.0]);
+        for a in &w.apps {
+            assert_eq!(shared(&a.d.arch), shared(&w.room.ed.d.arch));
+        }
+        // 지금 보는 층은 사람마다 — 앱 0 이 바꿔도 다른 사람은 그대로
+        arch_edit(&mut w, 0, |m| m.active_level = 999);
+        w.settle();
+        assert_eq!(w.apps[0].d.arch.active_level, 999);
+        assert_ne!(w.apps[1].d.arch.active_level, 999);
+        assert_ne!(w.room.ed.d.arch.active_level, 999);
+        // 같은 벽을 동시에 — 두 차례 모두
+        for first in [0, 1] {
+            let mut w = walled();
+            arch_edit(&mut w, 0, |m| m.walls[0].thickness = 111.0);
+            arch_edit(&mut w, 1, |m| m.walls[0].thickness = 222.0);
+            w.send(first);
+            w.send(1 - first);
+            w.recv(0);
+            w.recv(1);
+            for a in &w.apps {
+                assert_eq!(shared(&a.d.arch), shared(&w.room.ed.d.arch), "차례 {first}");
+            }
+        }
+        // 동시에 새 벽
+        let mut w = walled();
+        for k in 0..2 {
+            arch_edit(&mut w, k, |m| {
+                let lv = m.levels[0].id;
+                let id = m.new_id();
+                m.walls.push(crate::arch::Wall {
+                    id,
+                    level: lv,
+                    a: Vec2::new(0.0, 9000.0 + k as f64),
+                    b: Vec2::new(6000.0, 9000.0),
+                    thickness: 200.0,
+                    ..Default::default()
+                });
+            });
+        }
+        w.settle();
+        assert_eq!(w.room.ed.d.arch.walls.len(), 4);
+        let ids: HashSet<u64> = w.room.ed.d.arch.walls.iter().map(|x| x.id).collect();
+        assert_eq!(ids.len(), 4);
+        for a in &w.apps {
+            assert_eq!(a.d.arch.walls.len(), 4);
+        }
     }
 }
