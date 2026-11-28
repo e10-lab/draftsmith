@@ -591,6 +591,46 @@ async function mergeCopy() {
   }
 }
 
+// ── 실시간 공동작업 (§90): 서버(dsmith-sync)의 방에 붙는다 ─────────────────────────
+let collabInfo = null;
+async function collabStart() {
+  const stem = (app.doc?.path ?? "").split(/[\\/]/).pop()?.replace(/\.[^.]+$/, "") || "도면";
+  const v = await ask("공동작업 시작", [
+    ["url", "서버 주소", localStorage.getItem("collabUrl") || "ws://127.0.0.1:7878"],
+    ["room", "방 이름", stem],
+    ["mode", "방", "지금 도면으로 방 만들기", ["지금 도면으로 방 만들기", "있는 방에 들어가기"]],
+  ]);
+  if (!v) return;
+  try { localStorage.setItem("collabUrl", v.url.trim()); } catch {}
+  status("서버에 붙는 중…");
+  try {
+    const st = await invoke("collab_start", { url: v.url.trim(), room: v.room, create: v.mode.startsWith("지금") });
+    await setDoc(st, false);
+  } catch (e) {
+    status(`공동작업을 시작하지 못했습니다: ${e}`);
+  }
+}
+async function collabStop() {
+  await invoke("collab_stop");
+  collabInfo = null;
+  status("공동작업을 끝냈습니다 (도면은 그대로)");
+}
+const tauriEvent = window.__TAURI__.event;
+tauriEvent.listen("collab", (e) => {
+  collabInfo = e.payload;
+  status(`공동작업 「${collabInfo.room}」 · ${collabInfo.people} 명`);
+});
+tauriEvent.listen("collab-change", async () => {
+  const st = await invoke("doc_state");
+  await setDoc(st, true);
+  if (collabInfo) status(`공동작업 「${collabInfo.room}」 · ${collabInfo.people} 명 · 다른 사람이 고쳤습니다`);
+});
+tauriEvent.listen("collab-error", (e) => status(`공동작업: ${e.payload}`));
+tauriEvent.listen("collab-closed", () => {
+  collabInfo = null;
+  status("공동작업 연결이 끊겼습니다 (도면은 그대로 — 저장하거나 다시 붙으세요)");
+});
+
 // ── 명령 실행 ─────────────────────────────────────────────────────────────────
 let orthoOn = false;
 function setToggle(id, on) {
@@ -640,6 +680,8 @@ async function run(id) {
     case "journal": return app.doc && saveJournal();
     case "merge": return app.doc && mergeJournal();
     case "mergecopy": return app.doc && mergeCopy();
+    case "collab": return app.doc && collabStart();
+    case "collabstop": return collabStop();
     case "palette": return palette.show();
     case "shx": return shxFolder();
     case "find": return findReplace();

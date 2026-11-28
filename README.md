@@ -19,7 +19,7 @@
 | 도면 시트 — 표제란·틀·층별 뷰포트, 도면 목록 시트, 도면 세트 PDF | |
 | 3D 보기 — 벽(곡선 벽 포함)·창·바닥판·기둥·보·계단(돌음 계단 포함), 단면 자동, IFC4 내보내기·가져오기(.ifc 열기) | 곡선 벽·돌음 계단은 IFC 에 곡면 그대로 |
 | 저장 `.dsmith`(변경 이력 포함), DXF·DWG 내보내기(고유 번호 유지), PDF(벡터·한글 글꼴·CTB, 모형 공간 도면 틀마다 한 쪽) | |
-| 공동작업 — 같은 파일에서 갈라진 사본 합치기(「다른 사본과 합치기」, `dsmith merge`), 변경 기록 내보내기·합치기 | 서버 없이 파일로. 실시간 동기화는 이후 |
+| 공동작업 — 실시간(「공동작업 시작」, 서버 `dsmith-sync`), 같은 파일에서 갈라진 사본 합치기(「다른 사본과 합치기」, `dsmith merge`), 변경 기록 내보내기·합치기 | 서버는 직접 띄운다 (사무실 망·클라우드) |
 
 ### 조작
 
@@ -37,6 +37,7 @@
 | 저장 | ⌘S / Ctrl+S (`.dsmith`), ⇧⌘S 다른 이름 — DWG·DXF 는 「내보내기」 |
 | 사본 합치기 | 명령 `MERGECOPY`(「다른 사본과 합치기」) — 같은 파일을 다른 사람이 고친 사본을 골라 합침, 되돌리기 가능 |
 | SHX 글꼴 | 명령 `SHX` 로 SHX 글꼴 폴더를 고르면 그 글꼴로 그림 |
+| 실시간 공동작업 | 한 컴퓨터에서 `dsmith-sync --host 0.0.0.0` 을 띄우고, 각자 명령 `COLLAB` 로 `ws://그 컴퓨터:7878` 의 같은 방에 — 첫 사람은 「지금 도면으로 방 만들기」, 다음 사람은 「있는 방에 들어가기」 |
 | 레이어 | 옆 칸 — 켜기·끄기, 색 칸 눌러 색, 이름 두 번 눌러 현재 레이어, ＋ 더하기 |
 | 건축 객체 고치기 | 눌러 고르면 옆 칸에서 두께·폭·이름·마감 등 바로 고침 |
 | 층 | 옆 칸 「층」 — 눌러 바꾸기, ＋ 더하기, ⧉ 지금 층 복사 |
@@ -48,6 +49,7 @@
 ```
 crates/draftsmith-core   도면 모델, DXF·DWG 가져오기, 화면용 표시 데이터 (화면 코드 없음)
 crates/draftsmith-cli    dsmith 명령행
+crates/draftsmith-sync   dsmith-sync 실시간 공동작업 중계 서버
 crates/draftsmith-app    데스크톱 앱 (Tauri 2) — 화면은 ui/ 의 HTML·CSS·JavaScript 모듈 (npm·번들러 없음)
 build/version.rs         화면·CLI 에 보이는 판 (릴리스가 아니면 「-dev (커밋)」)
 tools/                   앱 묶음 만들기 등
@@ -71,6 +73,7 @@ cargo test                                  # 코어·CLI 시험
 cargo run --release -p draftsmith-cli -- info 도면.dwg
 cargo run --release -p draftsmith-cli -- pdf --frames 도면.dwg 도면.pdf     # 도면 틀마다 한 쪽
 cargo run --release -p draftsmith-cli -- merge 갑.dsmith 을.dsmith 결과.dsmith  # 갈라진 사본 합치기
+cargo run --release -p draftsmith-sync -- --host 0.0.0.0 --dir 방도면        # 실시간 공동작업 서버
 cargo run --release -p draftsmith-app       # 앱 (macOS·Windows)
 sh tools/make_macos_app.sh                  # target/DraftSmith.app
 ```

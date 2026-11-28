@@ -21,7 +21,9 @@ use draftsmith_core::{
 };
 use serde::{Deserialize, Serialize};
 use tauri::ipc::Response;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
+
+mod collab;
 
 /// 열린 도면
 #[derive(Default)]
@@ -55,6 +57,8 @@ struct Open {
     crdt: Option<draftsmith_core::crdt::Crdt>,
     /// 연 .dsmith 에 들어 있던 변경 이력 (아직 Loro 문서로 풀지 않음)
     loro_in: Option<Vec<u8>>,
+    /// 실시간 공동작업 중이면 그 연결 (§90)
+    collab: Option<collab::Collab>,
     /// 보이는 도면을 다시 만들 때마다 하나씩 (§74)
     era: u64,
     /// 표시 데이터 캐시를 마지막으로 맞춘 세대. 지금 세대와 같으면 그 원점을 문자 데이터에 쓴다
@@ -93,6 +97,15 @@ impl Open {
     /// 편집한 뒤: 보이는 도면을 다시 만들고 스냅·고르기 색인도 다시
     fn refresh(&mut self) {
         self.era += 1;
+        // 공동작업 중이면 아직 안 보낸 내 작업을 서버로 (서버에서 받은 작업은 기록에 들지 않아 되돌아 나가지 않는다, §90)
+        if let (Some(c), Some(ed)) = (self.collab.as_mut(), self.ed.as_ref()) {
+            for op in &ed.journal[c.sent.min(ed.journal.len())..] {
+                if let Some(m) = c.client.local(op) {
+                    c.send(m);
+                }
+            }
+            c.sent = ed.journal.len();
+        }
         // 지난 보이는 도면이 캐시가 만든 것이면 돌려주고 바뀐 객체 몫만 고치게 (§72)
         let prev = self
             .view
@@ -770,6 +783,29 @@ fn affine(m: [f64; 6]) -> Affine {
 fn edit(req: EditReq, state: State<'_, AppState>) -> Result<DocState, String> {
     let mut open = state.lock().map_err(err)?;
     let mut added = Vec::new();
+    // 공동작업 중 되돌리기·다시 하기는 내 작업만 반대로 되감고 그 반대 작업을 보낸다 (§90)
+    if open.collab.is_some() && matches!(req, EditReq::Undo | EditReq::Redo) {
+        let o = &mut *open;
+        let ed = o.ed.as_mut().ok_or("열린 도면이 없습니다")?;
+        let op = if matches!(req, EditReq::Undo) {
+            ed.undo_shared()
+        } else {
+            ed.redo_shared()
+        };
+        if let (Some(op), Some(c)) = (op, o.collab.as_mut())
+            && let Some(m) = c.client.local(&op)
+        {
+            c.send(m);
+        }
+        if open
+            .sheet
+            .is_some_and(|i| open.ed.as_ref().is_some_and(|e| i >= e.d.layouts.len()))
+        {
+            open.sheet = None;
+        }
+        open.refresh();
+        return state_of(&open, 0.0, Vec::new());
+    }
     // 시트에서도 되는 편집: 뷰포트 고치기, 되돌리기·다시 하기
     if open.sheet.is_some()
         && matches!(
@@ -1716,6 +1752,113 @@ fn merge_journal(state: State<'_, AppState>) -> Result<Option<MergeOut>, String>
     }))
 }
 
+#[derive(Serialize, Clone)]
+struct CollabInfo {
+    room: String,
+    people: usize,
+}
+
+static COLLAB_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// 실시간 공동작업 시작 (§90): 서버 `url` 의 방 `room` 을 지금 도면으로 만들거나(`create`) 들어간다. 방 도면으로 바뀐다
+#[tauri::command]
+async fn collab_start(
+    url: String,
+    room: String,
+    create: bool,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<DocState, String> {
+    let room = room.trim().to_string();
+    if room.is_empty() {
+        return Err("방 이름을 넣으세요".into());
+    }
+    let first = if create {
+        let open = state.lock().map_err(err)?;
+        let d = open.ed.as_ref().ok_or("열린 도면이 없습니다")?.d.clone();
+        draftsmith_core::sync::Msg::Create {
+            room: room.clone(),
+            drawing: Box::new(d),
+        }
+    } else {
+        draftsmith_core::sync::Msg::Join { room: room.clone() }
+    };
+    let (d, people, ws) = tauri::async_runtime::spawn_blocking(move || collab::open(&url, &first))
+        .await
+        .map_err(err)??;
+    let id = COLLAB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    let (tx, rx) = std::sync::mpsc::channel();
+    {
+        let mut open = state.lock().map_err(err)?;
+        open.collab = None;
+        let keep = (open.path.clone(), open.save_path.clone());
+        *open = Open {
+            ed: Some(editor(d)),
+            path: keep.0,
+            save_path: keep.1,
+            ..Default::default()
+        };
+        open.collab = Some(collab::Collab::new(id, tx, room.clone(), people));
+        open.refresh();
+    }
+    let app2 = app.clone();
+    std::thread::spawn(move || {
+        collab::run(ws, rx, |msg| {
+            let st = app2.state::<AppState>();
+            let Ok(mut open) = st.lock() else {
+                return false;
+            };
+            let o = &mut *open;
+            let (Some(c), Some(ed)) = (o.collab.as_mut(), o.ed.as_mut()) else {
+                return false;
+            };
+            if c.id != id {
+                return false;
+            }
+            let changed = match &msg {
+                draftsmith_core::sync::Msg::People { n } => {
+                    c.people = *n;
+                    let _ = app2.emit(
+                        "collab",
+                        CollabInfo {
+                            room: c.room.clone(),
+                            people: *n,
+                        },
+                    );
+                    false
+                }
+                draftsmith_core::sync::Msg::Error { msg } => {
+                    let _ = app2.emit("collab-error", msg.clone());
+                    false
+                }
+                m => c.client.receive(ed, m),
+            };
+            if changed {
+                open.refresh();
+                let _ = app2.emit("collab-change", ());
+            }
+            true
+        });
+        // 끊겼다
+        if let Ok(mut open) = app2.state::<AppState>().lock()
+            && open.collab.as_ref().is_some_and(|c| c.id == id)
+        {
+            open.collab = None;
+            let _ = app2.emit("collab-closed", ());
+        }
+    });
+    let open = state.lock().map_err(err)?;
+    let _ = app.emit("collab", CollabInfo { room, people });
+    state_of(&open, 0.0, Vec::new())
+}
+
+/// 공동작업 끝내기 (도면은 그대로 남는다)
+#[tauri::command]
+fn collab_stop(state: State<'_, AppState>) -> Result<(), String> {
+    state.lock().map_err(err)?.collab = None;
+    Ok(())
+}
+
 #[derive(Serialize)]
 struct CopyMergeOut {
     /// 합치기 전·후 객체 수
@@ -1867,6 +2010,8 @@ fn main() {
             text_data,
             indices_of_uids,
             merge_copy,
+            collab_start,
+            collab_stop,
             arch_tables,
             export_table_csv,
             model_3d,
