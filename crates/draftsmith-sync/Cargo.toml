@@ -1,0 +1,28 @@
+[package]
+name = "draftsmith-sync"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "DraftSmith 공동작업 중계 서버 — 방(도면)마다 작업을 맞춰 나눈다 (구현 노트 §90)"
+
+[[bin]]
+name = "dsmith-sync"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+draftsmith-core = { path = "../draftsmith-core" }
+serde_json = "1"
+# 비동기 네트워크 — MIT
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "time"] }
+tokio-tungstenite = "0.26"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+
+[dev-dependencies]
+tungstenite = "0.26"
+
+[lints]
+workspace = true

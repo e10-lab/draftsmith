@@ -38,6 +38,7 @@ pub mod shown;
 pub mod shp;
 pub mod shx;
 pub mod snap;
+pub mod sync;
 pub mod text;
 pub mod wipeout;
 

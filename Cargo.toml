@@ -1,8 +1,8 @@
 [workspace]
 resolver = "2"
-members = ["crates/draftsmith-core", "crates/draftsmith-cli", "crates/draftsmith-app"]
+members = ["crates/draftsmith-core", "crates/draftsmith-cli", "crates/draftsmith-app", "crates/draftsmith-sync"]
 # `cargo build/test/run` 기본 대상: 코어와 CLI. 데스크톱 앱(웹 화면)은 `-p draftsmith-app`
-default-members = ["crates/draftsmith-core", "crates/draftsmith-cli"]
+default-members = ["crates/draftsmith-core", "crates/draftsmith-cli", "crates/draftsmith-sync"]
 
 [workspace.package]
 version = "0.1.0"

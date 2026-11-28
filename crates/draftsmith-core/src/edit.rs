@@ -142,6 +142,46 @@ fn run_new(d: &mut Drawing, op: &mut Op) {
     }
 }
 
+/// 반대 작업 (§90): 더하기 ↔ 지우기, 바꾸기·객체 밖 필드는 앞뒤를 바꾼다. 목록 번호는 고유 번호로 다시 맞춘다
+pub fn inverse(op: &Op) -> Op {
+    match op {
+        Op::Add { items, .. } => Op::Remove {
+            items: items.iter().map(|e| (0, e.clone())).collect(),
+        },
+        Op::Remove { items } => Op::Add {
+            start: 0,
+            items: items.iter().map(|(_, e)| e.clone()).collect(),
+        },
+        Op::Replace { items } => Op::Replace {
+            items: items
+                .iter()
+                .map(|(i, old, new)| (*i, new.clone(), old.clone()))
+                .collect(),
+        },
+        Op::Layers { old, new } => Op::Layers {
+            old: new.clone(),
+            new: old.clone(),
+        },
+        Op::CurrentLayer { old, new } => Op::CurrentLayer {
+            old: *new,
+            new: *old,
+        },
+        Op::Arch { old, new } => Op::Arch {
+            old: new.clone(),
+            new: old.clone(),
+        },
+        Op::Layouts { old, new } => Op::Layouts {
+            old: new.clone(),
+            new: old.clone(),
+        },
+        Op::Blocks { old, new } => Op::Blocks {
+            old: new.clone(),
+            new: old.clone(),
+        },
+        Op::Batch(ops) => Op::Batch(ops.iter().rev().map(inverse).collect()),
+    }
+}
+
 impl Editor {
     pub fn new(mut d: Drawing) -> Editor {
         d.assign_ids();
@@ -621,6 +661,27 @@ impl Editor {
 
     pub fn can_redo(&self) -> bool {
         !self.redo.is_empty()
+    }
+
+    /// 공동작업 중 되돌리기 (§90): 마지막 작업의 반대 작업을 고유 번호로 맞춰 적용한다 — 그 사이 다른 사람이 더하거나 고친
+    /// 객체는 건드리지 않는다. 적용한 반대 작업(다른 사람들에게 보낼 것)을 돌려준다
+    pub fn undo_shared(&mut self) -> Option<Op> {
+        let op = self.undo.pop()?;
+        let inv = crate::sync::force_by_id(&self.d, &inverse(&op));
+        apply(&mut self.d, &inv);
+        self.redo.push(op);
+        self.dirty = true;
+        Some(inv)
+    }
+
+    /// 공동작업 중 다시 하기 (§90)
+    pub fn redo_shared(&mut self) -> Option<Op> {
+        let op = self.redo.pop()?;
+        let again = crate::sync::force_by_id(&self.d, &op);
+        apply(&mut self.d, &again);
+        self.undo.push(op);
+        self.dirty = true;
+        Some(again)
     }
 
     pub fn undo(&mut self) -> bool {
